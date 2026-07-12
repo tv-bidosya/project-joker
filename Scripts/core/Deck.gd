@@ -21,3 +21,13 @@ func create_deck():
 				card.is_joker = true
 
 			cards.append(card)
+func shuffle():
+	cards.shuffle()
+
+func cards_left() -> int:
+	return cards.size()
+func draw() -> Card:
+	if cards.is_empty():
+		return null
+
+	return cards.pop_front()

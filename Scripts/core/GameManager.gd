@@ -8,7 +8,19 @@ func _ready():
 
 	deck.create_deck()
 
-	print("Карт в колоде:", deck.cards.size())
+	deck.shuffle()
+
+	print("----------------")
+	print("После перемешивания:")
 
 	for card in deck.cards:
 		print(card.get_card_name())
+	var first_card = deck.draw()
+
+	print("")
+	print("Первая карта:")
+	print(first_card.get_card_name())
+
+	print("")	
+	print("Осталось карт:")
+	print(deck.cards_left())
