@@ -48,7 +48,7 @@ func can_play_card(player: Player, card: Card) -> bool:
 		return true
 
 	if _hand_has_suit(player.hand, lead_suit):
-		return card.suit == lead_suit
+		return not card.is_joker and card.suit == lead_suit
 
 	if card.is_joker:
 		return true
@@ -131,7 +131,7 @@ func get_winner_index() -> int:
 
 func _hand_has_suit(hand: Array[Card], suit: int) -> bool:
 	for hand_card in hand:
-		if hand_card.suit == suit:
+		if not hand_card.is_joker and hand_card.suit == suit:
 			return true
 
 	return false

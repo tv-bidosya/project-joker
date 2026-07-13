@@ -13,6 +13,7 @@ var last_completed_trick_played_by: Array[int] = []
 var dealer_index := -1
 var last_trick_winner_index := -1
 var round_number := 0
+var cards_are_dealt := false
 
 var _random := RandomNumberGenerator.new()
 
@@ -30,7 +31,8 @@ func _init(player_names: Array) -> void:
 func start_round(
 	cards_per_player: int,
 	round_type: Round.RoundType,
-	trump: Round.TrumpSuit
+	trump: Round.TrumpSuit,
+	deal_cards_immediately := true
 ) -> bool:
 	if players.size() != 4 or cards_per_player <= 0:
 		return false
@@ -48,8 +50,12 @@ func start_round(
 		players.size()
 	)
 
-	_deal_cards(cards_per_player)
+	_reset_players_for_round()
+	cards_are_dealt = false
 	trump_card = null
+
+	if deal_cards_immediately:
+		_deal_cards(cards_per_player)
 
 	if trump == Round.TrumpSuit.RANDOM:
 		trump_card = deck.draw()
@@ -72,6 +78,10 @@ func place_bid(player_index: int, bid: int) -> bool:
 		return false
 
 	players[player_index].bid = bid
+
+	if current_round.state == Round.State.PLAYING and not cards_are_dealt:
+		_deal_cards(current_round.cards_per_player)
+
 	return true
 
 
@@ -128,9 +138,6 @@ func advance_dealer() -> void:
 
 
 func _deal_cards(cards_per_player: int) -> void:
-	for player in players:
-		player.reset_for_round()
-
 	for card_number in cards_per_player:
 		for player_offset in players.size():
 			var player_index := (dealer_index + 1 + player_offset) % players.size()
@@ -144,6 +151,13 @@ func _deal_cards(cards_per_player: int) -> void:
 
 	for player in players:
 		player.sort_hand()
+
+	cards_are_dealt = true
+
+
+func _reset_players_for_round() -> void:
+	for player in players:
+		player.reset_for_round()
 
 
 func _begin_trick() -> void:

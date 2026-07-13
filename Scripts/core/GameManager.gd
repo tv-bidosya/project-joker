@@ -4,6 +4,7 @@ extends Control
 const PLAYER_NAMES := ["Андрей", "Олег", "Маша", "Лена"]
 const HUMAN_PLAYER_INDEX := 0
 const NORMAL_ROUND_COUNT := 13
+const DARK_ROUND_COUNT := 5
 
 
 @onready var phase_label: Label = %PhaseLabel
@@ -27,11 +28,14 @@ var last_trick_text := "Взятка ещё не началась"
 var action_text := "Подготовка партии"
 var recent_actions := PackedStringArray()
 var normal_round_index := 0
+var dark_round_index := -1
 var is_processing_automatic_actions := false
 
 
 func _ready() -> void:
 	_run_joker_rule_checks()
+	_run_score_rule_checks()
+	_run_dark_round_checks()
 	_create_player_panels()
 	_create_trick_slots()
 	next_round_button.pressed.connect(_on_next_round_pressed)
@@ -45,17 +49,25 @@ func _start_round() -> void:
 
 	var cards_per_player := _get_cards_per_player_for_current_round()
 	var trump := _get_trump_for_current_round()
+	var round_type := _get_current_round_type()
 
-	if not game.start_round(cards_per_player, Round.RoundType.NORMAL, trump):
+	if not game.start_round(cards_per_player, round_type, trump, not _is_dark_round()):
 		action_text = "Не удалось начать раздачу."
 		_refresh_ui()
 		return
 
-	action_text = "Обычная раздача %d из %d. Сдающий: %s." % [
-		normal_round_index + 1,
-		NORMAL_ROUND_COUNT,
-		game.players[game.dealer_index].display_name
-	]
+	if _is_dark_round():
+		action_text = "Тёмная раздача %d из %d. Заказ вслепую; сдающий: %s." % [
+			dark_round_index + 1,
+			DARK_ROUND_COUNT,
+			game.players[game.dealer_index].display_name
+		]
+	else:
+		action_text = "Обычная раздача %d из %d. Сдающий: %s." % [
+			normal_round_index + 1,
+			NORMAL_ROUND_COUNT,
+			game.players[game.dealer_index].display_name
+		]
 	_add_history(action_text)
 	next_round_button.visible = false
 	next_round_button.disabled = false
@@ -72,7 +84,7 @@ func _advance_automatic_actions() -> void:
 	while true:
 		if game.current_round.state == Round.State.BIDDING:
 			if game.current_round.current_player_index == HUMAN_PLAYER_INDEX:
-				action_text = "Твой заказ: выбери число взяток."
+				action_text = "Тёмная: закажи число взяток вслепую." if _is_dark_round() else "Твой заказ: выбери число взяток."
 				is_processing_automatic_actions = false
 				_refresh_ui()
 				return
@@ -115,6 +127,7 @@ func _advance_automatic_actions() -> void:
 func _play_automatic_bid() -> bool:
 	var player_index := game.current_round.current_player_index
 	var bid := _choose_automatic_bid(player_index)
+	var cards_were_hidden := _is_dark_round() and not game.cards_are_dealt
 
 	if not game.place_bid(player_index, bid):
 		action_text = "Ошибка автоматического заказа."
@@ -122,6 +135,7 @@ func _play_automatic_bid() -> bool:
 
 	action_text = "%s заказывает %d." % [game.players[player_index].display_name, bid]
 	_add_history(action_text)
+	_announce_dark_cards_dealt(cards_were_hidden)
 	return true
 
 
@@ -155,6 +169,8 @@ func _play_automatic_card() -> bool:
 
 
 func _on_bid_pressed(bid: int) -> void:
+	var cards_were_hidden := _is_dark_round() and not game.cards_are_dealt
+
 	if not game.place_bid(HUMAN_PLAYER_INDEX, bid):
 		action_text = "Этот заказ сейчас недоступен."
 		_refresh_ui()
@@ -162,6 +178,7 @@ func _on_bid_pressed(bid: int) -> void:
 
 	action_text = "Ты заказываешь %d." % bid
 	_add_history(action_text)
+	_announce_dark_cards_dealt(cards_were_hidden)
 	_refresh_ui()
 	_advance_automatic_actions()
 
@@ -203,11 +220,20 @@ func _on_joker_choice(mode: Trick.JokerMode, declared_suit: int = -1) -> void:
 
 
 func _on_next_round_pressed() -> void:
-	if normal_round_index >= NORMAL_ROUND_COUNT - 1:
+	if not _can_start_next_round():
 		return
 
 	game.advance_dealer()
-	normal_round_index += 1
+
+	if normal_round_index < NORMAL_ROUND_COUNT - 1:
+		normal_round_index += 1
+	elif dark_round_index < 0:
+		dark_round_index = 0
+	elif dark_round_index < DARK_ROUND_COUNT - 1:
+		dark_round_index += 1
+	else:
+		return
+
 	_start_round()
 
 
@@ -233,10 +259,14 @@ func _finish_round() -> void:
 	action_text = "Раздача завершена.\n%s" % "\n".join(result_lines)
 	next_round_button.visible = true
 
-	if normal_round_index >= NORMAL_ROUND_COUNT - 1:
-		next_round_button.text = "Обычная серия завершена"
+	if not _is_dark_round() and normal_round_index >= NORMAL_ROUND_COUNT - 1:
+		next_round_button.text = "Начать тёмную серию"
+		next_round_button.disabled = false
+		_add_history("Обычная серия из 13 раздач завершена. Далее — тёмные раздачи.")
+	elif _is_dark_round() and dark_round_index >= DARK_ROUND_COUNT - 1:
+		next_round_button.text = "Тёмная серия завершена"
 		next_round_button.disabled = true
-		_add_history("Обычная серия из 13 раздач завершена.")
+		_add_history("Тёмная серия из 5 раздач завершена.")
 	else:
 		next_round_button.text = "Следующая раздача"
 		_add_history("Раздача завершена. Следующим сдаёт %s." % game.players[(game.dealer_index + 1) % game.players.size()].display_name)
@@ -271,15 +301,17 @@ func _refresh_ui() -> void:
 func _refresh_header() -> void:
 	match game.current_round.state:
 		Round.State.BIDDING:
-			phase_label.text = "Раздача %d/%d · заказ взяток" % [normal_round_index + 1, NORMAL_ROUND_COUNT]
+			phase_label.text = _get_phase_text("заказ вслепую" if _is_dark_round() else "заказ взяток")
 		Round.State.PLAYING:
-			phase_label.text = "Раздача %d/%d · розыгрыш взяток" % [normal_round_index + 1, NORMAL_ROUND_COUNT]
+			phase_label.text = _get_phase_text("розыгрыш взяток")
 		Round.State.FINISHED:
-			phase_label.text = "Раздача %d/%d · завершена" % [normal_round_index + 1, NORMAL_ROUND_COUNT]
+			phase_label.text = _get_phase_text("завершена")
 		_:
 			phase_label.text = "Этап: подготовка"
 
-	if game.trump_card == null:
+	if _is_dark_round() and not game.cards_are_dealt:
+		trump_label.text = "Тёмная: козырь %s · карты скрыты до завершения заказов" % game.current_round.get_trump_name()
+	elif game.trump_card == null:
 		trump_label.text = "Козырь: %s (задан)" % game.current_round.get_trump_name()
 	else:
 		trump_label.text = "Открыта %s · козырь %s" % [
@@ -296,12 +328,13 @@ func _refresh_player_panels() -> void:
 		var marker := "▶ " if is_current else ""
 		var person_label := " (ты)" if player_index == HUMAN_PLAYER_INDEX else ""
 		var bid_text := "—" if player.bid < 0 else str(player.bid)
+		var hand_text := "скрыто" if _is_dark_round() and not game.cards_are_dealt else str(player.hand.size())
 
-		player_labels[player_index].text = "%s%s%s\nКарт: %d | Заказ: %s\nВзято: %d | Очки: %d" % [
+		player_labels[player_index].text = "%s%s%s\nКарт: %s | Заказ: %s\nВзято: %d | Очки: %d" % [
 			marker,
 			player.display_name,
 			person_label,
-			player.hand.size(),
+			hand_text,
 			bid_text,
 			player.tricks_taken,
 			player.total_score
@@ -383,6 +416,14 @@ func _refresh_joker_controls() -> void:
 
 func _refresh_hand() -> void:
 	_clear_children(hand_container)
+
+	if _is_dark_round() and not game.cards_are_dealt:
+		var hidden_cards_label := Label.new()
+		hidden_cards_label.text = "Карты будут сданы после того, как все игроки сделают заказ."
+		hidden_cards_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		hidden_cards_label.add_theme_font_size_override("font_size", 16)
+		hand_container.add_child(hidden_cards_label)
+		return
 
 	var human_player := game.players[HUMAN_PLAYER_INDEX]
 
@@ -523,6 +564,9 @@ func _get_suit_symbol(suit: int) -> String:
 
 
 func _get_cards_per_player_for_current_round() -> int:
+	if _is_dark_round():
+		return 9
+
 	if normal_round_index < 8:
 		return normal_round_index + 1
 
@@ -530,6 +574,19 @@ func _get_cards_per_player_for_current_round() -> int:
 
 
 func _get_trump_for_current_round() -> Round.TrumpSuit:
+	if _is_dark_round():
+		match dark_round_index:
+			0:
+				return Round.TrumpSuit.CLUBS
+			1:
+				return Round.TrumpSuit.SPADES
+			2:
+				return Round.TrumpSuit.HEARTS
+			3:
+				return Round.TrumpSuit.DIAMONDS
+			_:
+				return Round.TrumpSuit.NONE
+
 	if normal_round_index < 8:
 		return Round.TrumpSuit.RANDOM
 
@@ -544,6 +601,31 @@ func _get_trump_for_current_round() -> Round.TrumpSuit:
 			return Round.TrumpSuit.DIAMONDS
 		_:
 			return Round.TrumpSuit.NONE
+
+
+func _get_current_round_type() -> Round.RoundType:
+	return Round.RoundType.DARK if _is_dark_round() else Round.RoundType.NORMAL
+
+
+func _is_dark_round() -> bool:
+	return dark_round_index >= 0
+
+
+func _can_start_next_round() -> bool:
+	return normal_round_index < NORMAL_ROUND_COUNT - 1 or dark_round_index < DARK_ROUND_COUNT - 1
+
+
+func _get_phase_text(phase_name: String) -> String:
+	if _is_dark_round():
+		return "Тёмная %d/%d · %s" % [dark_round_index + 1, DARK_ROUND_COUNT, phase_name]
+
+	return "Раздача %d/%d · %s" % [normal_round_index + 1, NORMAL_ROUND_COUNT, phase_name]
+
+
+func _announce_dark_cards_dealt(cards_were_hidden: bool) -> void:
+	if cards_were_hidden and game.cards_are_dealt:
+		action_text = "Все заказы сделаны. Карты сданы — начинается розыгрыш."
+		_add_history(action_text)
 
 
 func _add_history(action: String) -> void:
@@ -569,6 +651,73 @@ func _run_joker_rule_checks() -> void:
 	assert(trick.play_card(leader, lead_card), "Проверка: заходящая карта должна быть сыграна.")
 	assert(trick.can_play_card(player, discard_card), "Джокер не должен запрещать обычный сброс.")
 	assert(trick.can_play_card(player, joker), "Джокер должен оставаться допустимым специальным ходом.")
+
+	var club_leader := Player.new(1, "Заход в кресту")
+	var club_lead_card := _create_card(Card.Suit.CLUBS, Card.Rank.TEN)
+	club_leader.receive_card(club_lead_card)
+
+	var club_trick := Trick.new()
+	club_trick.setup(1, 2, Round.TrumpSuit.HEARTS)
+	assert(club_trick.play_card(club_leader, club_lead_card), "Проверка: заход в кресту должен быть сыгран.")
+	assert(club_trick.can_play_card(player, discard_card), "Джокер 7♣ не должен считаться крестовой картой.")
+	assert(club_trick.can_play_card(player, joker), "Джокер должен оставаться добровольным ходом.")
+
+	var actual_club_card := _create_card(Card.Suit.CLUBS, Card.Rank.EIGHT)
+	player.receive_card(actual_club_card)
+	var suited_leader := Player.new(1, "Заход в кресту")
+	var suited_lead_card := _create_card(Card.Suit.CLUBS, Card.Rank.JACK)
+	suited_leader.receive_card(suited_lead_card)
+
+	var suited_trick := Trick.new()
+	suited_trick.setup(1, 2, Round.TrumpSuit.HEARTS)
+	assert(suited_trick.play_card(suited_leader, suited_lead_card), "Проверка: заход в кресту должен быть сыгран.")
+	assert(not suited_trick.can_play_card(player, joker), "При наличии обычной масти Джокер нельзя положить вместо неё.")
+	assert(suited_trick.can_play_card(player, actual_club_card), "Обычная карта масти захода должна быть доступна.")
+
+	var no_trump_leader := Player.new(1, "Заход в бескозырке")
+	var no_trump_lead_card := _create_card(Card.Suit.CLUBS, Card.Rank.QUEEN)
+	no_trump_leader.receive_card(no_trump_lead_card)
+
+	var no_trump_trick := Trick.new()
+	no_trump_trick.setup(1, 2, Round.TrumpSuit.NONE)
+	assert(no_trump_trick.play_card(no_trump_leader, no_trump_lead_card), "Проверка: заход в бескозырке должен быть сыгран.")
+	assert(no_trump_trick.can_play_card(player, joker), "В бескозырке Джокер должен быть доступен при наличии масти захода.")
+
+
+func _run_score_rule_checks() -> void:
+	assert(
+		ScoreCalculator.calculate_round_score(Round.RoundType.DARK, 3, 3) == 45,
+		"Точный тёмный заказ должен давать +15 за каждую взятку."
+	)
+	assert(
+		ScoreCalculator.calculate_round_score(Round.RoundType.DARK, 3, 2) == -10,
+		"Недобор в тёмной раздаче должен штрафоваться на −10 за взятку."
+	)
+	assert(
+		ScoreCalculator.calculate_round_score(Round.RoundType.DARK, 0, 0) == 50,
+		"Нулевой тёмный заказ должен давать +50."
+	)
+
+
+func _run_dark_round_checks() -> void:
+	var test_game := Game.new(["Игрок 1", "Игрок 2", "Игрок 3", "Игрок 4"])
+	assert(
+		test_game.start_round(9, Round.RoundType.DARK, Round.TrumpSuit.CLUBS, false),
+		"Тёмная раздача должна запускаться без сдачи карт."
+	)
+	assert(not test_game.cards_are_dealt, "До заказов карты в тёмной раздаче должны быть скрыты.")
+
+	for player in test_game.players:
+		assert(player.hand.is_empty(), "До заказов у игрока не должно быть карт на руках.")
+
+	for bid_number in test_game.players.size():
+		var player_index := test_game.current_round.current_player_index
+		assert(test_game.place_bid(player_index, 0), "Нулевой заказ должен быть допустим в тёмной раздаче.")
+
+	assert(test_game.cards_are_dealt, "После последнего заказа карты должны быть сданы.")
+
+	for player in test_game.players:
+		assert(player.hand.size() == 9, "После заказов каждый игрок должен получить 9 карт.")
 
 
 func _create_card(suit: Card.Suit, rank: Card.Rank, is_joker := false) -> Card:

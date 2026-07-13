@@ -9,9 +9,9 @@ static func calculate_round_score(round_type: Round.RoundType, bid: int, tricks_
 
 	match round_type:
 		Round.RoundType.NORMAL:
-			return _calculate_bid_score(bid, tricks_taken, 10, 5)
+			return _calculate_bid_score(bid, tricks_taken, 10, 5, 10)
 		Round.RoundType.DARK:
-			return _calculate_bid_score(bid, tricks_taken, 15, 50)
+			return _calculate_bid_score(bid, tricks_taken, 15, 50, 10)
 		Round.RoundType.NO_TRUMP:
 			return tricks_taken * 15
 		Round.RoundType.GOLDEN:
@@ -33,7 +33,8 @@ static func _calculate_bid_score(
 	bid: int,
 	tricks_taken: int,
 	exact_score_step: int,
-	zero_bid_bonus: int
+	zero_bid_bonus: int,
+	shortage_penalty: int
 ) -> int:
 	if bid < 0:
 		return 0
@@ -47,4 +48,4 @@ static func _calculate_bid_score(
 	if tricks_taken > bid:
 		return tricks_taken - bid
 
-	return (tricks_taken - bid) * exact_score_step
+	return (tricks_taken - bid) * shortage_penalty
