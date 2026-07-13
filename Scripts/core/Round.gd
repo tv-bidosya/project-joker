@@ -37,6 +37,7 @@ var current_player_index := -1
 var lead_player_index := -1
 var bids: Array[int] = []
 var bids_made := 0
+var tricks_played := 0
 var state: State = State.SETUP
 
 
@@ -59,6 +60,7 @@ func setup(
 	bids.resize(player_count)
 	bids.fill(-1)
 	bids_made = 0
+	tricks_played = 0
 	state = State.SETUP
 
 
@@ -108,6 +110,10 @@ func place_bid(player_index: int, value: int) -> bool:
 		current_player_index = (current_player_index + 1) % player_count
 
 	return true
+
+
+func finish() -> void:
+	state = State.FINISHED
 
 
 func get_total_bids() -> int:
