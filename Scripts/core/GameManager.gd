@@ -8,6 +8,7 @@ const DARK_ROUND_COUNT := 5
 const NO_TRUMP_ROUND_COUNT := 4
 const GOLDEN_ROUND_COUNT := 5
 const MISERE_ROUND_COUNT := 5
+const TOTAL_ROUND_COUNT := NORMAL_ROUND_COUNT + DARK_ROUND_COUNT + NO_TRUMP_ROUND_COUNT + GOLDEN_ROUND_COUNT + MISERE_ROUND_COUNT
 
 
 @onready var phase_label: Label = %PhaseLabel
@@ -21,6 +22,11 @@ const MISERE_ROUND_COUNT := 5
 @onready var joker_controls: GridContainer = %JokerControls
 @onready var hand_container: HBoxContainer = %HandContainer
 @onready var undo_button: Button = %UndoButton
+@onready var score_sheet_toggle_button: Button = %ScoreSheetToggleButton
+@onready var score_sheet_panel: PanelContainer = %ScoreSheetPanel
+@onready var score_sheet_title: Label = %ScoreSheetTitle
+@onready var score_sheet_grid: GridContainer = %ScoreSheetGrid
+@onready var final_results_label: Label = %FinalResultsLabel
 @onready var next_round_button: Button = %NextRoundButton
 
 
@@ -40,6 +46,8 @@ var misere_round_index := -1
 var is_processing_automatic_actions := false
 var test_checkpoints: Array[Dictionary] = []
 var pending_test_checkpoint: Dictionary = {}
+var round_history: Array[Dictionary] = []
+var is_score_sheet_visible := false
 
 
 func _ready() -> void:
@@ -51,6 +59,7 @@ func _ready() -> void:
 	_create_player_panels()
 	_create_trick_slots()
 	undo_button.pressed.connect(_on_undo_pressed)
+	score_sheet_toggle_button.pressed.connect(_on_score_sheet_toggle_pressed)
 	next_round_button.pressed.connect(_on_next_round_pressed)
 	_start_round()
 
@@ -303,6 +312,11 @@ func _on_undo_pressed() -> void:
 	_refresh_ui()
 
 
+func _on_score_sheet_toggle_pressed() -> void:
+	is_score_sheet_visible = not is_score_sheet_visible
+	_refresh_ui()
+
+
 func _on_next_round_pressed() -> void:
 	if not _can_start_next_round():
 		return
@@ -340,6 +354,8 @@ func _finish_round() -> void:
 		action_text = "Не удалось завершить раздачу."
 		_refresh_ui()
 		return
+
+	_record_completed_round(round_scores)
 
 	var result_lines := PackedStringArray()
 
@@ -383,6 +399,8 @@ func _finish_round() -> void:
 		next_round_button.text = "Партия завершена"
 		next_round_button.disabled = true
 		_add_history("Мизерная серия из 5 раздач завершена. Полный локальный цикл партии сыгран.")
+		is_score_sheet_visible = true
+		action_text += "\nИтоговые места открыты в расписке."
 	else:
 		next_round_button.text = "Следующая раздача"
 		_add_history("Раздача завершена. Следующим сдаёт %s." % game.players[(game.dealer_index + 1) % game.players.size()].display_name)
@@ -413,6 +431,7 @@ func _refresh_ui() -> void:
 	_refresh_joker_controls()
 	_refresh_hand()
 	_refresh_undo_button()
+	_refresh_score_sheet()
 
 
 func _refresh_header() -> void:
@@ -503,6 +522,171 @@ func _refresh_table() -> void:
 			game.players[player_index].display_name,
 			card_text
 		]
+
+
+func _refresh_score_sheet() -> void:
+	score_sheet_panel.visible = is_score_sheet_visible
+	score_sheet_toggle_button.text = "Скрыть расписку" if is_score_sheet_visible else "📋 Расписка"
+	score_sheet_title.text = "Расписка: %d из %d раздач" % [round_history.size(), TOTAL_ROUND_COUNT]
+	final_results_label.visible = _is_full_game_complete()
+
+	if final_results_label.visible:
+		final_results_label.text = _get_final_results_text()
+	else:
+		final_results_label.text = ""
+
+	if not is_score_sheet_visible:
+		return
+
+	_clear_children(score_sheet_grid)
+
+	for header_text in ["№", "Раздача / козырь", "Андрей", "Олег", "Маша", "Лена"]:
+		_add_score_sheet_cell(header_text, true)
+
+	if round_history.is_empty():
+		_add_score_sheet_cell("Пока нет завершённых раздач.")
+		return
+
+	for round_record in round_history:
+		var player_results: Array = round_record["players"]
+		var uses_bids: bool = round_record["uses_bids"]
+		_add_score_sheet_cell(str(round_record["round_number"]))
+		_add_score_sheet_cell("%s\n%s" % [round_record["round_label"], round_record["trump_name"]])
+
+		for player_index in game.players.size():
+			var player_result: Dictionary = player_results[player_index]
+			var bid_text := str(player_result["bid"]) if uses_bids else "—"
+			var result_text := "%s / %d / %s" % [
+				bid_text,
+				player_result["tricks_taken"],
+				_format_score(int(player_result["round_score"]))
+			]
+			_add_score_sheet_cell(result_text)
+
+
+func _add_score_sheet_cell(text: String, is_header := false) -> void:
+	var cell := Label.new()
+	cell.custom_minimum_size = Vector2(112, 38)
+	cell.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	cell.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	cell.autowrap_mode = 2
+	cell.text = text
+	cell.add_theme_font_size_override("font_size", 14 if is_header else 13)
+
+	if is_header:
+		cell.add_theme_color_override("font_color", Color(0.97, 0.86, 0.55))
+	else:
+		cell.add_theme_color_override("font_color", Color(0.86, 0.94, 0.87))
+
+	score_sheet_grid.add_child(cell)
+
+
+func _record_completed_round(round_scores: Array[int]) -> void:
+	var player_results: Array[Dictionary] = []
+
+	for player_index in game.players.size():
+		var player := game.players[player_index]
+		player_results.append({
+			"bid": player.bid,
+			"tricks_taken": player.tricks_taken,
+			"round_score": round_scores[player_index]
+		})
+
+	round_history.append({
+		"round_number": game.current_round.number,
+		"round_label": _get_current_round_label(),
+		"trump_name": game.current_round.get_trump_name(),
+		"uses_bids": _round_uses_bids(),
+		"players": player_results
+	})
+
+
+func _get_current_round_label() -> String:
+	if _is_misere_round():
+		return "Мизерная %d/%d" % [misere_round_index + 1, MISERE_ROUND_COUNT]
+
+	if _is_golden_round():
+		return "Золотая %d/%d" % [golden_round_index + 1, GOLDEN_ROUND_COUNT]
+
+	if _is_no_trump_round():
+		return "Бескозырка %d/%d" % [no_trump_round_index + 1, NO_TRUMP_ROUND_COUNT]
+
+	if _is_dark_round():
+		return "Тёмная %d/%d" % [dark_round_index + 1, DARK_ROUND_COUNT]
+
+	return "Обычная %d/%d" % [normal_round_index + 1, NORMAL_ROUND_COUNT]
+
+
+func _get_final_results_text() -> String:
+	var standings: Array[Dictionary] = []
+
+	for player in game.players:
+		standings.append({
+			"player_id": player.player_id,
+			"name": player.display_name,
+			"score": player.total_score,
+			"tricks_taken": _get_total_tricks_for_player(player.player_id),
+			"exact_orders": player.exact_orders_completed
+		})
+
+	standings.sort_custom(func(left: Dictionary, right: Dictionary) -> bool:
+		if left["score"] != right["score"]:
+			return left["score"] > right["score"]
+
+		return left["exact_orders"] > right["exact_orders"]
+	)
+
+	var result_lines := PackedStringArray()
+	result_lines.append("Итоги партии")
+	var place := 1
+
+	for standing_index in standings.size():
+		var standing: Dictionary = standings[standing_index]
+
+		if standing_index > 0:
+			var previous_standing: Dictionary = standings[standing_index - 1]
+			if not _are_standings_equal(standing, previous_standing):
+				place = standing_index + 1
+
+		var shares_place := (
+			(standing_index > 0 and _are_standings_equal(standing, standings[standing_index - 1]))
+			or (standing_index < standings.size() - 1 and _are_standings_equal(standing, standings[standing_index + 1]))
+		)
+		var place_prefix := "🏆" if place == 1 and not shares_place else "🤝" if shares_place else "•"
+		var place_text := "%d-е место" % place
+
+		if shares_place:
+			place_text += " (ничья)"
+
+		result_lines.append("%s %s: %s — %d очк. · %d вз. · точных заказов: %d" % [
+			place_prefix,
+			place_text,
+			standing["name"],
+			standing["score"],
+			standing["tricks_taken"],
+			standing["exact_orders"]
+		])
+
+	return "\n".join(result_lines)
+
+
+func _are_standings_equal(left: Dictionary, right: Dictionary) -> bool:
+	return left["score"] == right["score"] and left["exact_orders"] == right["exact_orders"]
+
+
+func _get_total_tricks_for_player(player_index: int) -> int:
+	var total_tricks := 0
+
+	for round_record in round_history:
+		var player_results: Array = round_record["players"]
+		var player_result: Dictionary = player_results[player_index]
+		total_tricks += int(player_result["tricks_taken"])
+
+	return total_tricks
+
+
+func _format_score(score: int) -> String:
+	return "+%d" % score if score > 0 else str(score)
 
 
 func _refresh_history() -> void:
@@ -872,6 +1056,14 @@ func _is_golden_round() -> bool:
 
 func _is_misere_round() -> bool:
 	return misere_round_index >= 0
+
+
+func _is_full_game_complete() -> bool:
+	return (
+		_is_misere_round()
+		and misere_round_index >= MISERE_ROUND_COUNT - 1
+		and game.current_round.state == Round.State.FINISHED
+	)
 
 
 func _is_normal_round() -> bool:

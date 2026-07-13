@@ -75,6 +75,51 @@ theme_override_colors/font_color = Color(0.97, 0.86, 0.55, 1)
 theme_override_font_sizes/font_size = 18
 text = "Козырь: —"
 
+[node name="ScoreSheetToggleButton" type="Button" parent="Margin/ScrollContainer/Content"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 16
+text = "📋 Расписка"
+
+[node name="ScoreSheetPanel" type="PanelContainer" parent="Margin/ScrollContainer/Content"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 180)
+layout_mode = 2
+visible = false
+
+[node name="ScoreSheetContent" type="VBoxContainer" parent="Margin/ScrollContainer/Content/ScoreSheetPanel"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="ScoreSheetTitle" type="Label" parent="Margin/ScrollContainer/Content/ScoreSheetPanel/ScoreSheetContent"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.97, 0.86, 0.55, 1)
+theme_override_font_sizes/font_size = 20
+text = "Расписка"
+
+[node name="ScoreSheetHint" type="Label" parent="Margin/ScrollContainer/Content/ScoreSheetPanel/ScoreSheetContent"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.72, 0.85, 0.76, 1)
+theme_override_font_sizes/font_size = 14
+text = "В ячейке игрока: заказ / взято / очки. В золотой и мизерной заказов нет."
+autowrap_mode = 2
+
+[node name="ScoreSheetGrid" type="GridContainer" parent="Margin/ScrollContainer/Content/ScoreSheetPanel/ScoreSheetContent"]
+unique_name_in_owner = true
+layout_mode = 2
+columns = 6
+theme_override_constants/h_separation = 8
+theme_override_constants/v_separation = 4
+
+[node name="FinalResultsLabel" type="Label" parent="Margin/ScrollContainer/Content/ScoreSheetPanel/ScoreSheetContent"]
+unique_name_in_owner = true
+layout_mode = 2
+visible = false
+theme_override_colors/font_color = Color(0.91, 0.96, 0.91, 1)
+theme_override_font_sizes/font_size = 17
+autowrap_mode = 2
+
 [node name="PlayersContainer" type="GridContainer" parent="Margin/ScrollContainer/Content"]
 unique_name_in_owner = true
 layout_mode = 2
