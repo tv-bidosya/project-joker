@@ -3,7 +3,6 @@
 [ext_resource type="Script" uid="uid://d3sm8u81ck12s" path="res://Scripts/core/GameManager.gd" id="1_jjgbg"]
 
 [node name="Main" type="Control"]
-visible = false
 layout_mode = 3
 anchors_preset = 15
 anchor_right = 1.0
@@ -12,4 +11,148 @@ grow_horizontal = 2
 grow_vertical = 2
 script = ExtResource("1_jjgbg")
 
-[node name="GameManager" type="Node" parent="."]
+[node name="Background" type="ColorRect" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+color = Color(0.025, 0.13, 0.08, 1)
+
+[node name="Margin" type="MarginContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 24.0
+offset_top = 24.0
+offset_right = -24.0
+offset_bottom = -24.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/margin_left = 16
+theme_override_constants/margin_top = 16
+theme_override_constants/margin_right = 16
+theme_override_constants/margin_bottom = 16
+
+[node name="ScrollContainer" type="ScrollContainer" parent="Margin"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+horizontal_scroll_mode = 1
+vertical_scroll_mode = 2
+
+[node name="Content" type="VBoxContainer" parent="Margin/ScrollContainer"]
+custom_minimum_size = Vector2(0, 670)
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 14
+
+[node name="Header" type="HBoxContainer" parent="Margin/ScrollContainer/Content"]
+layout_mode = 2
+theme_override_constants/separation = 16
+
+[node name="Title" type="Label" parent="Margin/ScrollContainer/Content/Header"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.97, 0.86, 0.55, 1)
+theme_override_font_sizes/font_size = 28
+text = "Project Joker"
+
+[node name="PhaseLabel" type="Label" parent="Margin/ScrollContainer/Content/Header"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.85, 0.95, 0.88, 1)
+theme_override_font_sizes/font_size = 18
+text = "Этап: подготовка"
+
+[node name="TrumpLabel" type="Label" parent="Margin/ScrollContainer/Content/Header"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.97, 0.86, 0.55, 1)
+theme_override_font_sizes/font_size = 18
+text = "Козырь: —"
+
+[node name="PlayersContainer" type="GridContainer" parent="Margin/ScrollContainer/Content"]
+unique_name_in_owner = true
+layout_mode = 2
+columns = 4
+theme_override_constants/h_separation = 10
+theme_override_constants/v_separation = 10
+
+[node name="TablePanel" type="PanelContainer" parent="Margin/ScrollContainer/Content"]
+custom_minimum_size = Vector2(0, 200)
+layout_mode = 2
+
+[node name="TableContent" type="VBoxContainer" parent="Margin/ScrollContainer/Content/TablePanel"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="TableLabel" type="Label" parent="Margin/ScrollContainer/Content/TablePanel/TableContent"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.91, 0.96, 0.91, 1)
+theme_override_font_sizes/font_size = 18
+horizontal_alignment = 1
+text = "Взятка"
+autowrap_mode = 2
+
+[node name="TrickSlots" type="GridContainer" parent="Margin/ScrollContainer/Content/TablePanel/TableContent"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_vertical = 3
+columns = 2
+theme_override_constants/h_separation = 10
+theme_override_constants/v_separation = 10
+
+[node name="ActionLabel" type="Label" parent="Margin/ScrollContainer/Content"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.97, 0.86, 0.55, 1)
+theme_override_font_sizes/font_size = 18
+horizontal_alignment = 1
+text = "Подготовка партии"
+autowrap_mode = 2
+
+[node name="HistoryLabel" type="Label" parent="Margin/ScrollContainer/Content"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.72, 0.85, 0.76, 1)
+theme_override_font_sizes/font_size = 14
+text = "Последние действия"
+autowrap_mode = 2
+
+[node name="BidControls" type="HBoxContainer" parent="Margin/ScrollContainer/Content"]
+unique_name_in_owner = true
+layout_mode = 2
+alignment = 1
+theme_override_constants/separation = 8
+
+[node name="JokerControls" type="GridContainer" parent="Margin/ScrollContainer/Content"]
+unique_name_in_owner = true
+layout_mode = 2
+columns = 3
+theme_override_constants/h_separation = 8
+theme_override_constants/v_separation = 8
+
+[node name="HandTitle" type="Label" parent="Margin/ScrollContainer/Content"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.85, 0.95, 0.88, 1)
+theme_override_font_sizes/font_size = 18
+text = "Твоя рука (Андрей)"
+
+[node name="HandContainer" type="HBoxContainer" parent="Margin/ScrollContainer/Content"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 104)
+layout_mode = 2
+alignment = 1
+theme_override_constants/separation = 10
+
+[node name="NextRoundButton" type="Button" parent="Margin/ScrollContainer/Content"]
+unique_name_in_owner = true
+layout_mode = 2
+visible = false
+theme_override_font_sizes/font_size = 18
+text = "Следующая раздача"

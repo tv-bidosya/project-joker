@@ -8,6 +8,8 @@ var deck := Deck.new()
 var current_round := Round.new()
 var active_trick: Trick
 var trump_card: Card
+var last_completed_trick_cards: Array[Card] = []
+var last_completed_trick_played_by: Array[int] = []
 var dealer_index := -1
 var last_trick_winner_index := -1
 var round_number := 0
@@ -25,7 +27,11 @@ func _init(player_names: Array) -> void:
 		dealer_index = _random.randi_range(0, players.size() - 1)
 
 
-func start_normal_round(cards_per_player: int) -> bool:
+func start_round(
+	cards_per_player: int,
+	round_type: Round.RoundType,
+	trump: Round.TrumpSuit
+) -> bool:
 	if players.size() != 4 or cards_per_player <= 0:
 		return false
 
@@ -35,23 +41,29 @@ func start_normal_round(cards_per_player: int) -> bool:
 
 	current_round.setup(
 		round_number,
-		Round.RoundType.NORMAL,
+		round_type,
 		cards_per_player,
-		Round.TrumpSuit.RANDOM,
+		trump,
 		dealer_index,
 		players.size()
 	)
 
 	_deal_cards(cards_per_player)
-	trump_card = deck.draw()
+	trump_card = null
 
-	if trump_card == null:
-		return false
+	if trump == Round.TrumpSuit.RANDOM:
+		trump_card = deck.draw()
 
-	current_round.set_trump(Round.trump_from_card(trump_card))
+		if trump_card == null:
+			return false
+
+		current_round.set_trump(Round.trump_from_card(trump_card))
+
 	current_round.start_bidding()
 	active_trick = null
 	last_trick_winner_index = -1
+	last_completed_trick_cards.clear()
+	last_completed_trick_played_by.clear()
 	return true
 
 
@@ -80,6 +92,8 @@ func play_card(
 
 	if active_trick.is_complete():
 		last_trick_winner_index = active_trick.get_winner_index()
+		last_completed_trick_cards.assign(active_trick.played_cards)
+		last_completed_trick_played_by.assign(active_trick.played_by)
 		players[last_trick_winner_index].tricks_taken += 1
 		current_round.tricks_played += 1
 		current_round.lead_player_index = last_trick_winner_index
