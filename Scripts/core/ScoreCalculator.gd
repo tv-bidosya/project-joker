@@ -13,7 +13,7 @@ static func calculate_round_score(round_type: Round.RoundType, bid: int, tricks_
 		Round.RoundType.DARK:
 			return _calculate_bid_score(bid, tricks_taken, 15, 50, 10)
 		Round.RoundType.NO_TRUMP:
-			return tricks_taken * 15
+			return _calculate_bid_score(bid, tricks_taken, 15, 5, 10)
 		Round.RoundType.GOLDEN:
 			return -50 if tricks_taken == 0 else tricks_taken * 20
 		Round.RoundType.MISERE:
@@ -26,6 +26,7 @@ static func is_exact_order(round_type: Round.RoundType, bid: int, tricks_taken: 
 	return (
 		round_type == Round.RoundType.NORMAL
 		or round_type == Round.RoundType.DARK
+		or round_type == Round.RoundType.NO_TRUMP
 	) and bid >= 0 and bid == tricks_taken
 
 

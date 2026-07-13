@@ -7,7 +7,15 @@ enum JokerMode {
 	NONE,
 	JOKER_WINS,
 	HIGHEST_DECLARED_CARD_WINS,
-	LOWEST_DECLARED_CARD_WINS
+	LOWEST_DECLARED_CARD_WINS,
+	NORMAL_CARD_WINS
+}
+
+
+enum ForcedCardRank {
+	NONE,
+	HIGHEST,
+	LOWEST
 }
 
 
@@ -18,6 +26,7 @@ var current_player_index := -1
 var lead_suit := -1
 var joker_mode: JokerMode = JokerMode.NONE
 var declared_suit := -1
+var forced_card_rank: ForcedCardRank = ForcedCardRank.NONE
 var played_cards: Array[Card] = []
 var played_by: Array[int] = []
 
@@ -30,6 +39,7 @@ func setup(p_leader_index: int, p_player_count: int, p_trump: Round.TrumpSuit) -
 	lead_suit = -1
 	declared_suit = -1
 	joker_mode = JokerMode.NONE
+	forced_card_rank = ForcedCardRank.NONE
 	played_cards.clear()
 	played_by.clear()
 
@@ -48,7 +58,13 @@ func can_play_card(player: Player, card: Card) -> bool:
 		return true
 
 	if _hand_has_suit(player.hand, lead_suit):
-		return not card.is_joker and card.suit == lead_suit
+		if card.is_joker:
+			return lead_suit == trump
+
+		if card.suit != lead_suit:
+			return false
+
+		return _is_forced_card_allowed(player, card)
 
 	if card.is_joker:
 		return true
@@ -63,7 +79,8 @@ func play_card(
 	player: Player,
 	card: Card,
 	p_joker_mode: JokerMode = JokerMode.NONE,
-	p_declared_suit: int = -1
+	p_declared_suit: int = -1,
+	p_forced_card_rank: ForcedCardRank = ForcedCardRank.NONE
 ) -> bool:
 	if not can_play_card(player, card):
 		return false
@@ -76,6 +93,7 @@ func play_card(
 			joker_mode = p_joker_mode
 			declared_suit = p_declared_suit
 			lead_suit = declared_suit
+			forced_card_rank = p_forced_card_rank
 		else:
 			lead_suit = card.suit
 	elif card.is_joker:
@@ -135,6 +153,36 @@ func _hand_has_suit(hand: Array[Card], suit: int) -> bool:
 			return true
 
 	return false
+
+
+func _is_forced_card_allowed(player: Player, card: Card) -> bool:
+	if forced_card_rank == ForcedCardRank.NONE:
+		return true
+
+	var forced_card := _get_hand_card_by_rank(
+		player.hand,
+		lead_suit,
+		forced_card_rank == ForcedCardRank.HIGHEST
+	)
+	return forced_card == null or card == forced_card
+
+
+func _get_hand_card_by_rank(hand: Array[Card], suit: int, choose_highest: bool) -> Card:
+	var selected_card: Card
+
+	for hand_card in hand:
+		if hand_card.is_joker or hand_card.suit != suit:
+			continue
+
+		if selected_card == null:
+			selected_card = hand_card
+			continue
+
+		var replaces_selected := hand_card.rank > selected_card.rank if choose_highest else hand_card.rank < selected_card.rank
+		if replaces_selected:
+			selected_card = hand_card
+
+	return selected_card
 
 
 func _get_highest_trump_index() -> int:

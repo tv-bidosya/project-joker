@@ -5,6 +5,7 @@ const PLAYER_NAMES := ["Андрей", "Олег", "Маша", "Лена"]
 const HUMAN_PLAYER_INDEX := 0
 const NORMAL_ROUND_COUNT := 13
 const DARK_ROUND_COUNT := 5
+const NO_TRUMP_ROUND_COUNT := 4
 
 
 @onready var phase_label: Label = %PhaseLabel
@@ -17,6 +18,7 @@ const DARK_ROUND_COUNT := 5
 @onready var bid_controls: HBoxContainer = %BidControls
 @onready var joker_controls: GridContainer = %JokerControls
 @onready var hand_container: HBoxContainer = %HandContainer
+@onready var undo_button: Button = %UndoButton
 @onready var next_round_button: Button = %NextRoundButton
 
 
@@ -24,28 +26,37 @@ var game := Game.new(PLAYER_NAMES)
 var player_labels: Array[Label] = []
 var trick_card_labels: Array[Label] = []
 var pending_joker_card: Card
+var pending_joker_suit := -1
 var last_trick_text := "Взятка ещё не началась"
 var action_text := "Подготовка партии"
 var recent_actions := PackedStringArray()
 var normal_round_index := 0
 var dark_round_index := -1
+var no_trump_round_index := -1
 var is_processing_automatic_actions := false
+var test_checkpoints: Array[Dictionary] = []
+var pending_test_checkpoint: Dictionary = {}
 
 
 func _ready() -> void:
 	_run_joker_rule_checks()
 	_run_score_rule_checks()
 	_run_dark_round_checks()
+	_run_no_trump_round_checks()
 	_create_player_panels()
 	_create_trick_slots()
+	undo_button.pressed.connect(_on_undo_pressed)
 	next_round_button.pressed.connect(_on_next_round_pressed)
 	_start_round()
 
 
 func _start_round() -> void:
 	pending_joker_card = null
+	pending_joker_suit = -1
 	last_trick_text = "Взятка ещё не началась"
 	recent_actions.clear()
+	test_checkpoints.clear()
+	pending_test_checkpoint.clear()
 
 	var cards_per_player := _get_cards_per_player_for_current_round()
 	var trump := _get_trump_for_current_round()
@@ -56,7 +67,13 @@ func _start_round() -> void:
 		_refresh_ui()
 		return
 
-	if _is_dark_round():
+	if _is_no_trump_round():
+		action_text = "Бескозырка %d из %d. Сдающий: %s." % [
+			no_trump_round_index + 1,
+			NO_TRUMP_ROUND_COUNT,
+			game.players[game.dealer_index].display_name
+		]
+	elif _is_dark_round():
 		action_text = "Тёмная раздача %d из %d. Заказ вслепую; сдающий: %s." % [
 			dark_round_index + 1,
 			DARK_ROUND_COUNT,
@@ -84,7 +101,13 @@ func _advance_automatic_actions() -> void:
 	while true:
 		if game.current_round.state == Round.State.BIDDING:
 			if game.current_round.current_player_index == HUMAN_PLAYER_INDEX:
-				action_text = "Тёмная: закажи число взяток вслепую." if _is_dark_round() else "Твой заказ: выбери число взяток."
+				_prepare_test_checkpoint()
+				if _is_dark_round():
+					action_text = "Тёмная: закажи число взяток вслепую."
+				elif _is_no_trump_round():
+					action_text = "Бескозырка: выбери число взяток."
+				else:
+					action_text = "Твой заказ: выбери число взяток."
 				is_processing_automatic_actions = false
 				_refresh_ui()
 				return
@@ -105,6 +128,7 @@ func _advance_automatic_actions() -> void:
 				return
 
 			if _get_current_player_index() == HUMAN_PLAYER_INDEX:
+				_prepare_test_checkpoint()
 				action_text = "Твой ход: выбери допустимую карту."
 				is_processing_automatic_actions = false
 				_refresh_ui()
@@ -171,6 +195,12 @@ func _play_automatic_card() -> bool:
 func _on_bid_pressed(bid: int) -> void:
 	var cards_were_hidden := _is_dark_round() and not game.cards_are_dealt
 
+	if not game.current_round.can_place_bid(HUMAN_PLAYER_INDEX, bid):
+		action_text = "Этот заказ сейчас недоступен."
+		_refresh_ui()
+		return
+
+	_commit_test_checkpoint()
 	if not game.place_bid(HUMAN_PLAYER_INDEX, bid):
 		action_text = "Этот заказ сейчас недоступен."
 		_refresh_ui()
@@ -189,10 +219,12 @@ func _on_card_pressed(card: Card) -> void:
 
 	if card.is_joker:
 		pending_joker_card = card
+		pending_joker_suit = -1
 		action_text = "Выбери условие для Джокера."
 		_refresh_ui()
 		return
 
+	_commit_test_checkpoint()
 	if not game.play_card(HUMAN_PLAYER_INDEX, card):
 		action_text = "Эту карту сейчас играть нельзя."
 		_refresh_ui()
@@ -203,20 +235,55 @@ func _on_card_pressed(card: Card) -> void:
 	_advance_automatic_actions()
 
 
-func _on_joker_choice(mode: Trick.JokerMode, declared_suit: int = -1) -> void:
+func _on_joker_suit_pressed(suit: int) -> void:
+	if pending_joker_card == null or game.active_trick != null:
+		return
+
+	pending_joker_suit = suit
+	action_text = "Выбери условие для %s." % _get_suit_symbol(suit)
+	_refresh_ui()
+
+
+func _on_joker_choice(
+	mode: Trick.JokerMode,
+	declared_suit: int = -1,
+	forced_card_rank: Trick.ForcedCardRank = Trick.ForcedCardRank.NONE
+) -> void:
 	if pending_joker_card == null:
 		return
 
-	if not game.play_card(HUMAN_PLAYER_INDEX, pending_joker_card, mode, declared_suit):
+	var is_leading_joker := game.active_trick == null
+
+	_commit_test_checkpoint()
+	if not game.play_card(HUMAN_PLAYER_INDEX, pending_joker_card, mode, declared_suit, forced_card_rank):
 		action_text = "Условие Джокера не удалось применить."
 		pending_joker_card = null
+		pending_joker_suit = -1
 		_refresh_ui()
 		return
 
 	_record_play("Ты", pending_joker_card)
+	if is_leading_joker:
+		_add_history(_get_joker_declaration_text(mode, declared_suit, forced_card_rank))
 	pending_joker_card = null
+	pending_joker_suit = -1
 	_refresh_ui()
 	_advance_automatic_actions()
+
+
+func _on_undo_pressed() -> void:
+	if is_processing_automatic_actions or test_checkpoints.is_empty():
+		return
+
+	var checkpoint: Dictionary = test_checkpoints.pop_back()
+	game.restore_snapshot(checkpoint["game"])
+	pending_joker_card = null
+	pending_joker_suit = -1
+	last_trick_text = checkpoint["last_trick_text"]
+	action_text = "Тест: возвращено к началу прошлого твоего решения."
+	recent_actions = checkpoint["recent_actions"].duplicate()
+	pending_test_checkpoint = _create_test_checkpoint()
+	_refresh_ui()
 
 
 func _on_next_round_pressed() -> void:
@@ -231,6 +298,10 @@ func _on_next_round_pressed() -> void:
 		dark_round_index = 0
 	elif dark_round_index < DARK_ROUND_COUNT - 1:
 		dark_round_index += 1
+	elif no_trump_round_index < 0:
+		no_trump_round_index = 0
+	elif no_trump_round_index < NO_TRUMP_ROUND_COUNT - 1:
+		no_trump_round_index += 1
 	else:
 		return
 
@@ -259,14 +330,18 @@ func _finish_round() -> void:
 	action_text = "Раздача завершена.\n%s" % "\n".join(result_lines)
 	next_round_button.visible = true
 
-	if not _is_dark_round() and normal_round_index >= NORMAL_ROUND_COUNT - 1:
+	if not _is_dark_round() and not _is_no_trump_round() and normal_round_index >= NORMAL_ROUND_COUNT - 1:
 		next_round_button.text = "Начать тёмную серию"
 		next_round_button.disabled = false
 		_add_history("Обычная серия из 13 раздач завершена. Далее — тёмные раздачи.")
 	elif _is_dark_round() and dark_round_index >= DARK_ROUND_COUNT - 1:
-		next_round_button.text = "Тёмная серия завершена"
+		next_round_button.text = "Начать бескозырную серию"
+		next_round_button.disabled = false
+		_add_history("Тёмная серия из 5 раздач завершена. Далее — бескозырка.")
+	elif _is_no_trump_round() and no_trump_round_index >= NO_TRUMP_ROUND_COUNT - 1:
+		next_round_button.text = "Бескозырная серия завершена"
 		next_round_button.disabled = true
-		_add_history("Тёмная серия из 5 раздач завершена.")
+		_add_history("Бескозырная серия из 4 раздач завершена.")
 	else:
 		next_round_button.text = "Следующая раздача"
 		_add_history("Раздача завершена. Следующим сдаёт %s." % game.players[(game.dealer_index + 1) % game.players.size()].display_name)
@@ -296,6 +371,7 @@ func _refresh_ui() -> void:
 	_refresh_bid_controls()
 	_refresh_joker_controls()
 	_refresh_hand()
+	_refresh_undo_button()
 
 
 func _refresh_header() -> void:
@@ -309,7 +385,9 @@ func _refresh_header() -> void:
 		_:
 			phase_label.text = "Этап: подготовка"
 
-	if _is_dark_round() and not game.cards_are_dealt:
+	if _is_no_trump_round():
+		trump_label.text = "Бескозырка: козырей нет"
+	elif _is_dark_round() and not game.cards_are_dealt:
 		trump_label.text = "Тёмная: козырь %s · карты скрыты до завершения заказов" % game.current_round.get_trump_name()
 	elif game.trump_card == null:
 		trump_label.text = "Козырь: %s (задан)" % game.current_round.get_trump_name()
@@ -405,13 +483,23 @@ func _refresh_joker_controls() -> void:
 		return
 
 	if game.active_trick == null:
-		for suit in Card.Suit.values():
-			_add_joker_choice_button("%s: Джокер забирает" % _get_suit_symbol(suit), Trick.JokerMode.JOKER_WINS, suit)
-			_add_joker_choice_button("%s: старшая забирает" % _get_suit_symbol(suit), Trick.JokerMode.HIGHEST_DECLARED_CARD_WINS, suit)
-			_add_joker_choice_button("%s: младшая забирает" % _get_suit_symbol(suit), Trick.JokerMode.LOWEST_DECLARED_CARD_WINS, suit)
+		if pending_joker_suit < 0:
+			for suit in Card.Suit.values():
+				_add_joker_suit_button("Объявить %s" % _get_suit_symbol(suit), suit)
+			return
+
+		var suit_symbol := _get_suit_symbol(pending_joker_suit)
+		_add_joker_choice_button("%s: Джокер забирает" % suit_symbol, Trick.JokerMode.JOKER_WINS, pending_joker_suit)
+		_add_joker_choice_button("%s: старшая забирает" % suit_symbol, Trick.JokerMode.HIGHEST_DECLARED_CARD_WINS, pending_joker_suit)
+		_add_joker_choice_button("%s: младшая забирает" % suit_symbol, Trick.JokerMode.LOWEST_DECLARED_CARD_WINS, pending_joker_suit)
+		_add_joker_choice_button("%s: кладите старшую — Джокер забирает" % suit_symbol, Trick.JokerMode.JOKER_WINS, pending_joker_suit, Trick.ForcedCardRank.HIGHEST)
+		_add_joker_choice_button("%s: кладите младшую — Джокер забирает" % suit_symbol, Trick.JokerMode.JOKER_WINS, pending_joker_suit, Trick.ForcedCardRank.LOWEST)
+		_add_joker_choice_button("%s: кладите старшую — Джокер не забирает" % suit_symbol, Trick.JokerMode.NORMAL_CARD_WINS, pending_joker_suit, Trick.ForcedCardRank.HIGHEST)
+		_add_joker_choice_button("%s: кладите младшую — Джокер не забирает" % suit_symbol, Trick.JokerMode.NORMAL_CARD_WINS, pending_joker_suit, Trick.ForcedCardRank.LOWEST)
+		_add_joker_suit_button("← Выбрать другую масть", -1)
 	else:
 		_add_joker_choice_button("Джокер забирает", Trick.JokerMode.JOKER_WINS)
-		_add_joker_choice_button("Сбросить: младшая масть забирает", Trick.JokerMode.LOWEST_DECLARED_CARD_WINS)
+		_add_joker_choice_button("Сбросить Джокер (не забирает)", Trick.JokerMode.NORMAL_CARD_WINS)
 
 
 func _refresh_hand() -> void:
@@ -442,6 +530,14 @@ func _refresh_hand() -> void:
 		hand_container.add_child(card_button)
 
 
+func _refresh_undo_button() -> void:
+	undo_button.disabled = (
+		is_processing_automatic_actions
+		or test_checkpoints.is_empty()
+		or game.current_round.state == Round.State.FINISHED
+	)
+
+
 func _create_player_panels() -> void:
 	for player_name in PLAYER_NAMES:
 		var panel := PanelContainer.new()
@@ -470,10 +566,33 @@ func _create_trick_slots() -> void:
 		trick_card_labels.append(label)
 
 
-func _add_joker_choice_button(label: String, mode: Trick.JokerMode, declared_suit: int = -1) -> void:
+func _add_joker_suit_button(label: String, suit: int) -> void:
+	var suit_button := Button.new()
+	suit_button.text = label
+
+	if suit < 0:
+		suit_button.pressed.connect(_on_joker_suit_reset)
+	else:
+		suit_button.pressed.connect(_on_joker_suit_pressed.bind(suit))
+
+	joker_controls.add_child(suit_button)
+
+
+func _on_joker_suit_reset() -> void:
+	pending_joker_suit = -1
+	action_text = "Выбери объявляемую масть для Джокера."
+	_refresh_ui()
+
+
+func _add_joker_choice_button(
+	label: String,
+	mode: Trick.JokerMode,
+	declared_suit: int = -1,
+	forced_card_rank: Trick.ForcedCardRank = Trick.ForcedCardRank.NONE
+) -> void:
 	var choice_button := Button.new()
 	choice_button.text = label
-	choice_button.pressed.connect(_on_joker_choice.bind(mode, declared_suit))
+	choice_button.pressed.connect(_on_joker_choice.bind(mode, declared_suit, forced_card_rank))
 	joker_controls.add_child(choice_button)
 
 
@@ -546,7 +665,52 @@ func _get_active_trick_text() -> String:
 			game.active_trick.played_cards[card_index].get_card_name()
 		])
 
-	return "Текущая взятка\n%s" % "   •   ".join(play_texts)
+	var declaration_text := _get_active_joker_declaration_text()
+	var title := "Текущая взятка"
+
+	if not declaration_text.is_empty():
+		title += "\n%s" % declaration_text
+
+	return "%s\n%s" % [title, "   •   ".join(play_texts)]
+
+
+func _get_active_joker_declaration_text() -> String:
+	if game.active_trick == null or game.active_trick.played_cards.is_empty():
+		return ""
+
+	if not game.active_trick.played_cards[0].is_joker:
+		return ""
+
+	return _get_joker_declaration_text(
+		game.active_trick.joker_mode,
+		game.active_trick.declared_suit,
+		game.active_trick.forced_card_rank
+	)
+
+
+func _get_joker_declaration_text(
+	mode: Trick.JokerMode,
+	declared_suit: int,
+	forced_card_rank: Trick.ForcedCardRank
+) -> String:
+	var suit_symbol := _get_suit_symbol(declared_suit)
+	var winner_text := "Джокер забирает" if mode == Trick.JokerMode.JOKER_WINS else "Джокер не забирает"
+
+	if forced_card_rank == Trick.ForcedCardRank.HIGHEST:
+		return "Условие: кладите старшую %s — %s" % [suit_symbol, winner_text]
+
+	if forced_card_rank == Trick.ForcedCardRank.LOWEST:
+		return "Условие: кладите младшую %s — %s" % [suit_symbol, winner_text]
+
+	match mode:
+		Trick.JokerMode.JOKER_WINS:
+			return "Условие: %s — Джокер забирает" % suit_symbol
+		Trick.JokerMode.HIGHEST_DECLARED_CARD_WINS:
+			return "Условие: %s — старшая масть забирает" % suit_symbol
+		Trick.JokerMode.LOWEST_DECLARED_CARD_WINS:
+			return "Условие: %s — младшая масть забирает" % suit_symbol
+
+	return "Условие: %s — обычный розыгрыш" % suit_symbol
 
 
 func _get_suit_symbol(suit: int) -> String:
@@ -564,7 +728,7 @@ func _get_suit_symbol(suit: int) -> String:
 
 
 func _get_cards_per_player_for_current_round() -> int:
-	if _is_dark_round():
+	if _is_dark_round() or _is_no_trump_round():
 		return 9
 
 	if normal_round_index < 8:
@@ -574,6 +738,9 @@ func _get_cards_per_player_for_current_round() -> int:
 
 
 func _get_trump_for_current_round() -> Round.TrumpSuit:
+	if _is_no_trump_round():
+		return Round.TrumpSuit.NONE
+
 	if _is_dark_round():
 		match dark_round_index:
 			0:
@@ -604,18 +771,32 @@ func _get_trump_for_current_round() -> Round.TrumpSuit:
 
 
 func _get_current_round_type() -> Round.RoundType:
+	if _is_no_trump_round():
+		return Round.RoundType.NO_TRUMP
+
 	return Round.RoundType.DARK if _is_dark_round() else Round.RoundType.NORMAL
 
 
 func _is_dark_round() -> bool:
-	return dark_round_index >= 0
+	return dark_round_index >= 0 and no_trump_round_index < 0
+
+
+func _is_no_trump_round() -> bool:
+	return no_trump_round_index >= 0
 
 
 func _can_start_next_round() -> bool:
-	return normal_round_index < NORMAL_ROUND_COUNT - 1 or dark_round_index < DARK_ROUND_COUNT - 1
+	return (
+		normal_round_index < NORMAL_ROUND_COUNT - 1
+		or dark_round_index < DARK_ROUND_COUNT - 1
+		or no_trump_round_index < NO_TRUMP_ROUND_COUNT - 1
+	)
 
 
 func _get_phase_text(phase_name: String) -> String:
+	if _is_no_trump_round():
+		return "Бескозырка %d/%d · %s" % [no_trump_round_index + 1, NO_TRUMP_ROUND_COUNT, phase_name]
+
 	if _is_dark_round():
 		return "Тёмная %d/%d · %s" % [dark_round_index + 1, DARK_ROUND_COUNT, phase_name]
 
@@ -626,6 +807,26 @@ func _announce_dark_cards_dealt(cards_were_hidden: bool) -> void:
 	if cards_were_hidden and game.cards_are_dealt:
 		action_text = "Все заказы сделаны. Карты сданы — начинается розыгрыш."
 		_add_history(action_text)
+
+
+func _prepare_test_checkpoint() -> void:
+	pending_test_checkpoint = _create_test_checkpoint()
+
+
+func _commit_test_checkpoint() -> void:
+	if pending_test_checkpoint.is_empty():
+		return
+
+	test_checkpoints.append(pending_test_checkpoint.duplicate())
+	pending_test_checkpoint.clear()
+
+
+func _create_test_checkpoint() -> Dictionary:
+	return {
+		"game": game.create_snapshot(),
+		"last_trick_text": last_trick_text,
+		"recent_actions": recent_actions.duplicate()
+	}
 
 
 func _add_history(action: String) -> void:
@@ -683,6 +884,122 @@ func _run_joker_rule_checks() -> void:
 	assert(no_trump_trick.play_card(no_trump_leader, no_trump_lead_card), "Проверка: заход в бескозырке должен быть сыгран.")
 	assert(no_trump_trick.can_play_card(player, joker), "В бескозырке Джокер должен быть доступен при наличии масти захода.")
 
+	var response_leader := Player.new(0, "Заход")
+	var response_joker_player := Player.new(1, "Сброс Джокера")
+	var response_last_player := Player.new(2, "Старшая карта")
+	var response_lead_card := _create_card(Card.Suit.DIAMONDS, Card.Rank.TEN)
+	var response_joker := _create_card(Card.Suit.CLUBS, Card.Rank.SEVEN, true)
+	var response_winning_card := _create_card(Card.Suit.DIAMONDS, Card.Rank.JACK)
+	response_leader.receive_card(response_lead_card)
+	response_joker_player.receive_card(response_joker)
+	response_last_player.receive_card(response_winning_card)
+
+	var response_trick := Trick.new()
+	response_trick.setup(0, 3, Round.TrumpSuit.HEARTS)
+	assert(response_trick.play_card(response_leader, response_lead_card), "Проверка: обычный заход должен быть сыгран.")
+	assert(response_trick.play_card(response_joker_player, response_joker, Trick.JokerMode.NORMAL_CARD_WINS), "Проверка: Джокер должен сбрасываться без заказа победителя.")
+	assert(response_trick.play_card(response_last_player, response_winning_card), "Проверка: старшая карта масти захода должна быть сыграна.")
+	assert(response_trick.get_winner_index() == 2, "Сброшенный Джокер не должен менять обычного победителя взятки.")
+
+	var trump_response_player := Player.new(0, "Ответ козырем")
+	var trump_joker := _create_card(Card.Suit.CLUBS, Card.Rank.SEVEN, true)
+	var actual_trump_card := _create_card(Card.Suit.CLUBS, Card.Rank.EIGHT)
+	var trump_leader := Player.new(1, "Заход козырем")
+	var trump_lead_card := _create_card(Card.Suit.CLUBS, Card.Rank.KING)
+	trump_response_player.receive_card(trump_joker)
+	trump_response_player.receive_card(actual_trump_card)
+	trump_leader.receive_card(trump_lead_card)
+
+	var trump_trick := Trick.new()
+	trump_trick.setup(1, 2, Round.TrumpSuit.CLUBS)
+	assert(trump_trick.play_card(trump_leader, trump_lead_card), "Проверка: заход козырем должен быть сыгран.")
+	assert(trump_trick.can_play_card(trump_response_player, trump_joker), "При заходе козырем Джокер должен быть доступен.")
+	assert(trump_trick.can_play_card(trump_response_player, actual_trump_card), "Обычный козырь должен оставаться доступен.")
+
+	var joker_leader := Player.new(0, "Джокер-заход")
+	var forced_player := Player.new(1, "Старшая бубна")
+	var leading_joker := _create_card(Card.Suit.CLUBS, Card.Rank.SEVEN, true)
+	var diamond_queen := _create_card(Card.Suit.DIAMONDS, Card.Rank.QUEEN)
+	var diamond_ace := _create_card(Card.Suit.DIAMONDS, Card.Rank.ACE)
+	joker_leader.receive_card(leading_joker)
+	forced_player.receive_card(diamond_queen)
+	forced_player.receive_card(diamond_ace)
+
+	var forced_trick := Trick.new()
+	forced_trick.setup(0, 2, Round.TrumpSuit.DIAMONDS)
+	assert(
+		forced_trick.play_card(
+			joker_leader,
+			leading_joker,
+			Trick.JokerMode.JOKER_WINS,
+			Card.Suit.DIAMONDS,
+			Trick.ForcedCardRank.HIGHEST
+		),
+		"Проверка: Джокер должен объявить старшую бубну."
+	)
+	assert(not forced_trick.can_play_card(forced_player, diamond_queen), "При заказе старшей бубны нельзя положить даму при наличии туза.")
+	assert(forced_trick.can_play_card(forced_player, diamond_ace), "При заказе старшей бубны туз должен быть обязательным.")
+
+	var free_trump_player := Player.new(1, "Свободный козырь")
+	var heart_six := _create_card(Card.Suit.HEARTS, Card.Rank.SIX)
+	var heart_ace := _create_card(Card.Suit.HEARTS, Card.Rank.ACE)
+	free_trump_player.receive_card(heart_six)
+	free_trump_player.receive_card(heart_ace)
+	var free_trump_joker := _create_card(Card.Suit.CLUBS, Card.Rank.SEVEN, true)
+	var free_trump_leader := Player.new(0, "Джокер-заход")
+	free_trump_leader.receive_card(free_trump_joker)
+
+	var free_trump_trick := Trick.new()
+	free_trump_trick.setup(0, 2, Round.TrumpSuit.HEARTS)
+	assert(
+		free_trump_trick.play_card(
+			free_trump_leader,
+			free_trump_joker,
+			Trick.JokerMode.JOKER_WINS,
+			Card.Suit.SPADES,
+			Trick.ForcedCardRank.HIGHEST
+		),
+		"Проверка: Джокер должен объявить старшую пику."
+	)
+	assert(free_trump_trick.can_play_card(free_trump_player, heart_six), "При отсутствии заказанной масти можно выбрать любой козырь.")
+	assert(free_trump_trick.can_play_card(free_trump_player, heart_ace), "Старшинство обязательного козыря выбирается свободно.")
+
+	var fallback_leader := Player.new(0, "Джокер-заход")
+	var fallback_joker := _create_card(Card.Suit.CLUBS, Card.Rank.SEVEN, true)
+	var fallback_first := Player.new(1, "Сброс 1")
+	var fallback_second := Player.new(2, "Сброс 2")
+	var fallback_third := Player.new(3, "Сброс 3")
+	fallback_leader.receive_card(fallback_joker)
+	fallback_first.receive_card(_create_card(Card.Suit.CLUBS, Card.Rank.SIX))
+	fallback_second.receive_card(_create_card(Card.Suit.DIAMONDS, Card.Rank.EIGHT))
+	fallback_third.receive_card(_create_card(Card.Suit.CLUBS, Card.Rank.JACK))
+
+	var fallback_trick := Trick.new()
+	fallback_trick.setup(0, 4, Round.TrumpSuit.HEARTS)
+	assert(fallback_trick.play_card(fallback_leader, fallback_joker, Trick.JokerMode.NORMAL_CARD_WINS, Card.Suit.SPADES, Trick.ForcedCardRank.LOWEST), "Проверка: Джокер должен объявить младшую пику без взятки.")
+	assert(fallback_trick.play_card(fallback_first, fallback_first.hand[0]), "Первый сброс должен быть допустим.")
+	assert(fallback_trick.play_card(fallback_second, fallback_second.hand[0]), "Второй сброс должен быть допустим.")
+	assert(fallback_trick.play_card(fallback_third, fallback_third.hand[0]), "Третий сброс должен быть допустим.")
+	assert(fallback_trick.get_winner_index() == 0, "Если нет заказанной масти и козыря, Джокер должен забрать взятку.")
+
+	var spade_leader := Player.new(0, "Джокер-заход")
+	var spade_joker := _create_card(Card.Suit.CLUBS, Card.Rank.SEVEN, true)
+	var spade_player := Player.new(1, "Шестёрка пик")
+	var spade_discard_one := Player.new(2, "Сброс 1")
+	var spade_discard_two := Player.new(3, "Сброс 2")
+	spade_leader.receive_card(spade_joker)
+	spade_player.receive_card(_create_card(Card.Suit.SPADES, Card.Rank.SIX))
+	spade_discard_one.receive_card(_create_card(Card.Suit.CLUBS, Card.Rank.EIGHT))
+	spade_discard_two.receive_card(_create_card(Card.Suit.DIAMONDS, Card.Rank.NINE))
+
+	var spade_trick := Trick.new()
+	spade_trick.setup(0, 4, Round.TrumpSuit.HEARTS)
+	assert(spade_trick.play_card(spade_leader, spade_joker, Trick.JokerMode.NORMAL_CARD_WINS, Card.Suit.SPADES, Trick.ForcedCardRank.LOWEST), "Проверка: Джокер должен объявить младшую пику без взятки.")
+	assert(spade_trick.play_card(spade_player, spade_player.hand[0]), "Шестёрка пик должна быть обязательной.")
+	assert(spade_trick.play_card(spade_discard_one, spade_discard_one.hand[0]), "Первый сброс должен быть допустим.")
+	assert(spade_trick.play_card(spade_discard_two, spade_discard_two.hand[0]), "Второй сброс должен быть допустим.")
+	assert(spade_trick.get_winner_index() == 1, "Шестёрка пик должна перебивать виртуальную младшую пику Джокера.")
+
 
 func _run_score_rule_checks() -> void:
 	assert(
@@ -696,6 +1013,22 @@ func _run_score_rule_checks() -> void:
 	assert(
 		ScoreCalculator.calculate_round_score(Round.RoundType.DARK, 0, 0) == 50,
 		"Нулевой тёмный заказ должен давать +50."
+	)
+	assert(
+		ScoreCalculator.calculate_round_score(Round.RoundType.NO_TRUMP, 3, 3) == 45,
+		"Точный заказ в бескозырке должен давать +15 за каждую взятку."
+	)
+	assert(
+		ScoreCalculator.calculate_round_score(Round.RoundType.NO_TRUMP, 3, 2) == -10,
+		"Недобор в бескозырке должен штрафоваться на −10 за взятку."
+	)
+	assert(
+		ScoreCalculator.calculate_round_score(Round.RoundType.NO_TRUMP, 3, 4) == 1,
+		"Перебор в бескозырке должен давать +1 за лишнюю взятку."
+	)
+	assert(
+		ScoreCalculator.calculate_round_score(Round.RoundType.NO_TRUMP, 0, 0) == 5,
+		"Нулевой заказ в бескозырке должен давать +5."
 	)
 
 
@@ -718,6 +1051,25 @@ func _run_dark_round_checks() -> void:
 
 	for player in test_game.players:
 		assert(player.hand.size() == 9, "После заказов каждый игрок должен получить 9 карт.")
+
+
+func _run_no_trump_round_checks() -> void:
+	var test_game := Game.new(["Игрок 1", "Игрок 2", "Игрок 3", "Игрок 4"])
+	assert(
+		test_game.start_round(9, Round.RoundType.NO_TRUMP, Round.TrumpSuit.NONE),
+		"Бескозырная раздача должна запускаться."
+	)
+	assert(test_game.cards_are_dealt, "В бескозырке карты должны быть сданы до заказов.")
+	assert(test_game.current_round.state == Round.State.BIDDING, "В бескозырке должен быть этап заказов.")
+
+	for player in test_game.players:
+		assert(player.hand.size() == 9, "В бескозырке каждый игрок должен получить 9 карт.")
+
+	for bid_number in test_game.players.size():
+		var player_index := test_game.current_round.current_player_index
+		assert(test_game.place_bid(player_index, 0), "Нулевой заказ должен быть допустим в бескозырке.")
+
+	assert(test_game.current_round.state == Round.State.PLAYING, "После заказов бескозырка должна перейти к розыгрышу.")
 
 
 func _create_card(suit: Card.Suit, rank: Card.Rank, is_joker := false) -> Card:
