@@ -56,6 +56,7 @@ func _start_demo_round() -> void:
 	current_round.start_bidding()
 	_place_demo_bids()
 	_run_trick_rules_demo()
+	_run_score_rules_demo()
 
 
 func _deal_cards(dealer_index: int, cards_per_player: int) -> void:
@@ -161,3 +162,32 @@ func _create_card(suit: Card.Suit, rank: Card.Rank, is_joker := false) -> Card:
 	card.rank = rank
 	card.is_joker = is_joker
 	return card
+
+
+func _run_score_rules_demo() -> void:
+	print("=== Проверка подсчёта очков ===")
+	_print_score_example("Обычная: заказ 3, взято 3", Round.RoundType.NORMAL, 3, 3)
+	_print_score_example("Обычная: заказ 3, взято 4", Round.RoundType.NORMAL, 3, 4)
+	_print_score_example("Тёмная: заказ 2, взято 1", Round.RoundType.DARK, 2, 1)
+	_print_score_example("Бескозырка: взято 3", Round.RoundType.NO_TRUMP, -1, 3)
+	_print_score_example("Золотая: взято 0", Round.RoundType.GOLDEN, -1, 0)
+	_print_score_example("Мизерная: взято 0", Round.RoundType.MISERE, -1, 0)
+
+	var tie_break_player := Player.new(0, "Андрей")
+	tie_break_player.bid = 2
+	tie_break_player.tricks_taken = 2
+	tie_break_player.apply_round_result(Round.RoundType.NORMAL)
+	print("Тай-брейк: точных заказов у %s — %d" % [
+		tie_break_player.display_name,
+		tie_break_player.exact_orders_completed
+	])
+
+
+func _print_score_example(
+	label: String,
+	round_type: Round.RoundType,
+	bid: int,
+	tricks_taken: int
+) -> void:
+	var score := ScoreCalculator.calculate_round_score(round_type, bid, tricks_taken)
+	print("%s: %s%d" % [label, "+" if score >= 0 else "", score])

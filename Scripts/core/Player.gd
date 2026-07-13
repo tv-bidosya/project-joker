@@ -9,6 +9,7 @@ var hand: Array[Card] = []
 var bid := -1
 var tricks_taken := 0
 var total_score := 0
+var exact_orders_completed := 0
 
 
 func _init(p_player_id: int, p_display_name: String) -> void:
@@ -34,6 +35,16 @@ func remove_card(card: Card) -> bool:
 
 	hand.remove_at(card_index)
 	return true
+
+
+func apply_round_result(round_type: Round.RoundType) -> int:
+	var round_score := ScoreCalculator.calculate_round_score(round_type, bid, tricks_taken)
+	total_score += round_score
+
+	if ScoreCalculator.is_exact_order(round_type, bid, tricks_taken):
+		exact_orders_completed += 1
+
+	return round_score
 
 
 func sort_hand() -> void:
