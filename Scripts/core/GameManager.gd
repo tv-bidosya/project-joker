@@ -6,6 +6,8 @@ const HUMAN_PLAYER_INDEX := 0
 const NORMAL_ROUND_COUNT := 13
 const DARK_ROUND_COUNT := 5
 const NO_TRUMP_ROUND_COUNT := 4
+const GOLDEN_ROUND_COUNT := 5
+const MISERE_ROUND_COUNT := 5
 
 
 @onready var phase_label: Label = %PhaseLabel
@@ -33,6 +35,8 @@ var recent_actions := PackedStringArray()
 var normal_round_index := 0
 var dark_round_index := -1
 var no_trump_round_index := -1
+var golden_round_index := -1
+var misere_round_index := -1
 var is_processing_automatic_actions := false
 var test_checkpoints: Array[Dictionary] = []
 var pending_test_checkpoint: Dictionary = {}
@@ -43,6 +47,7 @@ func _ready() -> void:
 	_run_score_rule_checks()
 	_run_dark_round_checks()
 	_run_no_trump_round_checks()
+	_run_no_bid_round_checks()
 	_create_player_panels()
 	_create_trick_slots()
 	undo_button.pressed.connect(_on_undo_pressed)
@@ -67,7 +72,19 @@ func _start_round() -> void:
 		_refresh_ui()
 		return
 
-	if _is_no_trump_round():
+	if _is_misere_round():
+		action_text = "Мизерная раздача %d из %d. Заказов нет; сдающий: %s." % [
+			misere_round_index + 1,
+			MISERE_ROUND_COUNT,
+			game.players[game.dealer_index].display_name
+		]
+	elif _is_golden_round():
+		action_text = "Золотая раздача %d из %d. Заказов нет; сдающий: %s." % [
+			golden_round_index + 1,
+			GOLDEN_ROUND_COUNT,
+			game.players[game.dealer_index].display_name
+		]
+	elif _is_no_trump_round():
 		action_text = "Бескозырка %d из %d. Сдающий: %s." % [
 			no_trump_round_index + 1,
 			NO_TRUMP_ROUND_COUNT,
@@ -302,6 +319,14 @@ func _on_next_round_pressed() -> void:
 		no_trump_round_index = 0
 	elif no_trump_round_index < NO_TRUMP_ROUND_COUNT - 1:
 		no_trump_round_index += 1
+	elif golden_round_index < 0:
+		golden_round_index = 0
+	elif golden_round_index < GOLDEN_ROUND_COUNT - 1:
+		golden_round_index += 1
+	elif misere_round_index < 0:
+		misere_round_index = 0
+	elif misere_round_index < MISERE_ROUND_COUNT - 1:
+		misere_round_index += 1
 	else:
 		return
 
@@ -320,17 +345,25 @@ func _finish_round() -> void:
 
 	for player_index in game.players.size():
 		var player := game.players[player_index]
-		result_lines.append("%s: заказ %d, взято %d, очки %d" % [
-			player.display_name,
-			player.bid,
-			player.tricks_taken,
-			round_scores[player_index]
-		])
+
+		if _round_uses_bids():
+			result_lines.append("%s: заказ %d, взято %d, очки %d" % [
+				player.display_name,
+				player.bid,
+				player.tricks_taken,
+				round_scores[player_index]
+			])
+		else:
+			result_lines.append("%s: взято %d, очки %d" % [
+				player.display_name,
+				player.tricks_taken,
+				round_scores[player_index]
+			])
 
 	action_text = "Раздача завершена.\n%s" % "\n".join(result_lines)
 	next_round_button.visible = true
 
-	if not _is_dark_round() and not _is_no_trump_round() and normal_round_index >= NORMAL_ROUND_COUNT - 1:
+	if _is_normal_round() and normal_round_index >= NORMAL_ROUND_COUNT - 1:
 		next_round_button.text = "Начать тёмную серию"
 		next_round_button.disabled = false
 		_add_history("Обычная серия из 13 раздач завершена. Далее — тёмные раздачи.")
@@ -339,9 +372,17 @@ func _finish_round() -> void:
 		next_round_button.disabled = false
 		_add_history("Тёмная серия из 5 раздач завершена. Далее — бескозырка.")
 	elif _is_no_trump_round() and no_trump_round_index >= NO_TRUMP_ROUND_COUNT - 1:
-		next_round_button.text = "Бескозырная серия завершена"
+		next_round_button.text = "Начать золотую серию"
+		next_round_button.disabled = false
+		_add_history("Бескозырная серия из 4 раздач завершена. Далее — золотые раздачи.")
+	elif _is_golden_round() and golden_round_index >= GOLDEN_ROUND_COUNT - 1:
+		next_round_button.text = "Начать мизерную серию"
+		next_round_button.disabled = false
+		_add_history("Золотая серия из 5 раздач завершена. Далее — мизерные раздачи.")
+	elif _is_misere_round() and misere_round_index >= MISERE_ROUND_COUNT - 1:
+		next_round_button.text = "Партия завершена"
 		next_round_button.disabled = true
-		_add_history("Бескозырная серия из 4 раздач завершена.")
+		_add_history("Мизерная серия из 5 раздач завершена. Полный локальный цикл партии сыгран.")
 	else:
 		next_round_button.text = "Следующая раздача"
 		_add_history("Раздача завершена. Следующим сдаёт %s." % game.players[(game.dealer_index + 1) % game.players.size()].display_name)
@@ -385,7 +426,11 @@ func _refresh_header() -> void:
 		_:
 			phase_label.text = "Этап: подготовка"
 
-	if _is_no_trump_round():
+	if _is_misere_round():
+		trump_label.text = _get_special_trump_text("Мизерная")
+	elif _is_golden_round():
+		trump_label.text = _get_special_trump_text("Золотая")
+	elif _is_no_trump_round():
 		trump_label.text = "Бескозырка: козырей нет"
 	elif _is_dark_round() and not game.cards_are_dealt:
 		trump_label.text = "Тёмная: козырь %s · карты скрыты до завершения заказов" % game.current_round.get_trump_name()
@@ -405,18 +450,28 @@ func _refresh_player_panels() -> void:
 		var is_current := _get_current_player_index() == player_index and game.current_round.state != Round.State.FINISHED
 		var marker := "▶ " if is_current else ""
 		var person_label := " (ты)" if player_index == HUMAN_PLAYER_INDEX else ""
-		var bid_text := "—" if player.bid < 0 else str(player.bid)
 		var hand_text := "скрыто" if _is_dark_round() and not game.cards_are_dealt else str(player.hand.size())
 
-		player_labels[player_index].text = "%s%s%s\nКарт: %s | Заказ: %s\nВзято: %d | Очки: %d" % [
-			marker,
-			player.display_name,
-			person_label,
-			hand_text,
-			bid_text,
-			player.tricks_taken,
-			player.total_score
-		]
+		if _round_uses_bids():
+			var bid_text := "—" if player.bid < 0 else str(player.bid)
+			player_labels[player_index].text = "%s%s%s\nКарт: %s | Заказ: %s\nВзято: %d | Очки: %d" % [
+				marker,
+				player.display_name,
+				person_label,
+				hand_text,
+				bid_text,
+				player.tricks_taken,
+				player.total_score
+			]
+		else:
+			player_labels[player_index].text = "%s%s%s\nКарт: %s\nВзято: %d | Очки: %d" % [
+				marker,
+				player.display_name,
+				person_label,
+				hand_text,
+				player.tricks_taken,
+				player.total_score
+			]
 
 
 func _refresh_table() -> void:
@@ -728,7 +783,7 @@ func _get_suit_symbol(suit: int) -> String:
 
 
 func _get_cards_per_player_for_current_round() -> int:
-	if _is_dark_round() or _is_no_trump_round():
+	if _is_dark_round() or _is_no_trump_round() or _is_golden_round() or _is_misere_round():
 		return 9
 
 	if normal_round_index < 8:
@@ -738,6 +793,12 @@ func _get_cards_per_player_for_current_round() -> int:
 
 
 func _get_trump_for_current_round() -> Round.TrumpSuit:
+	if _is_misere_round():
+		return _get_fixed_trump_for_special_round(misere_round_index)
+
+	if _is_golden_round():
+		return _get_fixed_trump_for_special_round(golden_round_index)
+
 	if _is_no_trump_round():
 		return Round.TrumpSuit.NONE
 
@@ -770,7 +831,27 @@ func _get_trump_for_current_round() -> Round.TrumpSuit:
 			return Round.TrumpSuit.NONE
 
 
+func _get_fixed_trump_for_special_round(round_index: int) -> Round.TrumpSuit:
+	match round_index:
+		0:
+			return Round.TrumpSuit.CLUBS
+		1:
+			return Round.TrumpSuit.SPADES
+		2:
+			return Round.TrumpSuit.HEARTS
+		3:
+			return Round.TrumpSuit.DIAMONDS
+		_:
+			return Round.TrumpSuit.NONE
+
+
 func _get_current_round_type() -> Round.RoundType:
+	if _is_misere_round():
+		return Round.RoundType.MISERE
+
+	if _is_golden_round():
+		return Round.RoundType.GOLDEN
+
 	if _is_no_trump_round():
 		return Round.RoundType.NO_TRUMP
 
@@ -782,7 +863,19 @@ func _is_dark_round() -> bool:
 
 
 func _is_no_trump_round() -> bool:
-	return no_trump_round_index >= 0
+	return no_trump_round_index >= 0 and golden_round_index < 0
+
+
+func _is_golden_round() -> bool:
+	return golden_round_index >= 0 and misere_round_index < 0
+
+
+func _is_misere_round() -> bool:
+	return misere_round_index >= 0
+
+
+func _is_normal_round() -> bool:
+	return dark_round_index < 0
 
 
 func _can_start_next_round() -> bool:
@@ -790,10 +883,18 @@ func _can_start_next_round() -> bool:
 		normal_round_index < NORMAL_ROUND_COUNT - 1
 		or dark_round_index < DARK_ROUND_COUNT - 1
 		or no_trump_round_index < NO_TRUMP_ROUND_COUNT - 1
+		or golden_round_index < GOLDEN_ROUND_COUNT - 1
+		or misere_round_index < MISERE_ROUND_COUNT - 1
 	)
 
 
 func _get_phase_text(phase_name: String) -> String:
+	if _is_misere_round():
+		return "Мизерная %d/%d · %s" % [misere_round_index + 1, MISERE_ROUND_COUNT, phase_name]
+
+	if _is_golden_round():
+		return "Золотая %d/%d · %s" % [golden_round_index + 1, GOLDEN_ROUND_COUNT, phase_name]
+
 	if _is_no_trump_round():
 		return "Бескозырка %d/%d · %s" % [no_trump_round_index + 1, NO_TRUMP_ROUND_COUNT, phase_name]
 
@@ -801,6 +902,21 @@ func _get_phase_text(phase_name: String) -> String:
 		return "Тёмная %d/%d · %s" % [dark_round_index + 1, DARK_ROUND_COUNT, phase_name]
 
 	return "Раздача %d/%d · %s" % [normal_round_index + 1, NORMAL_ROUND_COUNT, phase_name]
+
+
+func _round_uses_bids() -> bool:
+	return (
+		game.current_round.round_type == Round.RoundType.NORMAL
+		or game.current_round.round_type == Round.RoundType.DARK
+		or game.current_round.round_type == Round.RoundType.NO_TRUMP
+	)
+
+
+func _get_special_trump_text(mode_name: String) -> String:
+	if game.current_round.trump == Round.TrumpSuit.NONE:
+		return "%s: козырей нет" % mode_name
+
+	return "%s: козырь %s" % [mode_name, game.current_round.get_trump_name()]
 
 
 func _announce_dark_cards_dealt(cards_were_hidden: bool) -> void:
@@ -1030,6 +1146,22 @@ func _run_score_rule_checks() -> void:
 		ScoreCalculator.calculate_round_score(Round.RoundType.NO_TRUMP, 0, 0) == 5,
 		"Нулевой заказ в бескозырке должен давать +5."
 	)
+	assert(
+		ScoreCalculator.calculate_round_score(Round.RoundType.GOLDEN, 3, 3) == 60,
+		"Золотая раздача должна давать +20 за каждую взятку."
+	)
+	assert(
+		ScoreCalculator.calculate_round_score(Round.RoundType.GOLDEN, 0, 0) == -50,
+		"Ноль взяток в золотой раздаче должен давать −50."
+	)
+	assert(
+		ScoreCalculator.calculate_round_score(Round.RoundType.MISERE, 3, 3) == -60,
+		"Мизерная раздача должна отнимать 20 за каждую взятку."
+	)
+	assert(
+		ScoreCalculator.calculate_round_score(Round.RoundType.MISERE, 0, 0) == 50,
+		"Ноль взяток в мизерной раздаче должен давать +50."
+	)
 
 
 func _run_dark_round_checks() -> void:
@@ -1070,6 +1202,25 @@ func _run_no_trump_round_checks() -> void:
 		assert(test_game.place_bid(player_index, 0), "Нулевой заказ должен быть допустим в бескозырке.")
 
 	assert(test_game.current_round.state == Round.State.PLAYING, "После заказов бескозырка должна перейти к розыгрышу.")
+
+
+func _run_no_bid_round_checks() -> void:
+	_assert_no_bid_round(Round.RoundType.GOLDEN, "Золотая")
+	_assert_no_bid_round(Round.RoundType.MISERE, "Мизерная")
+
+
+func _assert_no_bid_round(round_type: Round.RoundType, mode_name: String) -> void:
+	var test_game := Game.new(["Игрок 1", "Игрок 2", "Игрок 3", "Игрок 4"])
+	assert(
+		test_game.start_round(9, round_type, Round.TrumpSuit.CLUBS),
+		"%s раздача должна запускаться." % mode_name
+	)
+	assert(test_game.cards_are_dealt, "%s раздача должна сразу раздать карты." % mode_name)
+	assert(test_game.current_round.state == Round.State.PLAYING, "%s раздача должна сразу перейти к розыгрышу без заказов." % mode_name)
+
+	for player in test_game.players:
+		assert(player.hand.size() == 9, "%s: каждый игрок должен получить 9 карт." % mode_name)
+		assert(player.bid == -1, "%s: у игрока не должно быть заказа." % mode_name)
 
 
 func _create_card(suit: Card.Suit, rank: Card.Rank, is_joker := false) -> Card:

@@ -65,7 +65,10 @@ func start_round(
 
 		current_round.set_trump(Round.trump_from_card(trump_card))
 
-	current_round.start_bidding()
+	if _round_requires_bidding(round_type):
+		current_round.start_bidding()
+	else:
+		current_round.start_playing_without_bids()
 	active_trick = null
 	last_trick_winner_index = -1
 	last_completed_trick_cards.clear()
@@ -222,6 +225,14 @@ func _begin_trick() -> void:
 		current_round.lead_player_index,
 		players.size(),
 		current_round.trump
+	)
+
+
+func _round_requires_bidding(round_type: Round.RoundType) -> bool:
+	return (
+		round_type == Round.RoundType.NORMAL
+		or round_type == Round.RoundType.DARK
+		or round_type == Round.RoundType.NO_TRUMP
 	)
 
 

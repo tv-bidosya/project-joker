@@ -73,6 +73,12 @@ func start_bidding() -> void:
 	current_player_index = (dealer_index + 1) % player_count
 
 
+func start_playing_without_bids() -> void:
+	state = State.PLAYING
+	lead_player_index = (dealer_index + 1) % player_count
+	current_player_index = lead_player_index
+
+
 func can_place_bid(player_index: int, value: int) -> bool:
 	if state != State.BIDDING:
 		return false
