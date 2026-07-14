@@ -48,14 +48,17 @@ var test_checkpoints: Array[Dictionary] = []
 var pending_test_checkpoint: Dictionary = {}
 var round_history: Array[Dictionary] = []
 var is_score_sheet_visible := false
+var bot_random := RandomNumberGenerator.new()
 
 
 func _ready() -> void:
+	bot_random.randomize()
 	_run_joker_rule_checks()
 	_run_score_rule_checks()
 	_run_dark_round_checks()
 	_run_no_trump_round_checks()
 	_run_no_bid_round_checks()
+	_run_bot_rule_checks()
 	_create_player_panels()
 	_create_trick_slots()
 	undo_button.pressed.connect(_on_undo_pressed)
@@ -201,11 +204,12 @@ func _play_automatic_card() -> bool:
 	var played_successfully := false
 
 	if card.is_joker:
+		var joker_mode := Trick.JokerMode.JOKER_WINS if _bot_wants_trick(player) else Trick.JokerMode.NORMAL_CARD_WINS
 		played_successfully = game.play_card(
 			player_index,
 			card,
-			Trick.JokerMode.JOKER_WINS,
-			_choose_joker_suit(player)
+			joker_mode,
+			_choose_joker_suit(player, joker_mode == Trick.JokerMode.NORMAL_CARD_WINS)
 		)
 	else:
 		played_successfully = game.play_card(player_index, card)
@@ -863,36 +867,249 @@ func _is_card_available_to_human(card: Card) -> bool:
 
 
 func _choose_automatic_bid(player_index: int) -> int:
-	var desired_bid := 1 if player_index % 2 == 0 else 0
+	var player := game.players[player_index]
+	var is_dark_bid := game.current_round.round_type == Round.RoundType.DARK
+	var desired_bid := bot_random.randi_range(2, 4) if is_dark_bid else _estimate_automatic_bid(player)
+	var min_bid := 2 if is_dark_bid else 0
+	var max_bid := 4 if is_dark_bid else game.current_round.cards_per_player
+	var closest_bid := _find_closest_valid_bid(player_index, desired_bid, min_bid, max_bid)
 
-	if game.current_round.can_place_bid(player_index, desired_bid):
-		return desired_bid
+	if closest_bid >= 0:
+		return closest_bid
 
-	for bid in game.current_round.cards_per_player + 1:
-		if game.current_round.can_place_bid(player_index, bid):
-			return bid
+	return _find_closest_valid_bid(player_index, desired_bid, 0, game.current_round.cards_per_player)
 
-	return -1
+
+func _find_closest_valid_bid(player_index: int, desired_bid: int, min_bid: int, max_bid: int) -> int:
+	var closest_bid: int = -1
+	var closest_difference: int = game.current_round.cards_per_player + 1
+
+	for bid_value in game.current_round.cards_per_player + 1:
+		var bid: int = bid_value
+		if bid < min_bid or bid > max_bid:
+			continue
+
+		if not game.current_round.can_place_bid(player_index, bid):
+			continue
+
+		var difference: int = absi(bid - desired_bid)
+		if difference < closest_difference:
+			closest_bid = bid
+			closest_difference = difference
+
+	return closest_bid
 
 
 func _choose_automatic_card(player: Player) -> Card:
-	for card in player.hand:
-		if not card.is_joker and (game.active_trick == null or game.active_trick.can_play_card(player, card)):
-			return card
+	var legal_cards := _get_legal_cards(player)
+
+	if legal_cards.is_empty():
+		return null
+
+	var wants_trick := _bot_wants_trick(player)
+
+	if game.active_trick == null:
+		if wants_trick:
+			var leading_joker := _get_joker_from_cards(legal_cards)
+			if leading_joker != null:
+				return leading_joker
+
+			return _select_card_by_strength(legal_cards, true)
+
+		var low_lead_card := _select_non_joker_card_by_strength(legal_cards, false)
+		return low_lead_card if low_lead_card != null else legal_cards[0]
+
+	if wants_trick:
+		var weakest_winning_regular_card: Card = _select_weakest_winning_regular_card(legal_cards)
+		if weakest_winning_regular_card != null:
+			return weakest_winning_regular_card
+
+		var taking_joker := _get_joker_from_cards(legal_cards)
+		if taking_joker != null:
+			return taking_joker
+
+		return _select_card_by_strength(legal_cards, true)
+
+	if _should_shed_high_card_in_misere(legal_cards):
+		return _select_non_joker_card_by_strength(legal_cards, true)
+
+	var discarding_joker := _get_joker_from_cards(legal_cards)
+	if discarding_joker != null:
+		return discarding_joker
+
+	return _select_card_by_strength(legal_cards, false)
+
+
+func _estimate_automatic_bid(player: Player) -> int:
+	if player.hand.is_empty():
+		return 0
+
+	var estimate := 0
+	var trump_cards := 0
+	var high_non_trump_cards := 0
 
 	for card in player.hand:
-		if card.is_joker and (game.active_trick == null or game.active_trick.can_play_card(player, card)):
+		if card.is_joker:
+			estimate += 1
+			continue
+
+		if card.suit == game.current_round.trump:
+			trump_cards += 1
+			if card.rank >= Card.Rank.TEN:
+				estimate += 1
+		elif card.rank == Card.Rank.ACE:
+			high_non_trump_cards += 1
+		elif card.rank == Card.Rank.KING:
+			high_non_trump_cards += 1
+
+	estimate += floori(float(high_non_trump_cards) / 2.0)
+
+	if trump_cards >= 3 and estimate == 0:
+		estimate = 1
+
+	return clampi(estimate, 0, game.current_round.cards_per_player)
+
+
+func _get_legal_cards(player: Player) -> Array[Card]:
+	var legal_cards: Array[Card] = []
+
+	for card in player.hand:
+		if game.active_trick == null or game.active_trick.can_play_card(player, card):
+			legal_cards.append(card)
+
+	return legal_cards
+
+
+func _select_weakest_winning_regular_card(legal_cards: Array[Card]) -> Card:
+	var winning_cards: Array[Card] = []
+
+	for card in legal_cards:
+		if not card.is_joker and _would_regular_card_win_current_trick(card):
+			winning_cards.append(card)
+
+	return _select_card_by_strength(winning_cards, false)
+
+
+func _would_regular_card_win_current_trick(card: Card) -> bool:
+	if card.is_joker or game.active_trick == null:
+		return false
+
+	var active_trick: Trick = game.active_trick
+	var simulated_trick := Trick.new()
+	simulated_trick.player_count = active_trick.played_cards.size() + 1
+	simulated_trick.trump = active_trick.trump
+	simulated_trick.lead_suit = active_trick.lead_suit
+	simulated_trick.joker_mode = active_trick.joker_mode
+	simulated_trick.declared_suit = active_trick.declared_suit
+	simulated_trick.forced_card_rank = active_trick.forced_card_rank
+	simulated_trick.played_cards.assign(active_trick.played_cards)
+	simulated_trick.played_by.assign(active_trick.played_by)
+	simulated_trick.played_cards.append(card)
+	simulated_trick.played_by.append(-1)
+
+	return simulated_trick.get_winner_index() == -1
+
+
+func _should_shed_high_card_in_misere(legal_cards: Array[Card]) -> bool:
+	if (
+		game.current_round.round_type != Round.RoundType.MISERE
+		or game.active_trick == null
+		or game.active_trick.played_cards.size() != game.players.size() - 1
+		or _get_joker_from_cards(legal_cards) != null
+	):
+		return false
+
+	var regular_cards: Array[Card] = []
+
+	for card in legal_cards:
+		if card.is_joker:
+			continue
+
+		regular_cards.append(card)
+		if not _would_regular_card_win_current_trick(card):
+			return false
+
+	return not regular_cards.is_empty()
+
+
+func _bot_wants_trick(player: Player) -> bool:
+	if game.current_round.round_type == Round.RoundType.GOLDEN:
+		return true
+
+	if game.current_round.round_type == Round.RoundType.MISERE:
+		return false
+
+	return player.bid > player.tricks_taken
+
+
+func _get_joker_from_cards(cards: Array[Card]) -> Card:
+	for card in cards:
+		if card.is_joker:
 			return card
 
 	return null
 
 
-func _choose_joker_suit(player: Player) -> int:
+func _select_non_joker_card_by_strength(cards: Array[Card], choose_highest: bool) -> Card:
+	var non_joker_cards: Array[Card] = []
+
+	for card in cards:
+		if not card.is_joker:
+			non_joker_cards.append(card)
+
+	return _select_card_by_strength(non_joker_cards, choose_highest)
+
+
+func _select_card_by_strength(cards: Array[Card], choose_highest: bool) -> Card:
+	var selected_card: Card
+
+	for card in cards:
+		if selected_card == null:
+			selected_card = card
+			continue
+
+		var card_strength := _get_automatic_card_strength(card)
+		var selected_strength := _get_automatic_card_strength(selected_card)
+		var replaces_selected := card_strength > selected_strength if choose_highest else card_strength < selected_strength
+
+		if replaces_selected:
+			selected_card = card
+
+	return selected_card
+
+
+func _get_automatic_card_strength(card: Card) -> int:
+	if card.is_joker:
+		return 100
+
+	var strength := card.rank
+
+	if game.current_round.trump != Round.TrumpSuit.NONE and card.suit == game.current_round.trump:
+		strength += 20
+
+	if game.active_trick != null and card.suit == game.active_trick.lead_suit:
+		strength += 10
+
+	return strength
+
+
+func _choose_joker_suit(player: Player, prefer_rare_suit := false) -> int:
+	var suit_counts: Array[int] = [0, 0, 0, 0]
+
 	for card in player.hand:
 		if not card.is_joker:
-			return card.suit
+			suit_counts[card.suit] += 1
 
-	return Card.Suit.CLUBS
+	var selected_suit := Card.Suit.CLUBS
+
+	for suit in Card.Suit.values():
+		if prefer_rare_suit:
+			if suit_counts[suit] < suit_counts[selected_suit]:
+				selected_suit = suit
+		elif suit_counts[suit] > suit_counts[selected_suit]:
+			selected_suit = suit
+
+	return selected_suit
 
 
 func _get_active_trick_text() -> String:
@@ -1413,6 +1630,116 @@ func _assert_no_bid_round(round_type: Round.RoundType, mode_name: String) -> voi
 	for player in test_game.players:
 		assert(player.hand.size() == 9, "%s: каждый игрок должен получить 9 карт." % mode_name)
 		assert(player.bid == -1, "%s: у игрока не должно быть заказа." % mode_name)
+
+
+func _run_bot_rule_checks() -> void:
+	var original_game := game
+	var test_game := Game.new(["Игрок 1", "Игрок 2", "Игрок 3", "Игрок 4"])
+	assert(
+		test_game.start_round(9, Round.RoundType.NORMAL, Round.TrumpSuit.HEARTS),
+		"Проверка бота: обычная раздача должна запускаться."
+	)
+	game = test_game
+
+	var estimated_bid := _estimate_automatic_bid(game.players[1])
+	assert(estimated_bid >= 0 and estimated_bid <= 9, "Проверка бота: оценка заказа должна быть в допустимом диапазоне.")
+
+	while game.current_round.state == Round.State.BIDDING:
+		var player_index := game.current_round.current_player_index
+		var valid_bid := -1
+
+		for bid in game.current_round.cards_per_player + 1:
+			if game.current_round.can_place_bid(player_index, bid):
+				valid_bid = bid
+				break
+
+		assert(valid_bid >= 0, "Проверка бота: должен существовать допустимый заказ.")
+		assert(game.place_bid(player_index, valid_bid), "Проверка бота: допустимый заказ должен приниматься.")
+
+	var lead_player_index := _get_current_player_index()
+	var lead_player := game.players[lead_player_index]
+	var lead_card := _select_non_joker_card_by_strength(lead_player.hand, false)
+	assert(lead_card != null, "Проверка бота: у ведущего должна быть обычная карта.")
+	assert(game.play_card(lead_player_index, lead_card), "Проверка бота: ведущая карта должна быть сыграна.")
+
+	var response_player := game.players[_get_current_player_index()]
+	var response_card := _choose_automatic_card(response_player)
+	assert(response_card != null, "Проверка бота: бот должен выбрать карту в ответ.")
+	assert(game.active_trick.can_play_card(response_player, response_card), "Проверка бота: выбранная карта должна быть допустима.")
+
+	assert(test_game.start_round(9, Round.RoundType.GOLDEN, Round.TrumpSuit.CLUBS), "Проверка бота: золотая раздача должна запускаться.")
+	assert(_bot_wants_trick(game.players[_get_current_player_index()]), "Проверка бота: в золотой раздаче бот должен стремиться брать взятки.")
+	assert(test_game.start_round(9, Round.RoundType.MISERE, Round.TrumpSuit.CLUBS), "Проверка бота: мизерная раздача должна запускаться.")
+	assert(not _bot_wants_trick(game.players[_get_current_player_index()]), "Проверка бота: в мизерной раздаче бот должен избегать взяток.")
+	assert(test_game.start_round(9, Round.RoundType.DARK, Round.TrumpSuit.CLUBS, false), "Проверка бота: тёмная раздача должна запускаться.")
+	var dark_player_index := game.current_round.current_player_index
+	var dark_bid := _choose_automatic_bid(dark_player_index)
+	assert(dark_bid >= 2 and dark_bid <= 4, "Проверка бота: тёмный заказ должен быть от 2 до 4.")
+	assert(game.current_round.can_place_bid(dark_player_index, dark_bid), "Проверка бота: тёмный заказ должен быть допустим.")
+
+	assert(test_game.start_round(1, Round.RoundType.NORMAL, Round.TrumpSuit.CLUBS), "Проверка бота: раздача для сохранения Джокера должна запускаться.")
+	test_game.current_round.start_playing_without_bids()
+	for player in test_game.players:
+		player.hand.clear()
+
+	var joker_check_leader_index: int = test_game.current_round.current_player_index
+	var joker_check_bot_index: int = (joker_check_leader_index + 1) % test_game.players.size()
+	var heart_lead := _create_card(Card.Suit.HEARTS, Card.Rank.NINE)
+	var saving_trump := _create_card(Card.Suit.CLUBS, Card.Rank.EIGHT)
+	var saving_joker := _create_card(Card.Suit.DIAMONDS, Card.Rank.SEVEN, true)
+	test_game.players[joker_check_leader_index].receive_card(heart_lead)
+	test_game.players[joker_check_bot_index].receive_card(saving_trump)
+	test_game.players[joker_check_bot_index].receive_card(saving_joker)
+	test_game.players[joker_check_bot_index].bid = 1
+	assert(test_game.play_card(joker_check_leader_index, heart_lead), "Проверка бота: ведущая карта для сохранения Джокера должна быть сыграна.")
+	var joker_saving_choice: Card = _choose_automatic_card(test_game.players[joker_check_bot_index])
+	assert(joker_saving_choice == saving_trump, "Проверка бота: обычный козырь должен сохранять Джокера.")
+
+	assert(test_game.start_round(1, Round.RoundType.NORMAL, Round.TrumpSuit.CLUBS), "Проверка бота: раздача для обязательного Джокера должна запускаться.")
+	test_game.current_round.start_playing_without_bids()
+	for player in test_game.players:
+		player.hand.clear()
+
+	joker_check_leader_index = test_game.current_round.current_player_index
+	joker_check_bot_index = (joker_check_leader_index + 1) % test_game.players.size()
+	var ace_trump_lead := _create_card(Card.Suit.CLUBS, Card.Rank.ACE)
+	var losing_trump := _create_card(Card.Suit.CLUBS, Card.Rank.KING)
+	var required_joker := _create_card(Card.Suit.DIAMONDS, Card.Rank.SEVEN, true)
+	test_game.players[joker_check_leader_index].receive_card(ace_trump_lead)
+	test_game.players[joker_check_bot_index].receive_card(losing_trump)
+	test_game.players[joker_check_bot_index].receive_card(required_joker)
+	test_game.players[joker_check_bot_index].bid = 1
+	assert(test_game.play_card(joker_check_leader_index, ace_trump_lead), "Проверка бота: ведущий туз-козырь должен быть сыгран.")
+	var joker_required_choice: Card = _choose_automatic_card(test_game.players[joker_check_bot_index])
+	assert(joker_required_choice == required_joker, "Проверка бота: Джокер должен быть выбран, когда обычный козырь не перебивает взятку.")
+
+	assert(test_game.start_round(1, Round.RoundType.MISERE, Round.TrumpSuit.CLUBS), "Проверка бота: мизерная раздача для сброса старшей карты должна запускаться.")
+	for player in test_game.players:
+		player.hand.clear()
+
+	var misere_leader_index: int = test_game.current_round.current_player_index
+	var misere_second_index: int = (misere_leader_index + 1) % test_game.players.size()
+	var misere_third_index: int = (misere_leader_index + 2) % test_game.players.size()
+	var misere_bot_index: int = (misere_leader_index + 3) % test_game.players.size()
+	var nine_spades := _create_card(Card.Suit.SPADES, Card.Rank.NINE)
+	var seven_spades := _create_card(Card.Suit.SPADES, Card.Rank.SEVEN)
+	var six_spades := _create_card(Card.Suit.SPADES, Card.Rank.SIX)
+	var ten_spades := _create_card(Card.Suit.SPADES, Card.Rank.TEN)
+	var jack_spades := _create_card(Card.Suit.SPADES, Card.Rank.JACK)
+	var king_spades := _create_card(Card.Suit.SPADES, Card.Rank.KING)
+	test_game.players[misere_leader_index].receive_card(nine_spades)
+	test_game.players[misere_second_index].receive_card(seven_spades)
+	test_game.players[misere_third_index].receive_card(six_spades)
+	test_game.players[misere_bot_index].receive_card(ten_spades)
+	test_game.players[misere_bot_index].receive_card(jack_spades)
+	test_game.players[misere_bot_index].receive_card(king_spades)
+	assert(test_game.play_card(misere_leader_index, nine_spades), "Проверка бота: девятка пики должна быть сыграна.")
+	assert(test_game.play_card(misere_second_index, seven_spades), "Проверка бота: семёрка пики должна быть сыграна.")
+	assert(test_game.play_card(misere_third_index, six_spades), "Проверка бота: шестёрка пики должна быть сыграна.")
+	var misere_choice: Card = _choose_automatic_card(test_game.players[misere_bot_index])
+	assert(misere_choice == king_spades, "Проверка бота: в неизбежной мизерной взятке нужно сбрасывать старшую карту.")
+
+	game = original_game
 
 
 func _create_card(suit: Card.Suit, rank: Card.Rank, is_joker := false) -> Card:
