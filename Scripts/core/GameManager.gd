@@ -19,10 +19,11 @@ enum HandSortMode {
 
 @onready var phase_label: Label = %PhaseLabel
 @onready var trump_label: Label = %TrumpLabel
-@onready var players_container: GridContainer = %PlayersContainer
+@onready var players_container: Control = %PlayersContainer
 @onready var table_label: Label = %TableLabel
-@onready var trick_slots: GridContainer = %TrickSlots
+@onready var trick_slots: Control = %TrickSlots
 @onready var action_label: Label = %ActionLabel
+@onready var round_history_scroll: ScrollContainer = %RoundHistoryScroll
 @onready var history_label: Label = %HistoryLabel
 @onready var bid_controls: HBoxContainer = %BidControls
 @onready var joker_controls: GridContainer = %JokerControls
@@ -69,6 +70,7 @@ func _ready() -> void:
 	_run_no_bid_round_checks()
 	_run_bot_rule_checks()
 	_run_hand_sort_checks()
+	_run_round_history_checks()
 	_create_player_panels()
 	_create_trick_slots()
 	undo_button.pressed.connect(_on_undo_pressed)
@@ -522,9 +524,9 @@ func _refresh_player_panels() -> void:
 
 func _refresh_table() -> void:
 	if game.active_trick == null:
-		table_label.text = last_trick_text
+		table_label.text = "Последняя взятка" if not game.last_completed_trick_cards.is_empty() else "Взятка ещё не началась"
 	else:
-		table_label.text = _get_active_trick_text()
+		table_label.text = "Текущая взятка"
 
 	var cards_by_player: Array[Card] = []
 	cards_by_player.resize(game.players.size())
@@ -718,10 +720,16 @@ func _format_score(score: int) -> String:
 
 func _refresh_history() -> void:
 	if recent_actions.is_empty():
-		history_label.text = "Последние действия: —"
+		history_label.text = "Ход раздачи: —"
 		return
 
-	history_label.text = "Последние действия\n%s" % "\n".join(recent_actions)
+	history_label.text = "Ход раздачи\n%s" % "\n".join(recent_actions)
+	call_deferred("_scroll_round_history_to_bottom")
+
+
+func _scroll_round_history_to_bottom() -> void:
+	var scroll_bar: VScrollBar = round_history_scroll.get_v_scroll_bar()
+	round_history_scroll.scroll_vertical = int(scroll_bar.max_value)
 
 
 func _refresh_bid_controls() -> void:
@@ -854,31 +862,76 @@ func _refresh_undo_button() -> void:
 
 
 func _create_player_panels() -> void:
-	for player_name in PLAYER_NAMES:
+	for player_index in PLAYER_NAMES.size():
 		var panel := PanelContainer.new()
-		panel.custom_minimum_size = Vector2(180, 78)
+		_place_player_panel(panel, player_index)
 
 		var label := Label.new()
 		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-		label.add_theme_font_size_override("font_size", 16)
+		label.add_theme_font_size_override("font_size", 17)
 		panel.add_child(label)
 		players_container.add_child(panel)
 		player_labels.append(label)
 
 
 func _create_trick_slots() -> void:
-	for player_name in PLAYER_NAMES:
+	for player_index in PLAYER_NAMES.size():
 		var panel := PanelContainer.new()
-		panel.custom_minimum_size = Vector2(220, 72)
+		_place_trick_slot(panel, player_index)
 
 		var label := Label.new()
 		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-		label.add_theme_font_size_override("font_size", 18)
+		label.add_theme_font_size_override("font_size", 19)
 		panel.add_child(label)
 		trick_slots.add_child(panel)
 		trick_card_labels.append(label)
+
+
+func _place_player_panel(panel: PanelContainer, player_index: int) -> void:
+	match player_index:
+		HUMAN_PLAYER_INDEX:
+			_set_control_layout(panel, 0.5, 1.0, 0.5, 1.0, -170.0, -86.0, 170.0, -10.0)
+		1:
+			_set_control_layout(panel, 0.0, 0.5, 0.0, 0.5, 24.0, -43.0, 284.0, 43.0)
+		2:
+			_set_control_layout(panel, 0.5, 0.0, 0.5, 0.0, -170.0, 20.0, 170.0, 106.0)
+		3:
+			_set_control_layout(panel, 1.0, 0.5, 1.0, 0.5, -284.0, -43.0, -24.0, 43.0)
+
+
+func _place_trick_slot(panel: PanelContainer, player_index: int) -> void:
+	match player_index:
+		HUMAN_PLAYER_INDEX:
+			_set_control_layout(panel, 0.5, 0.5, 0.5, 0.5, -95.0, 68.0, 95.0, 150.0)
+		1:
+			_set_control_layout(panel, 0.5, 0.5, 0.5, 0.5, -235.0, -41.0, -45.0, 41.0)
+		2:
+			_set_control_layout(panel, 0.5, 0.5, 0.5, 0.5, -95.0, -150.0, 95.0, -68.0)
+		3:
+			_set_control_layout(panel, 0.5, 0.5, 0.5, 0.5, 45.0, -41.0, 235.0, 41.0)
+
+
+func _set_control_layout(
+	control: Control,
+	left_anchor: float,
+	top_anchor: float,
+	right_anchor: float,
+	bottom_anchor: float,
+	left_offset: float,
+	top_offset: float,
+	right_offset: float,
+	bottom_offset: float
+) -> void:
+	control.anchor_left = left_anchor
+	control.anchor_top = top_anchor
+	control.anchor_right = right_anchor
+	control.anchor_bottom = bottom_anchor
+	control.offset_left = left_offset
+	control.offset_top = top_offset
+	control.offset_right = right_offset
+	control.offset_bottom = bottom_offset
 
 
 func _add_joker_suit_button(label: String, suit: int) -> void:
@@ -1429,9 +1482,6 @@ func _create_test_checkpoint() -> Dictionary:
 func _add_history(action: String) -> void:
 	recent_actions.append(action)
 
-	if recent_actions.size() > 6:
-		recent_actions.remove_at(0)
-
 
 func _run_joker_rule_checks() -> void:
 	var player := Player.new(0, "Проверка")
@@ -1702,6 +1752,18 @@ func _assert_no_bid_round(round_type: Round.RoundType, mode_name: String) -> voi
 	for player in test_game.players:
 		assert(player.hand.size() == 9, "%s: каждый игрок должен получить 9 карт." % mode_name)
 		assert(player.bid == -1, "%s: у игрока не должно быть заказа." % mode_name)
+
+
+func _run_round_history_checks() -> void:
+	var original_actions: PackedStringArray = recent_actions.duplicate()
+	recent_actions.clear()
+
+	for action_number in 8:
+		_add_history("Проверка журнала %d" % action_number)
+
+	assert(recent_actions.size() == 8, "Проверка журнала: должны сохраняться все действия раздачи.")
+	assert(recent_actions[0] == "Проверка журнала 0", "Проверка журнала: ранние действия не должны удаляться.")
+	recent_actions = original_actions
 
 
 func _run_hand_sort_checks() -> void:

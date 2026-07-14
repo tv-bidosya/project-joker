@@ -75,7 +75,7 @@ theme_override_colors/font_color = Color(0.97, 0.86, 0.55, 1)
 theme_override_font_sizes/font_size = 18
 text = "Козырь: —"
 
-[node name="ScoreSheetToggleButton" type="Button" parent="Margin/ScrollContainer/Content"]
+[node name="ScoreSheetToggleButton" type="Button" parent="Margin/ScrollContainer/Content/Header"]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_font_sizes/font_size = 16
@@ -120,37 +120,49 @@ theme_override_colors/font_color = Color(0.91, 0.96, 0.91, 1)
 theme_override_font_sizes/font_size = 17
 autowrap_mode = 2
 
-[node name="PlayersContainer" type="GridContainer" parent="Margin/ScrollContainer/Content"]
-unique_name_in_owner = true
-layout_mode = 2
-columns = 4
-theme_override_constants/h_separation = 10
-theme_override_constants/v_separation = 10
-
 [node name="TablePanel" type="PanelContainer" parent="Margin/ScrollContainer/Content"]
-custom_minimum_size = Vector2(0, 200)
+custom_minimum_size = Vector2(0, 520)
 layout_mode = 2
 
-[node name="TableContent" type="VBoxContainer" parent="Margin/ScrollContainer/Content/TablePanel"]
+[node name="TableContent" type="Control" parent="Margin/ScrollContainer/Content/TablePanel"]
 layout_mode = 2
-theme_override_constants/separation = 8
+size_flags_horizontal = 3
+size_flags_vertical = 3
+mouse_filter = 2
 
 [node name="TableLabel" type="Label" parent="Margin/ScrollContainer/Content/TablePanel/TableContent"]
 unique_name_in_owner = true
-layout_mode = 2
+layout_mode = 1
+anchors_preset = 10
+anchor_right = 1.0
+offset_top = 194.0
+offset_bottom = 214.0
+grow_horizontal = 2
 theme_override_colors/font_color = Color(0.91, 0.96, 0.91, 1)
-theme_override_font_sizes/font_size = 18
+theme_override_font_sizes/font_size = 16
 horizontal_alignment = 1
 text = "Взятка"
 autowrap_mode = 2
 
-[node name="TrickSlots" type="GridContainer" parent="Margin/ScrollContainer/Content/TablePanel/TableContent"]
+[node name="TrickSlots" type="Control" parent="Margin/ScrollContainer/Content/TablePanel/TableContent"]
 unique_name_in_owner = true
-layout_mode = 2
-size_flags_vertical = 3
-columns = 2
-theme_override_constants/h_separation = 10
-theme_override_constants/v_separation = 10
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+
+[node name="PlayersContainer" type="Control" parent="Margin/ScrollContainer/Content/TablePanel/TableContent"]
+unique_name_in_owner = true
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
 
 [node name="ActionLabel" type="Label" parent="Margin/ScrollContainer/Content"]
 unique_name_in_owner = true
@@ -161,12 +173,20 @@ horizontal_alignment = 1
 text = "Подготовка партии"
 autowrap_mode = 2
 
-[node name="HistoryLabel" type="Label" parent="Margin/ScrollContainer/Content"]
+[node name="RoundHistoryScroll" type="ScrollContainer" parent="Margin/ScrollContainer/Content"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 160)
+layout_mode = 2
+horizontal_scroll_mode = 0
+vertical_scroll_mode = 1
+
+[node name="HistoryLabel" type="Label" parent="Margin/ScrollContainer/Content/RoundHistoryScroll"]
 unique_name_in_owner = true
 layout_mode = 2
+size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0.72, 0.85, 0.76, 1)
 theme_override_font_sizes/font_size = 14
-text = "Последние действия"
+text = "Ход раздачи"
 autowrap_mode = 2
 
 [node name="BidControls" type="HBoxContainer" parent="Margin/ScrollContainer/Content"]
