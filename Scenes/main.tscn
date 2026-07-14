@@ -188,11 +188,28 @@ layout_mode = 2
 theme_override_font_sizes/font_size = 16
 text = "↶ Назад (тест)"
 
-[node name="HandTitle" type="Label" parent="Margin/ScrollContainer/Content"]
+[node name="HandHeader" type="HBoxContainer" parent="Margin/ScrollContainer/Content"]
+layout_mode = 2
+alignment = 1
+theme_override_constants/separation = 10
+
+[node name="HandTitle" type="Label" parent="Margin/ScrollContainer/Content/HandHeader"]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.85, 0.95, 0.88, 1)
 theme_override_font_sizes/font_size = 18
 text = "Твоя рука (Андрей)"
+
+[node name="HandSortBySuitButton" type="Button" parent="Margin/ScrollContainer/Content/HandHeader"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 14
+text = "По мастям"
+
+[node name="HandSortTrumpsLeftButton" type="Button" parent="Margin/ScrollContainer/Content/HandHeader"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 14
+text = "Козыри слева"
 
 [node name="HandContainer" type="HBoxContainer" parent="Margin/ScrollContainer/Content"]
 unique_name_in_owner = true

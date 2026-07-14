@@ -11,6 +11,12 @@ const MISERE_ROUND_COUNT := 5
 const TOTAL_ROUND_COUNT := NORMAL_ROUND_COUNT + DARK_ROUND_COUNT + NO_TRUMP_ROUND_COUNT + GOLDEN_ROUND_COUNT + MISERE_ROUND_COUNT
 
 
+enum HandSortMode {
+	BY_SUIT,
+	TRUMPS_LEFT
+}
+
+
 @onready var phase_label: Label = %PhaseLabel
 @onready var trump_label: Label = %TrumpLabel
 @onready var players_container: GridContainer = %PlayersContainer
@@ -21,6 +27,8 @@ const TOTAL_ROUND_COUNT := NORMAL_ROUND_COUNT + DARK_ROUND_COUNT + NO_TRUMP_ROUN
 @onready var bid_controls: HBoxContainer = %BidControls
 @onready var joker_controls: GridContainer = %JokerControls
 @onready var hand_container: HBoxContainer = %HandContainer
+@onready var hand_sort_by_suit_button: Button = %HandSortBySuitButton
+@onready var hand_sort_trumps_left_button: Button = %HandSortTrumpsLeftButton
 @onready var undo_button: Button = %UndoButton
 @onready var score_sheet_toggle_button: Button = %ScoreSheetToggleButton
 @onready var score_sheet_panel: PanelContainer = %ScoreSheetPanel
@@ -49,6 +57,7 @@ var pending_test_checkpoint: Dictionary = {}
 var round_history: Array[Dictionary] = []
 var is_score_sheet_visible := false
 var bot_random := RandomNumberGenerator.new()
+var hand_sort_mode: HandSortMode = HandSortMode.BY_SUIT
 
 
 func _ready() -> void:
@@ -59,10 +68,13 @@ func _ready() -> void:
 	_run_no_trump_round_checks()
 	_run_no_bid_round_checks()
 	_run_bot_rule_checks()
+	_run_hand_sort_checks()
 	_create_player_panels()
 	_create_trick_slots()
 	undo_button.pressed.connect(_on_undo_pressed)
 	score_sheet_toggle_button.pressed.connect(_on_score_sheet_toggle_pressed)
+	hand_sort_by_suit_button.pressed.connect(_on_hand_sort_by_suit_pressed)
+	hand_sort_trumps_left_button.pressed.connect(_on_hand_sort_trumps_left_pressed)
 	next_round_button.pressed.connect(_on_next_round_pressed)
 	_start_round()
 
@@ -321,6 +333,16 @@ func _on_score_sheet_toggle_pressed() -> void:
 	_refresh_ui()
 
 
+func _on_hand_sort_by_suit_pressed() -> void:
+	hand_sort_mode = HandSortMode.BY_SUIT
+	_refresh_ui()
+
+
+func _on_hand_sort_trumps_left_pressed() -> void:
+	hand_sort_mode = HandSortMode.TRUMPS_LEFT
+	_refresh_ui()
+
+
 func _on_next_round_pressed() -> void:
 	if not _can_start_next_round():
 		return
@@ -433,6 +455,7 @@ func _refresh_ui() -> void:
 	_refresh_history()
 	_refresh_bid_controls()
 	_refresh_joker_controls()
+	_refresh_hand_sort_controls()
 	_refresh_hand()
 	_refresh_undo_button()
 	_refresh_score_sheet()
@@ -757,8 +780,9 @@ func _refresh_hand() -> void:
 		return
 
 	var human_player := game.players[HUMAN_PLAYER_INDEX]
+	var displayed_cards := _sort_cards_for_display(human_player.hand, game.current_round.trump, hand_sort_mode)
 
-	for card in human_player.hand:
+	for card in displayed_cards:
 		var card_button := Button.new()
 		card_button.custom_minimum_size = Vector2(80, 112)
 		card_button.text = card.get_card_name()
@@ -771,6 +795,54 @@ func _refresh_hand() -> void:
 
 		card_button.pressed.connect(_on_card_pressed.bind(card))
 		hand_container.add_child(card_button)
+
+
+func _refresh_hand_sort_controls() -> void:
+	hand_sort_by_suit_button.disabled = hand_sort_mode == HandSortMode.BY_SUIT
+	hand_sort_trumps_left_button.disabled = hand_sort_mode == HandSortMode.TRUMPS_LEFT
+
+
+func _sort_cards_for_display(
+	cards: Array[Card],
+	trump: Round.TrumpSuit,
+	sort_mode: HandSortMode
+) -> Array[Card]:
+	var displayed_cards: Array[Card] = cards.duplicate()
+	displayed_cards.sort_custom(func(left: Card, right: Card) -> bool:
+		return _is_display_card_before(left, right, trump, sort_mode)
+	)
+	return displayed_cards
+
+
+func _is_display_card_before(
+	left: Card,
+	right: Card,
+	trump: Round.TrumpSuit,
+	sort_mode: HandSortMode
+) -> bool:
+	if sort_mode == HandSortMode.TRUMPS_LEFT:
+		var left_group: int = _get_display_card_group(left, trump)
+		var right_group: int = _get_display_card_group(right, trump)
+		if left_group != right_group:
+			return left_group < right_group
+
+	if left.suit != right.suit:
+		return left.suit < right.suit
+
+	if left.rank != right.rank:
+		return left.rank < right.rank
+
+	return left.is_joker and not right.is_joker
+
+
+func _get_display_card_group(card: Card, trump: Round.TrumpSuit) -> int:
+	if card.is_joker:
+		return 0
+
+	if trump != Round.TrumpSuit.NONE and card.suit == trump:
+		return 1
+
+	return 2
 
 
 func _refresh_undo_button() -> void:
@@ -1630,6 +1702,24 @@ func _assert_no_bid_round(round_type: Round.RoundType, mode_name: String) -> voi
 	for player in test_game.players:
 		assert(player.hand.size() == 9, "%s: каждый игрок должен получить 9 карт." % mode_name)
 		assert(player.bid == -1, "%s: у игрока не должно быть заказа." % mode_name)
+
+
+func _run_hand_sort_checks() -> void:
+	var diamond_six := _create_card(Card.Suit.DIAMONDS, Card.Rank.SIX)
+	var heart_eight := _create_card(Card.Suit.HEARTS, Card.Rank.EIGHT)
+	var spade_joker := _create_card(Card.Suit.SPADES, Card.Rank.SEVEN, true)
+	var club_ace := _create_card(Card.Suit.CLUBS, Card.Rank.ACE)
+	var club_eight := _create_card(Card.Suit.CLUBS, Card.Rank.EIGHT)
+	var source_cards: Array[Card] = [diamond_six, heart_eight, spade_joker, club_ace, club_eight]
+	var suit_sorted_cards := _sort_cards_for_display(source_cards, Round.TrumpSuit.CLUBS, HandSortMode.BY_SUIT)
+	var trumps_left_cards := _sort_cards_for_display(source_cards, Round.TrumpSuit.CLUBS, HandSortMode.TRUMPS_LEFT)
+
+	assert(suit_sorted_cards[0] == club_eight, "Проверка сортировки: при порядке по мастям первой должна быть младшая трефа.")
+	assert(suit_sorted_cards[1] == club_ace, "Проверка сортировки: туз трефы должен идти после младшей трефы.")
+	assert(trumps_left_cards[0] == spade_joker, "Проверка сортировки: Джокер должен быть слева.")
+	assert(trumps_left_cards[1] == club_eight, "Проверка сортировки: козыри должны идти после Джокера.")
+	assert(trumps_left_cards[2] == club_ace, "Проверка сортировки: козыри должны сохранять порядок по возрастанию.")
+	assert(source_cards[0] == diamond_six, "Проверка сортировки: отображение не должно менять реальную руку.")
 
 
 func _run_bot_rule_checks() -> void:
