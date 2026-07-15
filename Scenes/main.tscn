@@ -12,6 +12,7 @@ grow_vertical = 2
 script = ExtResource("1_jjgbg")
 
 [node name="Background" type="ColorRect" parent="."]
+unique_name_in_owner = true
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
@@ -37,106 +38,79 @@ theme_override_constants/margin_top = 16
 theme_override_constants/margin_right = 16
 theme_override_constants/margin_bottom = 16
 
-[node name="ScrollContainer" type="ScrollContainer" parent="Margin"]
+[node name="TablePanel" type="PanelContainer" parent="Margin"]
+unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
 size_flags_vertical = 3
-horizontal_scroll_mode = 1
-vertical_scroll_mode = 2
 
-[node name="Content" type="VBoxContainer" parent="Margin/ScrollContainer"]
-custom_minimum_size = Vector2(0, 670)
-layout_mode = 2
-size_flags_horizontal = 3
-theme_override_constants/separation = 14
-
-[node name="Header" type="HBoxContainer" parent="Margin/ScrollContainer/Content"]
-layout_mode = 2
-theme_override_constants/separation = 16
-
-[node name="Title" type="Label" parent="Margin/ScrollContainer/Content/Header"]
-layout_mode = 2
-size_flags_horizontal = 3
-theme_override_colors/font_color = Color(0.97, 0.86, 0.55, 1)
-theme_override_font_sizes/font_size = 28
-text = "Project Joker"
-
-[node name="PhaseLabel" type="Label" parent="Margin/ScrollContainer/Content/Header"]
-unique_name_in_owner = true
-layout_mode = 2
-theme_override_colors/font_color = Color(0.85, 0.95, 0.88, 1)
-theme_override_font_sizes/font_size = 18
-text = "Этап: подготовка"
-
-[node name="TrumpLabel" type="Label" parent="Margin/ScrollContainer/Content/Header"]
-unique_name_in_owner = true
-layout_mode = 2
-theme_override_colors/font_color = Color(0.97, 0.86, 0.55, 1)
-theme_override_font_sizes/font_size = 18
-text = "Козырь: —"
-
-[node name="ScoreSheetToggleButton" type="Button" parent="Margin/ScrollContainer/Content/Header"]
-unique_name_in_owner = true
-layout_mode = 2
-theme_override_font_sizes/font_size = 16
-text = "📋 Расписка"
-
-[node name="ScoreSheetPanel" type="PanelContainer" parent="Margin/ScrollContainer/Content"]
-unique_name_in_owner = true
-custom_minimum_size = Vector2(0, 180)
-layout_mode = 2
-visible = false
-
-[node name="ScoreSheetContent" type="VBoxContainer" parent="Margin/ScrollContainer/Content/ScoreSheetPanel"]
-layout_mode = 2
-theme_override_constants/separation = 8
-
-[node name="ScoreSheetTitle" type="Label" parent="Margin/ScrollContainer/Content/ScoreSheetPanel/ScoreSheetContent"]
-unique_name_in_owner = true
-layout_mode = 2
-theme_override_colors/font_color = Color(0.97, 0.86, 0.55, 1)
-theme_override_font_sizes/font_size = 20
-text = "Расписка"
-
-[node name="ScoreSheetHint" type="Label" parent="Margin/ScrollContainer/Content/ScoreSheetPanel/ScoreSheetContent"]
-layout_mode = 2
-theme_override_colors/font_color = Color(0.72, 0.85, 0.76, 1)
-theme_override_font_sizes/font_size = 14
-text = "В ячейке игрока: заказ / взято / очки. В золотой и мизерной заказов нет."
-autowrap_mode = 2
-
-[node name="ScoreSheetGrid" type="GridContainer" parent="Margin/ScrollContainer/Content/ScoreSheetPanel/ScoreSheetContent"]
-unique_name_in_owner = true
-layout_mode = 2
-columns = 6
-theme_override_constants/h_separation = 8
-theme_override_constants/v_separation = 4
-
-[node name="FinalResultsLabel" type="Label" parent="Margin/ScrollContainer/Content/ScoreSheetPanel/ScoreSheetContent"]
-unique_name_in_owner = true
-layout_mode = 2
-visible = false
-theme_override_colors/font_color = Color(0.91, 0.96, 0.91, 1)
-theme_override_font_sizes/font_size = 17
-autowrap_mode = 2
-
-[node name="TablePanel" type="PanelContainer" parent="Margin/ScrollContainer/Content"]
-custom_minimum_size = Vector2(0, 520)
-layout_mode = 2
-
-[node name="TableContent" type="Control" parent="Margin/ScrollContainer/Content/TablePanel"]
+[node name="TableContent" type="Control" parent="Margin/TablePanel"]
 layout_mode = 2
 size_flags_horizontal = 3
 size_flags_vertical = 3
 mouse_filter = 2
 
-[node name="TableLabel" type="Label" parent="Margin/ScrollContainer/Content/TablePanel/TableContent"]
-unique_name_in_owner = true
+[node name="Header" type="HBoxContainer" parent="Margin/TablePanel/TableContent"]
 layout_mode = 1
 anchors_preset = 10
 anchor_right = 1.0
-offset_top = 194.0
-offset_bottom = 214.0
+offset_left = 20.0
+offset_top = 12.0
+offset_right = -20.0
+offset_bottom = 58.0
+grow_horizontal = 2
+theme_override_constants/separation = 18
+
+[node name="Title" type="Label" parent="Margin/TablePanel/TableContent/Header"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.97, 0.86, 0.55, 1)
+theme_override_font_sizes/font_size = 28
+text = "Project Joker"
+vertical_alignment = 1
+
+[node name="PhaseLabel" type="Label" parent="Margin/TablePanel/TableContent/Header"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.85, 0.95, 0.88, 1)
+theme_override_font_sizes/font_size = 18
+text = "Этап: подготовка"
+vertical_alignment = 1
+
+[node name="TrumpLabel" type="Label" parent="Margin/TablePanel/TableContent/Header"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.97, 0.86, 0.55, 1)
+theme_override_font_sizes/font_size = 18
+text = "Козырь: —"
+vertical_alignment = 1
+
+[node name="ScoreSheetToggleButton" type="Button" parent="Margin/TablePanel/TableContent/Header"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 16
+text = "📋 Расписка"
+
+[node name="PlayersContainer" type="Control" parent="Margin/TablePanel/TableContent"]
+unique_name_in_owner = true
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+
+[node name="TableLabel" type="Label" parent="Margin/TablePanel/TableContent"]
+unique_name_in_owner = true
+layout_mode = 1
+anchors_preset = 10
+anchor_left = 0.5
+anchor_right = 0.5
+offset_left = -250.0
+offset_top = 274.0
+offset_right = 250.0
+offset_bottom = 326.0
 grow_horizontal = 2
 theme_override_colors/font_color = Color(0.91, 0.96, 0.91, 1)
 theme_override_font_sizes/font_size = 16
@@ -144,7 +118,7 @@ horizontal_alignment = 1
 text = "Взятка"
 autowrap_mode = 2
 
-[node name="TrickSlots" type="Control" parent="Margin/ScrollContainer/Content/TablePanel/TableContent"]
+[node name="TrickSlots" type="Control" parent="Margin/TablePanel/TableContent"]
 unique_name_in_owner = true
 layout_mode = 1
 anchors_preset = 15
@@ -154,33 +128,52 @@ grow_horizontal = 2
 grow_vertical = 2
 mouse_filter = 2
 
-[node name="PlayersContainer" type="Control" parent="Margin/ScrollContainer/Content/TablePanel/TableContent"]
+[node name="ActionLabel" type="Label" parent="Margin/TablePanel/TableContent"]
 unique_name_in_owner = true
 layout_mode = 1
-anchors_preset = 15
-anchor_right = 1.0
-anchor_bottom = 1.0
+anchors_preset = 10
+anchor_left = 0.5
+anchor_right = 0.5
+offset_left = -400.0
+offset_top = 562.0
+offset_right = 400.0
+offset_bottom = 606.0
 grow_horizontal = 2
-grow_vertical = 2
-mouse_filter = 2
-
-[node name="ActionLabel" type="Label" parent="Margin/ScrollContainer/Content"]
-unique_name_in_owner = true
-layout_mode = 2
 theme_override_colors/font_color = Color(0.97, 0.86, 0.55, 1)
 theme_override_font_sizes/font_size = 18
 horizontal_alignment = 1
 text = "Подготовка партии"
 autowrap_mode = 2
 
-[node name="RoundHistoryScroll" type="ScrollContainer" parent="Margin/ScrollContainer/Content"]
+[node name="RoundHistoryToggleButton" type="Button" parent="Margin/TablePanel/TableContent"]
 unique_name_in_owner = true
-custom_minimum_size = Vector2(0, 160)
+layout_mode = 1
+anchors_preset = 0
+offset_left = 24.0
+offset_top = 76.0
+offset_right = 178.0
+offset_bottom = 112.0
+theme_override_font_sizes/font_size = 15
+text = "История ▾"
+
+[node name="RoundHistoryPanel" type="PanelContainer" parent="Margin/TablePanel/TableContent"]
+unique_name_in_owner = true
+layout_mode = 1
+anchors_preset = 0
+offset_left = 24.0
+offset_top = 122.0
+offset_right = 324.0
+offset_bottom = 340.0
+
+[node name="RoundHistoryScroll" type="ScrollContainer" parent="Margin/TablePanel/TableContent/RoundHistoryPanel"]
+unique_name_in_owner = true
 layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
 horizontal_scroll_mode = 0
 vertical_scroll_mode = 1
 
-[node name="HistoryLabel" type="Label" parent="Margin/ScrollContainer/Content/RoundHistoryScroll"]
+[node name="HistoryLabel" type="Label" parent="Margin/TablePanel/TableContent/RoundHistoryPanel/RoundHistoryScroll"]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -189,58 +182,195 @@ theme_override_font_sizes/font_size = 14
 text = "Ход раздачи"
 autowrap_mode = 2
 
-[node name="BidControls" type="HBoxContainer" parent="Margin/ScrollContainer/Content"]
+[node name="RoundResultsPanel" type="PanelContainer" parent="Margin/TablePanel/TableContent"]
 unique_name_in_owner = true
-layout_mode = 2
-alignment = 1
-theme_override_constants/separation = 8
+layout_mode = 1
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -324.0
+offset_top = 76.0
+offset_right = -24.0
+offset_bottom = 346.0
+grow_horizontal = 0
+visible = false
 
-[node name="JokerControls" type="GridContainer" parent="Margin/ScrollContainer/Content"]
+[node name="RoundResultsLabel" type="Label" parent="Margin/TablePanel/TableContent/RoundResultsPanel"]
 unique_name_in_owner = true
 layout_mode = 2
+theme_override_colors/font_color = Color(0.91, 0.96, 0.91, 1)
+theme_override_font_sizes/font_size = 16
+autowrap_mode = 2
+
+[node name="DeckVisual" type="Control" parent="Margin/TablePanel/TableContent"]
+unique_name_in_owner = true
+layout_mode = 1
+anchors_preset = 10
+anchor_left = 0.5
+anchor_right = 0.5
+offset_left = 180.0
+offset_top = 164.0
+offset_right = 305.0
+offset_bottom = 320.0
+grow_horizontal = 2
+mouse_filter = 2
+z_index = 4
+
+[node name="NextRoundButton" type="Button" parent="Margin/TablePanel/TableContent"]
+unique_name_in_owner = true
+layout_mode = 1
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -324.0
+offset_top = 356.0
+offset_right = -24.0
+offset_bottom = 400.0
+grow_horizontal = 0
+visible = false
+theme_override_font_sizes/font_size = 18
+text = "Следующая раздача"
+
+[node name="JokerControls" type="GridContainer" parent="Margin/TablePanel/TableContent"]
+unique_name_in_owner = true
+layout_mode = 1
+anchors_preset = 10
+anchor_left = 0.5
+anchor_right = 0.5
+offset_left = -390.0
+offset_top = 460.0
+offset_right = 390.0
+offset_bottom = 552.0
+grow_horizontal = 2
 columns = 3
 theme_override_constants/h_separation = 8
 theme_override_constants/v_separation = 8
 
-[node name="UndoButton" type="Button" parent="Margin/ScrollContainer/Content"]
+[node name="BidControls" type="HBoxContainer" parent="Margin/TablePanel/TableContent"]
 unique_name_in_owner = true
-layout_mode = 2
-theme_override_font_sizes/font_size = 16
-text = "↶ Назад (тест)"
+layout_mode = 1
+anchors_preset = 12
+anchor_top = 1.0
+anchor_bottom = 1.0
+offset_left = 600.0
+offset_top = -300.0
+offset_right = -600.0
+offset_bottom = -254.0
+grow_vertical = 0
+alignment = 1
+theme_override_constants/separation = 8
 
-[node name="HandHeader" type="HBoxContainer" parent="Margin/ScrollContainer/Content"]
-layout_mode = 2
+[node name="HandHeader" type="HBoxContainer" parent="Margin/TablePanel/TableContent"]
+layout_mode = 1
+anchors_preset = 12
+anchor_top = 1.0
+anchor_bottom = 1.0
+offset_left = 420.0
+offset_top = -240.0
+offset_right = -420.0
+offset_bottom = -202.0
+grow_vertical = 0
 alignment = 1
 theme_override_constants/separation = 10
 
-[node name="HandTitle" type="Label" parent="Margin/ScrollContainer/Content/HandHeader"]
+[node name="HandTitle" type="Label" parent="Margin/TablePanel/TableContent/HandHeader"]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.85, 0.95, 0.88, 1)
 theme_override_font_sizes/font_size = 18
 text = "Твоя рука (Андрей)"
+vertical_alignment = 1
 
-[node name="HandSortBySuitButton" type="Button" parent="Margin/ScrollContainer/Content/HandHeader"]
+[node name="HandSortBySuitButton" type="Button" parent="Margin/TablePanel/TableContent/HandHeader"]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_font_sizes/font_size = 14
 text = "По мастям"
 
-[node name="HandSortTrumpsLeftButton" type="Button" parent="Margin/ScrollContainer/Content/HandHeader"]
+[node name="HandSortTrumpsLeftButton" type="Button" parent="Margin/TablePanel/TableContent/HandHeader"]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_font_sizes/font_size = 14
 text = "Козыри слева"
 
-[node name="HandContainer" type="HBoxContainer" parent="Margin/ScrollContainer/Content"]
+[node name="HandContainer" type="HBoxContainer" parent="Margin/TablePanel/TableContent"]
 unique_name_in_owner = true
-custom_minimum_size = Vector2(0, 104)
-layout_mode = 2
+layout_mode = 1
+anchors_preset = 12
+anchor_top = 1.0
+anchor_bottom = 1.0
+offset_left = 260.0
+offset_top = -194.0
+offset_right = -260.0
+offset_bottom = -82.0
+grow_vertical = 0
 alignment = 1
 theme_override_constants/separation = 10
 
-[node name="NextRoundButton" type="Button" parent="Margin/ScrollContainer/Content"]
+[node name="UndoButton" type="Button" parent="Margin/TablePanel/TableContent"]
+unique_name_in_owner = true
+layout_mode = 1
+anchors_preset = 12
+anchor_top = 1.0
+anchor_bottom = 1.0
+offset_left = 850.0
+offset_top = -66.0
+offset_right = -850.0
+offset_bottom = -26.0
+grow_vertical = 0
+theme_override_font_sizes/font_size = 16
+text = "↶ Назад (тест)"
+
+[node name="ScoreSheetPanel" type="PanelContainer" parent="Margin/TablePanel/TableContent"]
+unique_name_in_owner = true
+layout_mode = 1
+anchors_preset = 15
+anchor_left = 0.08
+anchor_top = 0.09
+anchor_right = 0.92
+anchor_bottom = 0.91
+grow_horizontal = 2
+grow_vertical = 2
+visible = false
+z_index = 20
+
+[node name="ScoreSheetScroll" type="ScrollContainer" parent="Margin/TablePanel/TableContent/ScoreSheetPanel"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+horizontal_scroll_mode = 0
+vertical_scroll_mode = 1
+
+[node name="ScoreSheetContent" type="VBoxContainer" parent="Margin/TablePanel/TableContent/ScoreSheetPanel/ScoreSheetScroll"]
+custom_minimum_size = Vector2(1080, 0)
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 8
+
+[node name="ScoreSheetTitle" type="Label" parent="Margin/TablePanel/TableContent/ScoreSheetPanel/ScoreSheetScroll/ScoreSheetContent"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.97, 0.86, 0.55, 1)
+theme_override_font_sizes/font_size = 20
+text = "Расписка"
+
+[node name="ScoreSheetHint" type="Label" parent="Margin/TablePanel/TableContent/ScoreSheetPanel/ScoreSheetScroll/ScoreSheetContent"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.72, 0.85, 0.76, 1)
+theme_override_font_sizes/font_size = 14
+text = "В ячейке игрока: заказ / взято / очки. В золотой и мизерной заказов нет."
+autowrap_mode = 2
+
+[node name="ScoreSheetGrid" type="GridContainer" parent="Margin/TablePanel/TableContent/ScoreSheetPanel/ScoreSheetScroll/ScoreSheetContent"]
+unique_name_in_owner = true
+layout_mode = 2
+columns = 6
+theme_override_constants/h_separation = 8
+theme_override_constants/v_separation = 4
+
+[node name="FinalResultsLabel" type="Label" parent="Margin/TablePanel/TableContent/ScoreSheetPanel/ScoreSheetScroll/ScoreSheetContent"]
 unique_name_in_owner = true
 layout_mode = 2
 visible = false
-theme_override_font_sizes/font_size = 18
-text = "Следующая раздача"
+theme_override_colors/font_color = Color(0.91, 0.96, 0.91, 1)
+theme_override_font_sizes/font_size = 17
+autowrap_mode = 2
