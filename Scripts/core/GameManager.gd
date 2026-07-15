@@ -49,8 +49,7 @@ enum HandSortMode {
 var game := Game.new(PLAYER_NAMES)
 var player_labels: Array[Label] = []
 var player_panels: Array[PanelContainer] = []
-var trick_card_labels: Array[Label] = []
-var trick_card_panels: Array[PanelContainer] = []
+var trick_card_views: Array[CardView] = []
 var bot_card_back_holders: Array[Control] = []
 var deck_back_panels: Array[PanelContainer] = []
 var deck_trump_panel: PanelContainer
@@ -561,12 +560,15 @@ func _refresh_header() -> void:
 		trump_label.text = "Тёмная: козырь %s · карты скрыты до завершения заказов" % game.current_round.get_trump_name()
 	elif game.trump_card == null:
 		trump_label.text = "Козырь: %s (задан)" % game.current_round.get_trump_name()
+	elif game.trump_card.is_joker:
+		trump_label.text = "Открыта %s (бескозырка)" % game.trump_card.get_card_name()
 	else:
 		trump_label.text = "Открыта %s · козырь %s" % [
 			game.trump_card.get_card_name(),
 			game.current_round.get_trump_name()
 		]
-	action_label.text = "Раздача завершена · итоги справа." if game.current_round.state == Round.State.FINISHED else action_text
+	action_label.visible = game.current_round.state != Round.State.FINISHED
+	action_label.text = action_text
 
 
 func _refresh_player_panels() -> void:
@@ -641,37 +643,49 @@ func _refresh_table() -> void:
 
 	for player_index in game.players.size():
 		var card := cards_by_player[player_index]
-		trick_card_panels[player_index].visible = card != null
-		trick_card_labels[player_index].text = _get_trick_card_text(card, played_cards, played_by, player_index)
-		trick_card_labels[player_index].add_theme_font_size_override("font_size", 16 if card != null and card.is_joker else 20)
+		var card_view := trick_card_views[player_index]
+		card_view.visible = card != null
+		if card == null:
+			continue
+
+		card_view.set_card(card)
+		card_view.set_status(_get_trick_card_status(card, played_cards, played_by, player_index))
 
 
-func _get_trick_card_text(
+func _get_trick_card_status(
 	card: Card,
 	played_cards: Array[Card],
 	played_by: Array[int],
 	player_index: int
 ) -> String:
-	if card == null:
-		return ""
-
 	if not card.is_joker:
-		return card.get_card_name()
+		return ""
 
 	var is_leading_joker := (
 		not played_cards.is_empty()
 		and played_cards[0].is_joker
 		and played_by[0] == player_index
 	)
-	return "%s\n%s" % [
-		card.get_card_name(),
-		_get_joker_rule_text(
-			_get_displayed_joker_mode(),
-			_get_displayed_joker_declared_suit(),
-			_get_displayed_joker_forced_card_rank(),
-			is_leading_joker
-		).trim_prefix("Условие: ")
-	]
+	var joker_mode := _get_displayed_joker_mode()
+	if not is_leading_joker:
+		return "ЗАБИРАЕТ" if joker_mode == Trick.JokerMode.JOKER_WINS else "НЕ БЕРЁТ"
+
+	var declared_suit := _get_displayed_joker_declared_suit()
+	var forced_card_rank := _get_displayed_joker_forced_card_rank()
+	var suit_symbol := _get_suit_symbol(declared_suit)
+
+	if forced_card_rank == Trick.ForcedCardRank.HIGHEST:
+		return "%s · СТАРШАЯ" % suit_symbol
+	if forced_card_rank == Trick.ForcedCardRank.LOWEST:
+		return "%s · МЛАДШАЯ" % suit_symbol
+	if joker_mode == Trick.JokerMode.JOKER_WINS:
+		return "%s · БЕРЁТ" % suit_symbol
+	if joker_mode == Trick.JokerMode.HIGHEST_DECLARED_CARD_WINS:
+		return "%s · СТАРШАЯ" % suit_symbol
+	if joker_mode == Trick.JokerMode.LOWEST_DECLARED_CARD_WINS:
+		return "%s · МЛАДШАЯ" % suit_symbol
+
+	return "%s · НЕ БЕРЁТ" % suit_symbol
 
 
 func _get_displayed_joker_mode() -> Trick.JokerMode:
@@ -1043,10 +1057,12 @@ func _place_joker_controls() -> void:
 	var is_leading_joker_choice := pending_joker_card != null and game.active_trick == null
 
 	if is_leading_joker_choice:
-		_set_control_layout(joker_controls, 0.5, 0.0, 0.5, 0.0, -390.0, 162.0, 390.0, 270.0)
+		joker_controls.columns = 1
+		_set_control_layout(joker_controls, 0.0, 0.0, 0.0, 0.0, 24.0, 360.0, 344.0, 742.0)
 		return
 
-	_set_control_layout(joker_controls, 0.5, 0.0, 0.5, 0.0, -390.0, 440.0, 390.0, 552.0)
+	joker_controls.columns = 2
+	_set_control_layout(joker_controls, 0.5, 1.0, 0.5, 1.0, -300.0, -300.0, 300.0, -254.0)
 
 
 func _refresh_hand() -> void:
@@ -1064,18 +1080,14 @@ func _refresh_hand() -> void:
 	var displayed_cards := _sort_cards_for_display(human_player.hand, game.current_round.trump, hand_sort_mode)
 
 	for card in displayed_cards:
-		var card_button := Button.new()
-		card_button.custom_minimum_size = Vector2(80, 112)
-		card_button.text = card.get_card_name()
-		card_button.tooltip_text = card.get_card_name()
-		card_button.add_theme_font_size_override("font_size", 21)
-		card_button.disabled = not _is_human_turn() or not _is_card_available_to_human(card) or pending_joker_card != null
-
-		if card.suit == Card.Suit.HEARTS or card.suit == Card.Suit.DIAMONDS:
-			card_button.add_theme_color_override("font_color", Color(0.8, 0.08, 0.08))
-
-		card_button.pressed.connect(_on_card_pressed.bind(card))
-		hand_container.add_child(card_button)
+		var card_view := CardView.new()
+		card_view.set_card(card)
+		card_view.set_interactive(
+			true,
+			not _is_human_turn() or not _is_card_available_to_human(card) or pending_joker_card != null
+		)
+		card_view.card_pressed.connect(_on_card_pressed)
+		hand_container.add_child(card_view)
 
 
 func _refresh_hand_sort_controls() -> void:
@@ -1151,17 +1163,13 @@ func _create_player_panels() -> void:
 
 func _create_trick_slots() -> void:
 	for player_index in PLAYER_NAMES.size():
-		var panel := PanelContainer.new()
-		_place_trick_slot(panel, player_index)
-
-		var label := Label.new()
-		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-		label.add_theme_font_size_override("font_size", 19)
-		panel.add_child(label)
-		trick_slots.add_child(panel)
-		trick_card_labels.append(label)
-		trick_card_panels.append(panel)
+		var card_view := CardView.new()
+		card_view.set_card_size(Vector2(108.0, 132.0))
+		card_view.set_interactive(false, false)
+		_place_trick_slot(card_view, player_index)
+		card_view.visible = false
+		trick_slots.add_child(card_view)
+		trick_card_views.append(card_view)
 
 
 func _create_bot_card_backs() -> void:
@@ -1276,7 +1284,11 @@ func _refresh_deck_visual() -> void:
 			Color(0.74, 0.08, 0.06, 1.0) if trump_card.suit == Card.Suit.HEARTS or trump_card.suit == Card.Suit.DIAMONDS else Color(0.08, 0.08, 0.07, 1.0)
 		)
 		deck_trump_panel.tooltip_text = "Открытая карта определяет козырь."
-		deck_caption_label.text = "Открытый козырь\nВ колоде: %d" % game.deck.cards_left()
+		deck_caption_label.text = (
+			"Открытый Джокер\nБескозырка"
+			if trump_card.is_joker
+			else "Открытый козырь\nВ колоде: %d" % game.deck.cards_left()
+		)
 		return
 
 	var trump_name := game.current_round.get_trump_name()
@@ -1359,16 +1371,16 @@ func _place_player_panel(panel: PanelContainer, player_index: int) -> void:
 			_set_control_layout(panel, 1.0, 0.0, 1.0, 0.0, -610.0, 360.0, -350.0, 436.0)
 
 
-func _place_trick_slot(panel: PanelContainer, player_index: int) -> void:
+func _place_trick_slot(panel: Control, player_index: int) -> void:
 	match player_index:
 		HUMAN_PLAYER_INDEX:
-			_set_control_layout(panel, 0.5, 0.0, 0.5, 0.0, -95.0, 470.0, 95.0, 552.0)
+			_set_control_layout(panel, 0.5, 0.0, 0.5, 0.0, -54.0, 460.0, 54.0, 592.0)
 		1:
-			_set_control_layout(panel, 0.5, 0.0, 0.5, 0.0, -235.0, 330.0, -45.0, 412.0)
+			_set_control_layout(panel, 0.5, 0.0, 0.5, 0.0, -220.0, 368.0, -112.0, 500.0)
 		2:
-			_set_control_layout(panel, 0.5, 0.0, 0.5, 0.0, -95.0, 188.0, 95.0, 270.0)
+			_set_control_layout(panel, 0.5, 0.0, 0.5, 0.0, -54.0, 178.0, 54.0, 310.0)
 		3:
-			_set_control_layout(panel, 0.5, 0.0, 0.5, 0.0, 45.0, 330.0, 235.0, 412.0)
+			_set_control_layout(panel, 0.5, 0.0, 0.5, 0.0, 112.0, 368.0, 220.0, 500.0)
 
 
 func _set_control_layout(
