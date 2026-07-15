@@ -10,6 +10,7 @@ var displayed_card: Card
 var is_interactive := false
 var is_disabled := false
 var is_hovered := false
+var is_winner_highlighted := false
 
 var face_panel: Panel
 var top_corner_label: Label
@@ -29,6 +30,7 @@ func set_card(card: Card) -> void:
 	displayed_card = card
 	tooltip_text = card.get_card_name()
 	set_status("")
+	set_winner_highlight(false)
 
 	var card_color := _get_card_color(card)
 	if card.is_joker:
@@ -66,6 +68,11 @@ func set_interactive(interactive: bool, disabled: bool) -> void:
 	mouse_filter = Control.MOUSE_FILTER_STOP if is_interactive and not is_disabled else Control.MOUSE_FILTER_IGNORE
 	mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND if is_interactive and not is_disabled else Control.CURSOR_ARROW
 	modulate = Color(1.0, 1.0, 1.0, 0.42) if is_disabled else Color.WHITE
+	_refresh_face_style()
+
+
+func set_winner_highlight(enabled: bool) -> void:
+	is_winner_highlighted = enabled
 	_refresh_face_style()
 
 
@@ -139,15 +146,16 @@ func _refresh_face_style() -> void:
 		return
 
 	var background_color := Color(0.96, 0.95, 0.87, 1.0) if displayed_card.is_joker else Color(0.98, 0.98, 0.94, 1.0)
-	var border_color := Color(0.88, 0.67, 0.22, 1.0) if is_interactive and not is_disabled and is_hovered else Color(0.16, 0.2, 0.17, 1.0)
-	var border_width := 3 if is_interactive and not is_disabled and is_hovered else 2
+	var is_hover_highlighted := is_interactive and not is_disabled and is_hovered
+	var border_color := Color(0.98, 0.78, 0.25, 1.0) if is_winner_highlighted else (Color(0.88, 0.67, 0.22, 1.0) if is_hover_highlighted else Color(0.16, 0.2, 0.17, 1.0))
+	var border_width := 4 if is_winner_highlighted else (3 if is_hover_highlighted else 2)
 	var style := StyleBoxFlat.new()
 	style.bg_color = background_color
 	style.border_color = border_color
 	style.set_border_width_all(border_width)
 	style.set_corner_radius_all(8)
-	style.shadow_color = Color(0.0, 0.0, 0.0, 0.42)
-	style.shadow_size = 4
+	style.shadow_color = Color(0.98, 0.72, 0.16, 0.72) if is_winner_highlighted else Color(0.0, 0.0, 0.0, 0.42)
+	style.shadow_size = 12 if is_winner_highlighted else 4
 	style.shadow_offset = Vector2(0.0, 2.0)
 	face_panel.add_theme_stylebox_override("panel", style)
 

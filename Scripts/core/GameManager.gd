@@ -9,6 +9,8 @@ const NO_TRUMP_ROUND_COUNT := 4
 const GOLDEN_ROUND_COUNT := 5
 const MISERE_ROUND_COUNT := 5
 const TOTAL_ROUND_COUNT := NORMAL_ROUND_COUNT + DARK_ROUND_COUNT + NO_TRUMP_ROUND_COUNT + GOLDEN_ROUND_COUNT + MISERE_ROUND_COUNT
+const CARD_APPEAR_DURATION := 0.22
+const TRICK_WINNER_HOLD_DURATION := 0.7
 
 
 enum HandSortMode {
@@ -68,6 +70,10 @@ var no_trump_round_index := -1
 var golden_round_index := -1
 var misere_round_index := -1
 var is_processing_automatic_actions := false
+var is_trick_presentation_active := false
+var pending_play_presentation := false
+var pending_card_animation_player_index := -1
+var pending_trick_winner_player_index := -1
 var test_checkpoints: Array[Dictionary] = []
 var pending_test_checkpoint: Dictionary = {}
 var round_history: Array[Dictionary] = []
@@ -145,6 +151,7 @@ func _create_flat_style(
 
 
 func _start_round() -> void:
+	_reset_trick_presentation()
 	pending_joker_card = null
 	pending_joker_suit = -1
 	last_trick_text = "Взятка ещё не началась"
@@ -205,6 +212,13 @@ func _advance_automatic_actions() -> void:
 	is_processing_automatic_actions = true
 
 	while true:
+		if pending_play_presentation:
+			is_trick_presentation_active = true
+			_refresh_ui()
+			await _present_pending_play()
+			is_trick_presentation_active = false
+			continue
+
 		if game.current_round.state == Round.State.BIDDING:
 			if game.current_round.current_player_index == HUMAN_PLAYER_INDEX:
 				_prepare_test_checkpoint()
@@ -245,8 +259,6 @@ func _advance_automatic_actions() -> void:
 				_refresh_ui()
 				return
 
-			_refresh_ui()
-			await get_tree().create_timer(0.65).timeout
 			continue
 
 		_refresh_ui()
@@ -299,7 +311,7 @@ func _play_automatic_card() -> bool:
 		action_text = "Недопустимый автоматический ход."
 		return false
 
-	_record_play(player.display_name, card)
+	_record_play(player.display_name, card, player_index)
 	if card.is_joker:
 		_add_history(_get_joker_rule_text(joker_mode, declared_suit, Trick.ForcedCardRank.NONE, is_leading_joker))
 	return true
@@ -343,8 +355,7 @@ func _on_card_pressed(card: Card) -> void:
 		_refresh_ui()
 		return
 
-	_record_play("Ты", card)
-	_refresh_ui()
+	_record_play("Ты", card, HUMAN_PLAYER_INDEX)
 	_advance_automatic_actions()
 
 
@@ -375,11 +386,10 @@ func _on_joker_choice(
 		_refresh_ui()
 		return
 
-	_record_play("Ты", pending_joker_card)
+	_record_play("Ты", pending_joker_card, HUMAN_PLAYER_INDEX)
 	_add_history(_get_joker_rule_text(mode, declared_suit, forced_card_rank, is_leading_joker))
 	pending_joker_card = null
 	pending_joker_suit = -1
-	_refresh_ui()
 	_advance_automatic_actions()
 
 
@@ -389,6 +399,7 @@ func _on_undo_pressed() -> void:
 
 	var checkpoint: Dictionary = test_checkpoints.pop_back()
 	game.restore_snapshot(checkpoint["game"])
+	_reset_trick_presentation()
 	pending_joker_card = null
 	pending_joker_suit = -1
 	last_trick_text = checkpoint["last_trick_text"]
@@ -399,21 +410,33 @@ func _on_undo_pressed() -> void:
 
 
 func _on_score_sheet_toggle_pressed() -> void:
+	if is_processing_automatic_actions:
+		return
+
 	is_score_sheet_visible = not is_score_sheet_visible
 	_refresh_ui()
 
 
 func _on_round_history_toggle_pressed() -> void:
+	if is_processing_automatic_actions:
+		return
+
 	is_round_history_visible = not is_round_history_visible
 	_refresh_ui()
 
 
 func _on_hand_sort_by_suit_pressed() -> void:
+	if is_processing_automatic_actions:
+		return
+
 	hand_sort_mode = HandSortMode.BY_SUIT
 	_refresh_ui()
 
 
 func _on_hand_sort_trumps_left_pressed() -> void:
+	if is_processing_automatic_actions:
+		return
+
 	hand_sort_mode = HandSortMode.TRUMPS_LEFT
 	_refresh_ui()
 
@@ -509,10 +532,14 @@ func _finish_round() -> void:
 	_refresh_ui()
 
 
-func _record_play(player_name: String, card: Card) -> void:
+func _record_play(player_name: String, card: Card, player_index: int) -> void:
 	_add_history("%s сыграл %s." % [player_name, card.get_card_name()])
+	pending_play_presentation = true
+	pending_card_animation_player_index = player_index
+	pending_trick_winner_player_index = -1
 
 	if game.active_trick == null:
+		pending_trick_winner_player_index = game.last_trick_winner_index
 		last_trick_text = "%s сыграл %s. Взятку забирает %s." % [
 			player_name,
 			card.get_card_name(),
@@ -521,6 +548,62 @@ func _record_play(player_name: String, card: Card) -> void:
 		_add_history("Взятку забирает %s." % game.players[game.last_trick_winner_index].display_name)
 	else:
 		last_trick_text = _get_active_trick_text()
+
+
+func _present_pending_play() -> void:
+	var card_player_index: int = pending_card_animation_player_index
+	var winner_player_index: int = pending_trick_winner_player_index
+	pending_play_presentation = false
+	pending_card_animation_player_index = -1
+	pending_trick_winner_player_index = -1
+
+	await _animate_played_card(card_player_index)
+
+	if winner_player_index < 0:
+		return
+
+	_set_trick_winner_highlight(winner_player_index, true)
+	action_text = "Взятку забирает %s." % game.players[winner_player_index].display_name
+	action_label.text = action_text
+	await get_tree().create_timer(TRICK_WINNER_HOLD_DURATION).timeout
+	_set_trick_winner_highlight(winner_player_index, false)
+
+
+func _animate_played_card(player_index: int) -> void:
+	if player_index < 0 or player_index >= trick_card_views.size():
+		return
+
+	var card_view := trick_card_views[player_index]
+	if not card_view.visible:
+		return
+
+	card_view.pivot_offset = card_view.size * 0.5
+	card_view.scale = Vector2(0.76, 0.76)
+	card_view.modulate = Color(1.0, 1.0, 1.0, 0.0)
+	var tween := create_tween()
+	tween.set_parallel(true)
+	tween.tween_property(card_view, "scale", Vector2.ONE, CARD_APPEAR_DURATION).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tween.tween_property(card_view, "modulate", Color.WHITE, CARD_APPEAR_DURATION)
+	await tween.finished
+
+
+func _set_trick_winner_highlight(player_index: int, highlighted: bool) -> void:
+	if player_index < 0 or player_index >= trick_card_views.size():
+		return
+
+	trick_card_views[player_index].set_winner_highlight(highlighted)
+
+
+func _reset_trick_presentation() -> void:
+	is_trick_presentation_active = false
+	pending_play_presentation = false
+	pending_card_animation_player_index = -1
+	pending_trick_winner_player_index = -1
+
+	for card_view in trick_card_views:
+		card_view.set_winner_highlight(false)
+		card_view.scale = Vector2.ONE
+		card_view.modulate = Color.WHITE
 
 
 func _refresh_ui() -> void:
@@ -574,7 +657,11 @@ func _refresh_header() -> void:
 func _refresh_player_panels() -> void:
 	for player_index in game.players.size():
 		var player := game.players[player_index]
-		var is_current := _get_current_player_index() == player_index and game.current_round.state != Round.State.FINISHED
+		var is_current := (
+			not is_trick_presentation_active
+			and _get_current_player_index() == player_index
+			and game.current_round.state != Round.State.FINISHED
+		)
 		var marker := "Ход · " if is_current else ""
 		var person_label := " (ты)" if player_index == HUMAN_PLAYER_INDEX else ""
 		var hand_text := "скрыто" if _is_dark_round() and not game.cards_are_dealt else str(player.hand.size())
@@ -712,6 +799,7 @@ func _get_displayed_joker_forced_card_rank() -> Trick.ForcedCardRank:
 func _refresh_score_sheet() -> void:
 	score_sheet_panel.visible = is_score_sheet_visible
 	score_sheet_toggle_button.text = "Скрыть расписку" if is_score_sheet_visible else "📋 Расписка"
+	score_sheet_toggle_button.disabled = is_processing_automatic_actions
 	score_sheet_title.text = "Расписка: %d из %d раздач сыграно · полный план партии" % [round_history.size(), TOTAL_ROUND_COUNT]
 	final_results_label.visible = _is_full_game_complete()
 
@@ -990,6 +1078,7 @@ func _refresh_history() -> void:
 func _refresh_round_history_panel() -> void:
 	round_history_panel.visible = is_round_history_visible
 	round_history_toggle_button.text = "История ▾" if is_round_history_visible else "История ▸"
+	round_history_toggle_button.disabled = is_processing_automatic_actions
 
 
 func _refresh_round_results() -> void:
@@ -1091,8 +1180,8 @@ func _refresh_hand() -> void:
 
 
 func _refresh_hand_sort_controls() -> void:
-	hand_sort_by_suit_button.disabled = hand_sort_mode == HandSortMode.BY_SUIT
-	hand_sort_trumps_left_button.disabled = hand_sort_mode == HandSortMode.TRUMPS_LEFT
+	hand_sort_by_suit_button.disabled = is_processing_automatic_actions or hand_sort_mode == HandSortMode.BY_SUIT
+	hand_sort_trumps_left_button.disabled = is_processing_automatic_actions or hand_sort_mode == HandSortMode.TRUMPS_LEFT
 
 
 func _sort_cards_for_display(
