@@ -38,6 +38,7 @@ enum HandSortMode {
 @onready var bid_controls: HBoxContainer = %BidControls
 @onready var joker_controls: GridContainer = %JokerControls
 @onready var hand_container: HBoxContainer = %HandContainer
+@onready var hand_title: Label = %HandTitle
 @onready var hand_sort_by_suit_button: Button = %HandSortBySuitButton
 @onready var hand_sort_trumps_left_button: Button = %HandSortTrumpsLeftButton
 @onready var undo_button: Button = %UndoButton
@@ -53,6 +54,8 @@ enum HandSortMode {
 var game := Game.new(PLAYER_NAMES)
 var player_labels: Array[Label] = []
 var player_panels: Array[PanelContainer] = []
+var avatar_badges: Array[PanelContainer] = []
+var avatar_labels: Array[Label] = []
 var trick_card_views: Array[CardView] = []
 var bot_card_back_holders: Array[Control] = []
 var deck_back_panels: Array[PanelContainer] = []
@@ -91,11 +94,16 @@ var card_back_style: StyleBoxFlat
 var deck_trump_card_style: StyleBoxFlat
 var dealer_marker_style: StyleBoxFlat
 var lead_marker_style: StyleBoxFlat
+var avatar_badge_style: StyleBoxFlat
 var menu_overlay: Control
 var menu_panel: PanelContainer
 var menu_content: VBoxContainer
 var bot_speed_index := 1
 var is_pause_menu_open := false
+var configured_player_names: Array[String] = ["Андрей", "Олег", "Маша", "Лена"]
+var configured_avatar_indices: Array[int] = [0, 1, 2, 3]
+var new_game_name_inputs: Array[LineEdit] = []
+var new_game_avatar_selectors: Array[OptionButton] = []
 
 
 func _ready() -> void:
@@ -110,11 +118,15 @@ func _ready() -> void:
 	_run_round_history_checks()
 	_create_table_visual_styles()
 	_create_player_panels()
+	_create_player_avatar_badges()
 	_create_trick_slots()
 	_create_bot_card_backs()
 	_create_deck_visual()
 	_create_table_markers()
+	joker_controls.reparent(self)
 	_create_main_menu()
+	joker_controls.z_index = 80
+	joker_controls.mouse_filter = Control.MOUSE_FILTER_PASS
 	undo_button.pressed.connect(_on_undo_pressed)
 	score_sheet_toggle_button.pressed.connect(_on_score_sheet_toggle_pressed)
 	round_history_toggle_button.pressed.connect(_on_round_history_toggle_pressed)
@@ -139,6 +151,7 @@ func _create_table_visual_styles() -> void:
 	deck_trump_card_style = _create_flat_style(Color(0.92, 0.9, 0.76, 1.0), Color(0.88, 0.68, 0.24, 1.0), 2, 8, 3)
 	dealer_marker_style = _create_flat_style(Color(0.33, 0.2, 0.07, 1.0), Color(0.96, 0.77, 0.31, 1.0), 2, 12, 3)
 	lead_marker_style = _create_flat_style(Color(0.055, 0.2, 0.13, 1.0), Color(0.64, 0.86, 0.52, 1.0), 1, 8, 2)
+	avatar_badge_style = _create_flat_style(Color(0.04, 0.1, 0.07, 1.0), Color(0.75, 0.58, 0.2, 1.0), 2, 6, 2)
 
 
 func _create_flat_style(
@@ -209,12 +222,85 @@ func _build_main_menu_content() -> void:
 	_clear_children(menu_content)
 	_add_menu_title("PROJECT JOKER", "Локальная карточная партия для четырёх игроков")
 	_add_menu_spacer(18.0)
-	_add_menu_button("Новая партия", _on_new_game_pressed, true)
+	_add_menu_button("Новая партия", _show_new_game_setup, true)
 	_add_menu_button("Правила", _show_rules_menu)
 	_add_menu_button("Настройки", _show_settings_menu)
 	_add_menu_button("Выход", _on_quit_pressed)
 	_add_menu_spacer(12.0)
 	_add_menu_label("32 раздачи: обычные, тёмные, бескозырные, золотые и мизерные.", 14, Color(0.72, 0.85, 0.76, 1.0))
+
+
+func _show_new_game_setup() -> void:
+	is_pause_menu_open = false
+	menu_overlay.visible = true
+	_clear_children(menu_content)
+	new_game_name_inputs.clear()
+	new_game_avatar_selectors.clear()
+	_add_menu_title("Новая партия", "Укажи имена и выбери символы игроков")
+	_add_menu_label("Символы — временные авторские аватары. Позже их можно будет заменить полноценными иллюстрациями.", 14, Color(0.72, 0.85, 0.76, 1.0))
+
+	for player_index in PLAYER_NAMES.size():
+		_add_new_game_player_row(player_index)
+
+	_add_menu_spacer(8.0)
+	_add_menu_button("Начать партию", _start_configured_new_game, true)
+	_add_menu_button("Назад", _build_main_menu_content)
+
+
+func _add_new_game_player_row(player_index: int) -> void:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 10)
+	menu_content.add_child(row)
+
+	var role_label := Label.new()
+	role_label.text = "Ты" if player_index == HUMAN_PLAYER_INDEX else "Бот %d" % player_index
+	role_label.custom_minimum_size = Vector2(70.0, 38.0)
+	role_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	role_label.add_theme_font_size_override("font_size", 16)
+	role_label.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
+	row.add_child(role_label)
+
+	var name_input := LineEdit.new()
+	name_input.text = configured_player_names[player_index]
+	name_input.placeholder_text = "Имя игрока"
+	name_input.max_length = 16
+	name_input.custom_minimum_size = Vector2(250.0, 38.0)
+	name_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	name_input.add_theme_font_size_override("font_size", 17)
+	row.add_child(name_input)
+	new_game_name_inputs.append(name_input)
+
+	var avatar_selector := OptionButton.new()
+	avatar_selector.custom_minimum_size = Vector2(156.0, 38.0)
+	avatar_selector.add_theme_font_size_override("font_size", 16)
+	for avatar_index in 4:
+		avatar_selector.add_item(_get_avatar_option_label(avatar_index))
+	avatar_selector.selected = configured_avatar_indices[player_index]
+	row.add_child(avatar_selector)
+	new_game_avatar_selectors.append(avatar_selector)
+
+
+func _start_configured_new_game() -> void:
+	for player_index in PLAYER_NAMES.size():
+		var selected_name: String = new_game_name_inputs[player_index].text.strip_edges()
+		configured_player_names[player_index] = selected_name if not selected_name.is_empty() else str(PLAYER_NAMES[player_index])
+		configured_avatar_indices[player_index] = new_game_avatar_selectors[player_index].selected
+
+	_on_new_game_pressed()
+
+
+func _get_avatar_option_label(avatar_index: int) -> String:
+	match avatar_index:
+		0:
+			return "★ Звезда"
+		1:
+			return "☀ Солнце"
+		2:
+			return "☾ Луна"
+		3:
+			return "✦ Искра"
+
+	return "• Символ"
 
 
 func _show_rules_menu() -> void:
@@ -417,7 +503,7 @@ func _get_bot_action_delay() -> float:
 
 
 func _reset_game_session() -> void:
-	game = Game.new(PLAYER_NAMES)
+	game = Game.new(configured_player_names)
 	normal_round_index = 0
 	dark_round_index = -1
 	no_trump_round_index = -1
@@ -941,7 +1027,15 @@ func _refresh_header() -> void:
 			game.trump_card.get_card_name(),
 			game.current_round.get_trump_name()
 		]
-	action_label.visible = game.current_round.state != Round.State.FINISHED
+	var should_show_action_label := (
+		game.current_round.state == Round.State.PLAYING
+		and pending_joker_card == null
+		and (
+			_get_current_player_index() == HUMAN_PLAYER_INDEX
+			or is_trick_presentation_active
+		)
+	)
+	action_label.visible = should_show_action_label
 	action_label.text = action_text
 	pause_menu_button.disabled = is_processing_automatic_actions
 
@@ -981,6 +1075,7 @@ func _refresh_player_panels() -> void:
 			]
 
 	_refresh_bot_card_backs()
+	_refresh_player_avatar_badges()
 	_refresh_table_markers()
 
 
@@ -989,6 +1084,59 @@ func _get_player_panel_style(player_index: int, is_current: bool) -> StyleBoxFla
 		return active_human_player_panel_style if is_current else human_player_panel_style
 
 	return active_player_panel_style if is_current else player_panel_style
+
+
+func _get_player_avatar_symbol(player_index: int) -> String:
+	if player_index < 0 or player_index >= configured_avatar_indices.size():
+		return "•"
+
+	match configured_avatar_indices[player_index]:
+		0:
+			return "★"
+		1:
+			return "☀"
+		2:
+			return "☾"
+		3:
+			return "✦"
+
+	return "•"
+
+
+func _create_player_avatar_badges() -> void:
+	for player_index in PLAYER_NAMES.size():
+		var badge := PanelContainer.new()
+		badge.tooltip_text = "Аватар игрока"
+		badge.add_theme_stylebox_override("panel", avatar_badge_style)
+		_place_player_avatar_badge(badge, player_index)
+
+		var avatar_label := Label.new()
+		avatar_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		avatar_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		avatar_label.add_theme_font_size_override("font_size", 22)
+		avatar_label.add_theme_color_override("font_color", Color(0.98, 0.9, 0.6, 1.0))
+		badge.add_child(avatar_label)
+		players_container.add_child(badge)
+		avatar_badges.append(badge)
+		avatar_labels.append(avatar_label)
+
+
+func _refresh_player_avatar_badges() -> void:
+	for player_index in avatar_badges.size():
+		avatar_badges[player_index].tooltip_text = "Аватар: %s" % game.players[player_index].display_name
+		avatar_labels[player_index].text = _get_player_avatar_symbol(player_index)
+
+
+func _place_player_avatar_badge(badge: PanelContainer, player_index: int) -> void:
+	match player_index:
+		HUMAN_PLAYER_INDEX:
+			_set_control_layout(badge, 0.5, 1.0, 0.5, 1.0, 182.0, -388.0, 230.0, -340.0)
+		1:
+			_set_control_layout(badge, 0.0, 0.0, 0.0, 0.0, 620.0, 374.0, 668.0, 422.0)
+		2:
+			_set_control_layout(badge, 0.5, 0.0, 0.5, 0.0, 180.0, 92.0, 228.0, 140.0)
+		3:
+			_set_control_layout(badge, 1.0, 0.0, 1.0, 0.0, -668.0, 374.0, -620.0, 422.0)
 
 
 func _refresh_table() -> void:
@@ -1109,9 +1257,11 @@ func _refresh_score_sheet() -> void:
 	for completed_round in round_history:
 		completed_rounds[int(completed_round["round_number"])] = completed_round
 
-	var header_texts := ["№", "Раздача / козырь", "Андрей", "Олег", "Маша", "Лена"]
+	var header_texts := ["№", "Раздача / козырь"]
+	for player_index in game.players.size():
+		header_texts.append(game.players[player_index].display_name)
 	for header_index in header_texts.size():
-		_add_score_sheet_cell(header_texts[header_index], true, false, false, 220.0 if header_index == 1 else 112.0)
+		_add_score_sheet_cell(header_texts[header_index], true, false, false, 220.0 if header_index == 1 else 150.0)
 
 	for round_number in range(1, TOTAL_ROUND_COUNT + 1):
 		var round_plan: Dictionary = _get_planned_round(round_number)
@@ -1409,10 +1559,17 @@ func _refresh_bid_controls() -> void:
 
 func _refresh_joker_controls() -> void:
 	_clear_children(joker_controls)
-	_place_joker_controls()
 
 	if pending_joker_card == null:
+		# Верхний слой выбора Джокера не должен перекрывать обычные кнопки,
+		# когда игрок ещё не выбирает его условие.
+		joker_controls.visible = false
+		joker_controls.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		return
+
+	joker_controls.visible = true
+	joker_controls.mouse_filter = Control.MOUSE_FILTER_STOP
+	_place_joker_controls()
 
 	if game.active_trick == null:
 		if pending_joker_suit < 0:
@@ -1439,15 +1596,16 @@ func _place_joker_controls() -> void:
 
 	if is_leading_joker_choice:
 		joker_controls.columns = 1
-		_set_control_layout(joker_controls, 0.0, 0.0, 0.0, 0.0, 24.0, 360.0, 344.0, 742.0)
+		_set_control_layout(joker_controls, 0.0, 0.0, 0.0, 0.0, 64.0, 400.0, 384.0, 782.0)
 		return
 
 	joker_controls.columns = 2
-	_set_control_layout(joker_controls, 0.5, 1.0, 0.5, 1.0, -300.0, -300.0, 300.0, -254.0)
+	_set_control_layout(joker_controls, 0.5, 1.0, 0.5, 1.0, -330.0, -340.0, 330.0, -288.0)
 
 
 func _refresh_hand() -> void:
 	_clear_children(hand_container)
+	hand_title.text = "Твоя рука (%s)" % game.players[HUMAN_PLAYER_INDEX].display_name
 
 	if _is_dark_round() and not game.cards_are_dealt:
 		var hidden_cards_label := Label.new()
@@ -1788,6 +1946,11 @@ func _set_control_layout(
 func _add_joker_suit_button(label: String, suit: int) -> void:
 	var suit_button := Button.new()
 	suit_button.text = label
+	suit_button.custom_minimum_size = Vector2(0.0, 44.0)
+	suit_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	suit_button.disabled = false
+	suit_button.mouse_filter = Control.MOUSE_FILTER_STOP
+	suit_button.z_index = 1
 
 	if suit < 0:
 		suit_button.pressed.connect(_on_joker_suit_reset)
@@ -1811,6 +1974,11 @@ func _add_joker_choice_button(
 ) -> void:
 	var choice_button := Button.new()
 	choice_button.text = label
+	choice_button.custom_minimum_size = Vector2(0.0, 44.0)
+	choice_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	choice_button.disabled = false
+	choice_button.mouse_filter = Control.MOUSE_FILTER_STOP
+	choice_button.z_index = 1
 	choice_button.pressed.connect(_on_joker_choice.bind(mode, declared_suit, forced_card_rank))
 	joker_controls.add_child(choice_button)
 

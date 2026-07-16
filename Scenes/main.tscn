@@ -137,19 +137,24 @@ mouse_filter = 2
 [node name="ActionLabel" type="Label" parent="Margin/TablePanel/TableContent"]
 unique_name_in_owner = true
 layout_mode = 1
-anchors_preset = 10
+anchors_preset = 12
 anchor_left = 0.5
+anchor_top = 1.0
 anchor_right = 0.5
-offset_left = -400.0
-offset_top = 60.0
-offset_right = 400.0
-offset_bottom = 82.0
+anchor_bottom = 1.0
+offset_left = -250.0
+offset_top = -296.0
+offset_right = 250.0
+offset_bottom = -270.0
 grow_horizontal = 2
+grow_vertical = 0
+mouse_filter = 2
 theme_override_colors/font_color = Color(0.97, 0.86, 0.55, 1)
-theme_override_font_sizes/font_size = 18
+theme_override_font_sizes/font_size = 15
 horizontal_alignment = 1
+vertical_alignment = 1
 text = "Подготовка партии"
-autowrap_mode = 2
+clip_text = true
 
 [node name="RoundHistoryToggleButton" type="Button" parent="Margin/TablePanel/TableContent"]
 unique_name_in_owner = true
@@ -280,6 +285,7 @@ alignment = 1
 theme_override_constants/separation = 10
 
 [node name="HandTitle" type="Label" parent="Margin/TablePanel/TableContent/HandHeader"]
+unique_name_in_owner = true
 layout_mode = 2
 theme_override_colors/font_color = Color(0.85, 0.95, 0.88, 1)
 theme_override_font_sizes/font_size = 18
