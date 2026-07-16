@@ -13,6 +13,7 @@ const CARD_APPEAR_DURATION := 0.22
 const TRICK_WINNER_HOLD_DURATION := 0.7
 const BOT_SPEED_COUNT := 3
 const BOT_DIFFICULTY_COUNT := 3
+const SOUND_VOLUME_COUNT := 4
 const PERSISTENT_SETTINGS_PATH := "user://project_joker_settings.cfg"
 const SESSION_SAVE_PATH := "user://project_joker_session.save"
 const SESSION_SAVE_VERSION := 1
@@ -28,6 +29,13 @@ enum BotDifficulty {
 	EASY,
 	NORMAL,
 	HARD
+}
+
+
+enum SoundEffect {
+	DEAL,
+	CARD,
+	TRICK
 }
 
 
@@ -113,6 +121,7 @@ var menu_panel: PanelContainer
 var menu_content: VBoxContainer
 var bot_speed_index := 1
 var bot_difficulty: BotDifficulty = BotDifficulty.NORMAL
+var sound_volume_index := 2
 var is_pause_menu_open := false
 var configured_player_names: Array[String] = ["Андрей", "Олег", "Маша", "Лена"]
 var configured_avatar_indices: Array[int] = [0, 1, 2, 3]
@@ -121,6 +130,9 @@ var new_game_avatar_selectors: Array[OptionButton] = []
 var new_game_bot_difficulty_selector: OptionButton
 var profile_name_input: LineEdit
 var profile_avatar_selector: OptionButton
+var sound_players: Array[AudioStreamPlayer] = []
+var sound_streams: Dictionary = {}
+var next_sound_player_index := 0
 
 
 func _ready() -> void:
@@ -142,6 +154,7 @@ func _ready() -> void:
 	_create_bot_card_backs()
 	_create_deck_visual()
 	_create_table_markers()
+	_create_sound_players()
 	joker_controls.reparent(self)
 	_create_main_menu()
 	joker_controls.z_index = 80
@@ -468,7 +481,24 @@ func _show_settings_menu() -> void:
 	speed_selector.item_selected.connect(_on_bot_speed_selected)
 	menu_content.add_child(speed_selector)
 
-	_add_menu_label("Настройки звука появятся вместе со звуками карт и музыкой на следующем этапе.", 14, Color(0.72, 0.85, 0.76, 1.0))
+	var sound_label := Label.new()
+	sound_label.text = "Громкость звуков"
+	sound_label.add_theme_font_size_override("font_size", 18)
+	sound_label.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
+	menu_content.add_child(sound_label)
+
+	var sound_selector := OptionButton.new()
+	sound_selector.add_item("Без звука")
+	sound_selector.add_item("Тихо")
+	sound_selector.add_item("Обычно")
+	sound_selector.add_item("Громко")
+	sound_selector.selected = sound_volume_index
+	sound_selector.custom_minimum_size = Vector2(0.0, 42.0)
+	sound_selector.add_theme_font_size_override("font_size", 17)
+	sound_selector.item_selected.connect(_on_sound_volume_selected)
+	menu_content.add_child(sound_selector)
+
+	_add_menu_label("Сейчас доступны короткие процедурные звуки раздачи, хода картой и взятки. Музыка появится отдельным шагом.", 14, Color(0.72, 0.85, 0.76, 1.0))
 	_add_menu_spacer(8.0)
 	_add_menu_button("Назад", _return_from_menu_subpage)
 
@@ -619,6 +649,12 @@ func _on_bot_speed_selected(selected_index: int) -> void:
 	_save_persistent_settings()
 
 
+func _on_sound_volume_selected(selected_index: int) -> void:
+	sound_volume_index = clampi(selected_index, 0, SOUND_VOLUME_COUNT - 1)
+	_apply_sound_volume()
+	_save_persistent_settings()
+
+
 func _load_persistent_settings() -> void:
 	var config := ConfigFile.new()
 	if config.load(PERSISTENT_SETTINGS_PATH) != OK:
@@ -634,6 +670,8 @@ func _load_persistent_settings() -> void:
 	bot_difficulty = clampi(saved_difficulty, 0, BOT_DIFFICULTY_COUNT - 1)
 	var saved_speed: int = int(config.get_value("game", "bot_speed", bot_speed_index))
 	bot_speed_index = clampi(saved_speed, 0, BOT_SPEED_COUNT - 1)
+	var saved_sound_volume: int = int(config.get_value("audio", "sound_volume", sound_volume_index))
+	sound_volume_index = clampi(saved_sound_volume, 0, SOUND_VOLUME_COUNT - 1)
 
 	var fullscreen_enabled: bool = bool(config.get_value("display", "fullscreen", false))
 	DisplayServer.window_set_mode(
@@ -650,6 +688,7 @@ func _save_persistent_settings() -> void:
 
 	config.set_value("game", "bot_difficulty", bot_difficulty)
 	config.set_value("game", "bot_speed", bot_speed_index)
+	config.set_value("audio", "sound_volume", sound_volume_index)
 	config.set_value(
 		"display",
 		"fullscreen",
@@ -1007,6 +1046,106 @@ func _get_bot_action_delay() -> float:
 	return 0.45
 
 
+func _create_sound_players() -> void:
+	sound_streams[SoundEffect.DEAL] = _create_procedural_sound(310.0, 210.0, 0.09, 0.32, 0.22)
+	sound_streams[SoundEffect.CARD] = _create_procedural_sound(540.0, 360.0, 0.06, 0.24, 0.12)
+	sound_streams[SoundEffect.TRICK] = _create_procedural_sound(420.0, 720.0, 0.18, 0.34, 0.3)
+
+	for player_number in 3:
+		var player := AudioStreamPlayer.new()
+		player.name = "SoundEffectPlayer%d" % player_number
+		player.bus = &"Master"
+		add_child(player)
+		sound_players.append(player)
+
+	_apply_sound_volume()
+
+
+func _create_procedural_sound(
+	start_frequency: float,
+	end_frequency: float,
+	duration: float,
+	amplitude: float,
+	overtone_mix: float
+) -> AudioStreamWAV:
+	var mix_rate := 22050
+	var sample_count: int = maxi(1, roundi(duration * mix_rate))
+	var data := PackedByteArray()
+	data.resize(sample_count * 2)
+	var phase := 0.0
+
+	for sample_index in sample_count:
+		var progress: float = float(sample_index) / float(sample_count)
+		var frequency := lerpf(start_frequency, end_frequency, progress)
+		phase = fposmod(phase + frequency / float(mix_rate), 1.0)
+		var tone := sin(phase * TAU)
+		var overtone := sin(phase * TAU * 2.03)
+		var attack := minf(progress / 0.012, 1.0)
+		var release := pow(maxf(0.0, 1.0 - progress), 1.7)
+		var sample: float = (tone + overtone * overtone_mix) * attack * release * amplitude
+		var sample_value: int = clampi(roundi(sample * 32767.0), -32767, 32767)
+		var unsigned_sample: int = sample_value if sample_value >= 0 else sample_value + 65536
+		data[sample_index * 2] = unsigned_sample & 0xff
+		data[sample_index * 2 + 1] = (unsigned_sample >> 8) & 0xff
+
+	var stream := AudioStreamWAV.new()
+	stream.format = AudioStreamWAV.FORMAT_16_BITS
+	stream.mix_rate = mix_rate
+	stream.stereo = false
+	stream.data = data
+	return stream
+
+
+func _play_sound(effect: SoundEffect) -> void:
+	if sound_volume_index == 0 or not sound_streams.has(effect):
+		return
+
+	var sound_player := _get_available_sound_player()
+	if sound_player == null:
+		return
+
+	var stream: AudioStream = sound_streams[effect] as AudioStream
+	if stream == null:
+		return
+
+	sound_player.stream = stream
+	sound_player.play()
+
+
+func _get_available_sound_player() -> AudioStreamPlayer:
+	for player in sound_players:
+		if not player.playing:
+			return player
+
+	if sound_players.is_empty():
+		return null
+
+	var player := sound_players[next_sound_player_index]
+	next_sound_player_index = (next_sound_player_index + 1) % sound_players.size()
+	return player
+
+
+func _apply_sound_volume() -> void:
+	var volume_db := _get_sound_volume_db()
+
+	for player in sound_players:
+		player.volume_db = volume_db
+
+
+func _get_sound_volume_db() -> float:
+	match sound_volume_index:
+		0:
+			return -80.0
+		1:
+			return -24.0
+		2:
+			return -15.0
+		3:
+			return -8.0
+
+	return -15.0
+
+
 func _reset_game_session() -> void:
 	game = Game.new(configured_player_names)
 	normal_round_index = 0
@@ -1044,6 +1183,8 @@ func _start_round() -> void:
 		action_text = "Не удалось начать раздачу."
 		_refresh_ui()
 		return
+
+	_play_sound(SoundEffect.DEAL)
 
 	if _is_misere_round():
 		action_text = "Мизерная раздача %d из %d. Заказов нет; сдающий: %s." % [
@@ -1430,6 +1571,7 @@ func _finish_round() -> void:
 
 func _record_play(player_name: String, card: Card, player_index: int) -> void:
 	_add_history("%s сыграл %s." % [player_name, card.get_card_name()])
+	_play_sound(SoundEffect.CARD)
 	pending_play_presentation = true
 	pending_card_animation_player_index = player_index
 	pending_trick_winner_player_index = -1
@@ -1458,6 +1600,7 @@ func _present_pending_play() -> void:
 	if winner_player_index < 0:
 		return
 
+	_play_sound(SoundEffect.TRICK)
 	_set_trick_winner_highlight(winner_player_index, true)
 	action_text = "Взятку забирает %s." % game.players[winner_player_index].display_name
 	action_label.text = action_text
