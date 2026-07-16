@@ -91,6 +91,12 @@ layout_mode = 2
 theme_override_font_sizes/font_size = 16
 text = "📋 Расписка"
 
+[node name="PauseMenuButton" type="Button" parent="Margin/TablePanel/TableContent/Header"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 16
+text = "☰ Меню"
+
 [node name="PlayersContainer" type="Control" parent="Margin/TablePanel/TableContent"]
 unique_name_in_owner = true
 layout_mode = 1

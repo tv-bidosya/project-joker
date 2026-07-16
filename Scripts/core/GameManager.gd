@@ -11,6 +11,7 @@ const MISERE_ROUND_COUNT := 5
 const TOTAL_ROUND_COUNT := NORMAL_ROUND_COUNT + DARK_ROUND_COUNT + NO_TRUMP_ROUND_COUNT + GOLDEN_ROUND_COUNT + MISERE_ROUND_COUNT
 const CARD_APPEAR_DURATION := 0.22
 const TRICK_WINNER_HOLD_DURATION := 0.7
+const BOT_SPEED_COUNT := 3
 
 
 enum HandSortMode {
@@ -46,6 +47,7 @@ enum HandSortMode {
 @onready var score_sheet_grid: GridContainer = %ScoreSheetGrid
 @onready var final_results_label: Label = %FinalResultsLabel
 @onready var next_round_button: Button = %NextRoundButton
+@onready var pause_menu_button: Button = %PauseMenuButton
 
 
 var game := Game.new(PLAYER_NAMES)
@@ -89,6 +91,11 @@ var card_back_style: StyleBoxFlat
 var deck_trump_card_style: StyleBoxFlat
 var dealer_marker_style: StyleBoxFlat
 var lead_marker_style: StyleBoxFlat
+var menu_overlay: Control
+var menu_panel: PanelContainer
+var menu_content: VBoxContainer
+var bot_speed_index := 1
+var is_pause_menu_open := false
 
 
 func _ready() -> void:
@@ -107,13 +114,15 @@ func _ready() -> void:
 	_create_bot_card_backs()
 	_create_deck_visual()
 	_create_table_markers()
+	_create_main_menu()
 	undo_button.pressed.connect(_on_undo_pressed)
 	score_sheet_toggle_button.pressed.connect(_on_score_sheet_toggle_pressed)
 	round_history_toggle_button.pressed.connect(_on_round_history_toggle_pressed)
 	hand_sort_by_suit_button.pressed.connect(_on_hand_sort_by_suit_pressed)
 	hand_sort_trumps_left_button.pressed.connect(_on_hand_sort_trumps_left_pressed)
 	next_round_button.pressed.connect(_on_next_round_pressed)
-	_start_round()
+	pause_menu_button.pressed.connect(_on_pause_menu_pressed)
+	_show_main_menu()
 
 
 func _create_table_visual_styles() -> void:
@@ -148,6 +157,283 @@ func _create_flat_style(
 	style.shadow_size = shadow_size
 	style.shadow_offset = Vector2(0, 2)
 	return style
+
+
+func _create_main_menu() -> void:
+	menu_overlay = Control.new()
+	menu_overlay.name = "MainMenuOverlay"
+	_set_control_layout(menu_overlay, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0)
+	menu_overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	menu_overlay.z_index = 100
+	add_child(menu_overlay)
+
+	var menu_backdrop := ColorRect.new()
+	menu_backdrop.color = Color(0.006, 0.055, 0.034, 0.98)
+	menu_backdrop.mouse_filter = Control.MOUSE_FILTER_STOP
+	menu_backdrop.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	menu_overlay.add_child(menu_backdrop)
+
+	menu_panel = PanelContainer.new()
+	menu_panel.name = "MenuPanel"
+	_set_control_layout(menu_panel, 0.5, 0.5, 0.5, 0.5, -340.0, -350.0, 340.0, 350.0)
+	menu_panel.add_theme_stylebox_override(
+		"panel",
+		_create_flat_style(Color(0.018, 0.145, 0.085, 1.0), Color(0.47, 0.29, 0.1, 1.0), 4, 18, 12)
+	)
+	menu_overlay.add_child(menu_panel)
+
+	var menu_margin := MarginContainer.new()
+	menu_margin.add_theme_constant_override("margin_left", 42)
+	menu_margin.add_theme_constant_override("margin_top", 38)
+	menu_margin.add_theme_constant_override("margin_right", 42)
+	menu_margin.add_theme_constant_override("margin_bottom", 38)
+	menu_panel.add_child(menu_margin)
+
+	menu_content = VBoxContainer.new()
+	menu_content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	menu_content.add_theme_constant_override("separation", 14)
+	menu_margin.add_child(menu_content)
+
+
+func _show_main_menu() -> void:
+	is_pause_menu_open = false
+	menu_overlay.visible = true
+	_build_main_menu_content()
+
+
+func _hide_main_menu() -> void:
+	menu_overlay.visible = false
+
+
+func _build_main_menu_content() -> void:
+	_clear_children(menu_content)
+	_add_menu_title("PROJECT JOKER", "Локальная карточная партия для четырёх игроков")
+	_add_menu_spacer(18.0)
+	_add_menu_button("Новая партия", _on_new_game_pressed, true)
+	_add_menu_button("Правила", _show_rules_menu)
+	_add_menu_button("Настройки", _show_settings_menu)
+	_add_menu_button("Выход", _on_quit_pressed)
+	_add_menu_spacer(12.0)
+	_add_menu_label("32 раздачи: обычные, тёмные, бескозырные, золотые и мизерные.", 14, Color(0.72, 0.85, 0.76, 1.0))
+
+
+func _show_rules_menu() -> void:
+	menu_overlay.visible = true
+	_clear_children(menu_content)
+	_add_menu_title("Правила партии", "Краткая памятка — полный документ остаётся в Game Design Document")
+	_add_menu_label("• Играют четыре игрока. Сдающий меняется по кругу; в начале выбирается случайно.", 15)
+	_add_menu_label("• В обычных, тёмных и бескозырных раздачах игроки заказывают число взяток. Последний заказ не может уравнять сумму заказов с числом карт.", 15)
+	_add_menu_label("• В бескозырке точный заказ даёт +15 за взятку, недобор — −10, перебор — +1; заказ 0 и 0 взяток — +5.", 15)
+	_add_menu_label("• В золотой и мизерной сериях заказов нет: золотая поощряет взятки, мизерная — избегание взяток.", 15)
+	_add_menu_label("• Джокер можно использовать как сильнейшую карту или как сброс; при первом ходе он позволяет объявить масть и условие розыгрыша.", 15)
+	_add_menu_label("• При равенстве очков выше место у игрока, который точнее выполнил заказы за всю партию.", 15)
+	_add_menu_spacer(8.0)
+	_add_menu_button("Назад", _return_from_menu_subpage)
+
+
+func _show_settings_menu() -> void:
+	menu_overlay.visible = true
+	_clear_children(menu_content)
+	_add_menu_title("Настройки", "Параметры применяются сразу и действуют до закрытия игры")
+	_add_menu_spacer(8.0)
+
+	var fullscreen_toggle := CheckButton.new()
+	fullscreen_toggle.text = "Полноэкранный режим"
+	fullscreen_toggle.button_pressed = DisplayServer.window_get_mode() == DisplayServer.WINDOW_MODE_FULLSCREEN
+	fullscreen_toggle.add_theme_font_size_override("font_size", 18)
+	fullscreen_toggle.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
+	fullscreen_toggle.toggled.connect(_on_fullscreen_toggled)
+	menu_content.add_child(fullscreen_toggle)
+
+	var speed_label := Label.new()
+	speed_label.text = "Скорость ходов ботов"
+	speed_label.add_theme_font_size_override("font_size", 18)
+	speed_label.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
+	menu_content.add_child(speed_label)
+
+	var speed_selector := OptionButton.new()
+	speed_selector.add_item("Медленно")
+	speed_selector.add_item("Обычно")
+	speed_selector.add_item("Быстро")
+	speed_selector.selected = bot_speed_index
+	speed_selector.custom_minimum_size = Vector2(0.0, 42.0)
+	speed_selector.add_theme_font_size_override("font_size", 17)
+	speed_selector.item_selected.connect(_on_bot_speed_selected)
+	menu_content.add_child(speed_selector)
+
+	_add_menu_label("Настройки звука появятся вместе со звуками карт и музыкой на следующем этапе.", 14, Color(0.72, 0.85, 0.76, 1.0))
+	_add_menu_spacer(8.0)
+	_add_menu_button("Назад", _return_from_menu_subpage)
+
+
+func _show_final_session_menu() -> void:
+	is_pause_menu_open = false
+	menu_overlay.visible = true
+	_clear_children(menu_content)
+	_add_menu_title("Партия завершена", "Поздравляем — полный цикл из 32 раздач сыгран")
+	_add_menu_label(_get_final_results_text(), 16, Color(0.91, 0.96, 0.91, 1.0))
+	_add_menu_spacer(10.0)
+	_add_menu_button("Сыграть ещё раз", _on_new_game_pressed, true)
+	_add_menu_button("Вернуться в меню", _on_return_to_menu_pressed)
+
+
+func _add_menu_title(title_text: String, subtitle_text: String) -> void:
+	var title_label := Label.new()
+	title_label.text = title_text
+	title_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title_label.add_theme_font_size_override("font_size", 34)
+	title_label.add_theme_color_override("font_color", Color(0.97, 0.86, 0.55, 1.0))
+	menu_content.add_child(title_label)
+
+	var subtitle_label := Label.new()
+	subtitle_label.text = subtitle_text
+	subtitle_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	subtitle_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	subtitle_label.add_theme_font_size_override("font_size", 16)
+	subtitle_label.add_theme_color_override("font_color", Color(0.72, 0.85, 0.76, 1.0))
+	menu_content.add_child(subtitle_label)
+
+
+func _add_menu_label(label_text: String, font_size: int, font_color: Color = Color(0.91, 0.96, 0.91, 1.0)) -> void:
+	var label := Label.new()
+	label.text = label_text
+	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	label.add_theme_font_size_override("font_size", font_size)
+	label.add_theme_color_override("font_color", font_color)
+	menu_content.add_child(label)
+
+
+func _add_menu_spacer(height: float) -> void:
+	var spacer := Control.new()
+	spacer.custom_minimum_size = Vector2(0.0, height)
+	menu_content.add_child(spacer)
+
+
+func _add_menu_button(label_text: String, callback: Callable, is_primary: bool = false) -> void:
+	var button := Button.new()
+	button.text = label_text
+	button.custom_minimum_size = Vector2(0.0, 48.0)
+	button.add_theme_font_size_override("font_size", 19)
+	button.add_theme_color_override("font_color", Color(1.0, 0.95, 0.78, 1.0))
+	button.add_theme_stylebox_override(
+		"normal",
+		_create_flat_style(
+			Color(0.15, 0.22, 0.1, 1.0) if is_primary else Color(0.04, 0.1, 0.07, 1.0),
+			Color(0.95, 0.75, 0.28, 1.0) if is_primary else Color(0.45, 0.29, 0.1, 1.0),
+			2,
+			10,
+			3
+		)
+	)
+	button.add_theme_stylebox_override(
+		"hover",
+		_create_flat_style(Color(0.22, 0.3, 0.12, 1.0), Color(1.0, 0.82, 0.34, 1.0), 3, 10, 5)
+	)
+	button.pressed.connect(callback)
+	menu_content.add_child(button)
+
+
+func _on_new_game_pressed() -> void:
+	is_pause_menu_open = false
+	_reset_game_session()
+	_hide_main_menu()
+	_start_round()
+
+
+func _on_return_to_menu_pressed() -> void:
+	_reset_game_session()
+	_show_main_menu()
+
+
+func _on_pause_menu_pressed() -> void:
+	if is_processing_automatic_actions:
+		return
+
+	is_pause_menu_open = true
+	menu_overlay.visible = true
+	_build_pause_menu_content()
+
+
+func _build_pause_menu_content() -> void:
+	_clear_children(menu_content)
+	_add_menu_title("Пауза", "Текущая локальная партия ждёт твоего решения")
+	_add_menu_spacer(18.0)
+	_add_menu_button("Продолжить", _resume_current_game, true)
+	_add_menu_button("Правила", _show_rules_menu)
+	_add_menu_button("Настройки", _show_settings_menu)
+	_add_menu_button("Завершить партию", _show_end_session_confirmation)
+
+
+func _resume_current_game() -> void:
+	is_pause_menu_open = false
+	_hide_main_menu()
+	_refresh_ui()
+
+
+func _show_end_session_confirmation() -> void:
+	_clear_children(menu_content)
+	_add_menu_title("Завершить партию?", "Текущая локальная партия будет сброшена")
+	_add_menu_label("Вернуться к этой партии после завершения пока нельзя: сохранение незавершённых игр будет добавлено отдельным этапом.", 16)
+	_add_menu_spacer(14.0)
+	_add_menu_button("Завершить и вернуться в меню", _confirm_end_current_session)
+	_add_menu_button("Отмена", _build_pause_menu_content, true)
+
+
+func _confirm_end_current_session() -> void:
+	_reset_game_session()
+	_show_main_menu()
+
+
+func _return_from_menu_subpage() -> void:
+	if is_pause_menu_open:
+		_build_pause_menu_content()
+		return
+
+	_build_main_menu_content()
+
+
+func _on_quit_pressed() -> void:
+	get_tree().quit()
+
+
+func _on_fullscreen_toggled(enabled: bool) -> void:
+	DisplayServer.window_set_mode(
+		DisplayServer.WINDOW_MODE_FULLSCREEN if enabled else DisplayServer.WINDOW_MODE_MAXIMIZED
+	)
+
+
+func _on_bot_speed_selected(selected_index: int) -> void:
+	bot_speed_index = clampi(selected_index, 0, BOT_SPEED_COUNT - 1)
+
+
+func _get_bot_action_delay() -> float:
+	match bot_speed_index:
+		0:
+			return 0.75
+		2:
+			return 0.2
+
+	return 0.45
+
+
+func _reset_game_session() -> void:
+	game = Game.new(PLAYER_NAMES)
+	normal_round_index = 0
+	dark_round_index = -1
+	no_trump_round_index = -1
+	golden_round_index = -1
+	misere_round_index = -1
+	is_processing_automatic_actions = false
+	is_score_sheet_visible = false
+	is_round_history_visible = true
+	hand_sort_mode = HandSortMode.BY_SUIT
+	round_history.clear()
+	recent_actions.clear()
+	test_checkpoints.clear()
+	pending_test_checkpoint.clear()
+	pending_joker_card = null
+	pending_joker_suit = -1
+	_reset_trick_presentation()
 
 
 func _start_round() -> void:
@@ -238,7 +524,7 @@ func _advance_automatic_actions() -> void:
 				return
 
 			_refresh_ui()
-			await get_tree().create_timer(0.45).timeout
+			await get_tree().create_timer(_get_bot_action_delay()).timeout
 			continue
 
 		if game.current_round.state == Round.State.PLAYING:
@@ -253,6 +539,8 @@ func _advance_automatic_actions() -> void:
 				is_processing_automatic_actions = false
 				_refresh_ui()
 				return
+
+			await get_tree().create_timer(_get_bot_action_delay()).timeout
 
 			if not _play_automatic_card():
 				is_processing_automatic_actions = false
@@ -531,6 +819,9 @@ func _finish_round() -> void:
 
 	_refresh_ui()
 
+	if _is_full_game_complete():
+		_show_final_session_menu()
+
 
 func _record_play(player_name: String, card: Card, player_index: int) -> void:
 	_add_history("%s сыграл %s." % [player_name, card.get_card_name()])
@@ -652,6 +943,7 @@ func _refresh_header() -> void:
 		]
 	action_label.visible = game.current_round.state != Round.State.FINISHED
 	action_label.text = action_text
+	pause_menu_button.disabled = is_processing_automatic_actions
 
 
 func _refresh_player_panels() -> void:
