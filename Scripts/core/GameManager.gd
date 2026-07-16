@@ -12,11 +12,19 @@ const TOTAL_ROUND_COUNT := NORMAL_ROUND_COUNT + DARK_ROUND_COUNT + NO_TRUMP_ROUN
 const CARD_APPEAR_DURATION := 0.22
 const TRICK_WINNER_HOLD_DURATION := 0.7
 const BOT_SPEED_COUNT := 3
+const BOT_DIFFICULTY_COUNT := 3
 
 
 enum HandSortMode {
 	BY_SUIT,
 	TRUMPS_LEFT
+}
+
+
+enum BotDifficulty {
+	EASY,
+	NORMAL,
+	HARD
 }
 
 
@@ -99,11 +107,13 @@ var menu_overlay: Control
 var menu_panel: PanelContainer
 var menu_content: VBoxContainer
 var bot_speed_index := 1
+var bot_difficulty: BotDifficulty = BotDifficulty.NORMAL
 var is_pause_menu_open := false
 var configured_player_names: Array[String] = ["Андрей", "Олег", "Маша", "Лена"]
 var configured_avatar_indices: Array[int] = [0, 1, 2, 3]
 var new_game_name_inputs: Array[LineEdit] = []
 var new_game_avatar_selectors: Array[OptionButton] = []
+var new_game_bot_difficulty_selector: OptionButton
 
 
 func _ready() -> void:
@@ -243,6 +253,8 @@ func _show_new_game_setup() -> void:
 		_add_new_game_player_row(player_index)
 
 	_add_menu_spacer(8.0)
+	_add_new_game_bot_difficulty_row()
+	_add_menu_spacer(8.0)
 	_add_menu_button("Начать партию", _start_configured_new_game, true)
 	_add_menu_button("Назад", _build_main_menu_content)
 
@@ -280,11 +292,36 @@ func _add_new_game_player_row(player_index: int) -> void:
 	new_game_avatar_selectors.append(avatar_selector)
 
 
+func _add_new_game_bot_difficulty_row() -> void:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 10)
+	menu_content.add_child(row)
+
+	var label := Label.new()
+	label.text = "Уровень ботов"
+	label.custom_minimum_size = Vector2(160.0, 38.0)
+	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	label.add_theme_font_size_override("font_size", 16)
+	label.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
+	row.add_child(label)
+
+	new_game_bot_difficulty_selector = OptionButton.new()
+	new_game_bot_difficulty_selector.custom_minimum_size = Vector2(0.0, 38.0)
+	new_game_bot_difficulty_selector.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	new_game_bot_difficulty_selector.add_theme_font_size_override("font_size", 16)
+	for difficulty in BotDifficulty.values():
+		new_game_bot_difficulty_selector.add_item(_get_bot_difficulty_label(difficulty))
+	new_game_bot_difficulty_selector.selected = bot_difficulty
+	row.add_child(new_game_bot_difficulty_selector)
+
+
 func _start_configured_new_game() -> void:
 	for player_index in PLAYER_NAMES.size():
 		var selected_name: String = new_game_name_inputs[player_index].text.strip_edges()
 		configured_player_names[player_index] = selected_name if not selected_name.is_empty() else str(PLAYER_NAMES[player_index])
 		configured_avatar_indices[player_index] = new_game_avatar_selectors[player_index].selected
+
+	bot_difficulty = clampi(new_game_bot_difficulty_selector.selected, 0, BOT_DIFFICULTY_COUNT - 1)
 
 	_on_new_game_pressed()
 
@@ -301,6 +338,18 @@ func _get_avatar_option_label(avatar_index: int) -> String:
 			return "✦ Искра"
 
 	return "• Символ"
+
+
+func _get_bot_difficulty_label(difficulty: BotDifficulty) -> String:
+	match difficulty:
+		BotDifficulty.EASY:
+			return "Лёгкий — простые решения"
+		BotDifficulty.NORMAL:
+			return "Обычный — сбалансировано"
+		BotDifficulty.HARD:
+			return "Сложный — расчётливо"
+
+	return "Обычный — сбалансировано"
 
 
 func _show_rules_menu() -> void:
@@ -670,8 +719,8 @@ func _play_automatic_card() -> bool:
 	var declared_suit := -1
 
 	if card.is_joker:
-		joker_mode = Trick.JokerMode.JOKER_WINS if _bot_wants_trick(player) else Trick.JokerMode.NORMAL_CARD_WINS
-		declared_suit = _choose_joker_suit(player, joker_mode == Trick.JokerMode.NORMAL_CARD_WINS)
+		joker_mode = _choose_automatic_joker_mode(player)
+		declared_suit = _choose_automatic_joker_suit(player, joker_mode == Trick.JokerMode.NORMAL_CARD_WINS)
 		played_successfully = game.play_card(
 			player_index,
 			card,
@@ -2013,15 +2062,39 @@ func _is_card_available_to_human(card: Card) -> bool:
 func _choose_automatic_bid(player_index: int) -> int:
 	var player := game.players[player_index]
 	var is_dark_bid := game.current_round.round_type == Round.RoundType.DARK
-	var desired_bid := bot_random.randi_range(2, 4) if is_dark_bid else _estimate_automatic_bid(player)
 	var min_bid := 2 if is_dark_bid else 0
 	var max_bid := 4 if is_dark_bid else game.current_round.cards_per_player
+
+	if bot_difficulty == BotDifficulty.EASY:
+		return _choose_random_valid_bid(player_index, min_bid, max_bid)
+
+	var desired_bid := bot_random.randi_range(2, 4) if is_dark_bid else _estimate_automatic_bid(player)
+	if bot_difficulty == BotDifficulty.HARD and not is_dark_bid:
+		desired_bid = _estimate_hard_automatic_bid(player)
+
 	var closest_bid := _find_closest_valid_bid(player_index, desired_bid, min_bid, max_bid)
 
 	if closest_bid >= 0:
 		return closest_bid
 
 	return _find_closest_valid_bid(player_index, desired_bid, 0, game.current_round.cards_per_player)
+
+
+func _choose_random_valid_bid(player_index: int, min_bid: int, max_bid: int) -> int:
+	var valid_bids: Array[int] = []
+
+	for bid_value in game.current_round.cards_per_player + 1:
+		var bid: int = bid_value
+		if bid < min_bid or bid > max_bid:
+			continue
+		if game.current_round.can_place_bid(player_index, bid):
+			valid_bids.append(bid)
+
+	if valid_bids.is_empty():
+		return _find_closest_valid_bid(player_index, 0, 0, game.current_round.cards_per_player)
+
+	var random_index: int = bot_random.randi_range(0, valid_bids.size() - 1)
+	return valid_bids[random_index]
 
 
 func _find_closest_valid_bid(player_index: int, desired_bid: int, min_bid: int, max_bid: int) -> int:
@@ -2050,6 +2123,13 @@ func _choose_automatic_card(player: Player) -> Card:
 	if legal_cards.is_empty():
 		return null
 
+	if bot_difficulty == BotDifficulty.EASY:
+		var random_index: int = bot_random.randi_range(0, legal_cards.size() - 1)
+		return legal_cards[random_index]
+
+	if bot_difficulty == BotDifficulty.HARD:
+		return _choose_hard_automatic_card(player, legal_cards)
+
 	var wants_trick := _bot_wants_trick(player)
 
 	if game.active_trick == null:
@@ -2076,6 +2156,42 @@ func _choose_automatic_card(player: Player) -> Card:
 
 	if _should_shed_high_card_in_misere(legal_cards):
 		return _select_non_joker_card_by_strength(legal_cards, true)
+
+	var discarding_joker := _get_joker_from_cards(legal_cards)
+	if discarding_joker != null:
+		return discarding_joker
+
+	return _select_card_by_strength(legal_cards, false)
+
+
+func _choose_hard_automatic_card(player: Player, legal_cards: Array[Card]) -> Card:
+	var wants_trick := _bot_wants_trick(player)
+
+	if game.active_trick == null:
+		if wants_trick:
+			var strong_regular_lead := _select_non_joker_card_by_strength(legal_cards, true)
+			return strong_regular_lead if strong_regular_lead != null else _get_joker_from_cards(legal_cards)
+
+		var weak_regular_lead := _select_non_joker_card_by_strength(legal_cards, false)
+		return weak_regular_lead if weak_regular_lead != null else legal_cards[0]
+
+	if wants_trick:
+		var weakest_winning_regular_card := _select_weakest_winning_regular_card(legal_cards)
+		if weakest_winning_regular_card != null:
+			return weakest_winning_regular_card
+
+		var taking_joker := _get_joker_from_cards(legal_cards)
+		if taking_joker != null:
+			return taking_joker
+
+		return _select_card_by_strength(legal_cards, true)
+
+	if _should_shed_high_card_in_misere(legal_cards):
+		return _select_non_joker_card_by_strength(legal_cards, true)
+
+	var weakest_losing_regular_card := _select_weakest_losing_regular_card(legal_cards)
+	if weakest_losing_regular_card != null:
+		return weakest_losing_regular_card
 
 	var discarding_joker := _get_joker_from_cards(legal_cards)
 	if discarding_joker != null:
@@ -2114,6 +2230,28 @@ func _estimate_automatic_bid(player: Player) -> int:
 	return clampi(estimate, 0, game.current_round.cards_per_player)
 
 
+func _estimate_hard_automatic_bid(player: Player) -> int:
+	var estimate := _estimate_automatic_bid(player)
+	var aces := 0
+	var high_trumps := 0
+
+	for card in player.hand:
+		if card.is_joker:
+			continue
+
+		if card.rank == Card.Rank.ACE:
+			aces += 1
+		if game.current_round.trump != Round.TrumpSuit.NONE and card.suit == game.current_round.trump and card.rank >= Card.Rank.JACK:
+			high_trumps += 1
+
+	if aces >= 2:
+		estimate += 1
+	if high_trumps >= 2:
+		estimate += 1
+
+	return clampi(estimate, 0, game.current_round.cards_per_player)
+
+
 func _get_legal_cards(player: Player) -> Array[Card]:
 	var legal_cards: Array[Card] = []
 
@@ -2132,6 +2270,16 @@ func _select_weakest_winning_regular_card(legal_cards: Array[Card]) -> Card:
 			winning_cards.append(card)
 
 	return _select_card_by_strength(winning_cards, false)
+
+
+func _select_weakest_losing_regular_card(legal_cards: Array[Card]) -> Card:
+	var losing_cards: Array[Card] = []
+
+	for card in legal_cards:
+		if not card.is_joker and not _would_regular_card_win_current_trick(card):
+			losing_cards.append(card)
+
+	return _select_card_by_strength(losing_cards, false)
 
 
 func _would_regular_card_win_current_trick(card: Card) -> bool:
@@ -2254,6 +2402,20 @@ func _choose_joker_suit(player: Player, prefer_rare_suit := false) -> int:
 			selected_suit = suit
 
 	return selected_suit
+
+
+func _choose_automatic_joker_mode(player: Player) -> Trick.JokerMode:
+	if bot_difficulty == BotDifficulty.EASY:
+		return Trick.JokerMode.JOKER_WINS if bot_random.randi_range(0, 1) == 0 else Trick.JokerMode.NORMAL_CARD_WINS
+
+	return Trick.JokerMode.JOKER_WINS if _bot_wants_trick(player) else Trick.JokerMode.NORMAL_CARD_WINS
+
+
+func _choose_automatic_joker_suit(player: Player, prefer_rare_suit: bool) -> int:
+	if bot_difficulty == BotDifficulty.EASY:
+		return bot_random.randi_range(Card.Suit.CLUBS, Card.Suit.DIAMONDS)
+
+	return _choose_joker_suit(player, prefer_rare_suit)
 
 
 func _get_active_trick_text() -> String:
