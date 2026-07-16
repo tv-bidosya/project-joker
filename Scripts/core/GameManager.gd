@@ -15,9 +15,19 @@ const BOT_SPEED_COUNT := 3
 const BOT_DIFFICULTY_COUNT := 3
 const SOUND_VOLUME_COUNT := 4
 const MUSIC_VOLUME_COUNT := 4
+const MUSIC_TRACK_COUNT := 3
+const MAX_CUSTOM_MUSIC_FILE_SIZE_BYTES := 40 * 1024 * 1024
+const MAX_PLAYER_NAME_LENGTH := 16
+const MAX_MUSIC_TITLE_LENGTH := 26
+const MUSIC_PLAYLIST_PAGE_SIZE := 25
+const PROFILE_PLAYLIST_PREVIEW_COUNT := 20
+const BUILT_IN_AVATAR_COUNT := 4
+const CUSTOM_AVATAR_INDEX := BUILT_IN_AVATAR_COUNT
+const HUMAN_AVATAR_COUNT := BUILT_IN_AVATAR_COUNT + 1
 const PERSISTENT_SETTINGS_PATH := "user://project_joker_settings.cfg"
 const SESSION_SAVE_PATH := "user://project_joker_session.save"
 const SESSION_SAVE_VERSION := 1
+const CUSTOM_PROFILE_AVATAR_PATH := "user://project_joker_profile_avatar.png"
 
 
 enum HandSortMode {
@@ -53,6 +63,13 @@ enum SoundEffect {
 @onready var round_history_panel: PanelContainer = %RoundHistoryPanel
 @onready var round_history_scroll: ScrollContainer = %RoundHistoryScroll
 @onready var history_label: Label = %HistoryLabel
+@onready var music_player_panel: PanelContainer = %MusicPlayerPanel
+@onready var music_track_label: Label = %MusicTrackLabel
+@onready var music_previous_button: Button = %MusicPreviousButton
+@onready var music_play_pause_button: Button = %MusicPlayPauseButton
+@onready var music_next_button: Button = %MusicNextButton
+@onready var music_playlist_button: Button = %MusicPlaylistButton
+@onready var music_add_button: Button = %MusicAddButton
 @onready var round_results_panel: PanelContainer = %RoundResultsPanel
 @onready var round_results_label: Label = %RoundResultsLabel
 @onready var bid_controls: HBoxContainer = %BidControls
@@ -124,18 +141,54 @@ var bot_speed_index := 1
 var bot_difficulty: BotDifficulty = BotDifficulty.NORMAL
 var sound_volume_index := 2
 var music_volume_index := 1
+var music_volume_percent := 30
+var music_track_index := 0
+var music_is_paused := false
+var music_playback_position := 0.0
+var music_repeat_enabled := false
+var music_shuffle_enabled := false
+var music_playlist_page := 0
+var music_playlist_search_query := ""
 var is_pause_menu_open := false
 var configured_player_names: Array[String] = ["Андрей", "Олег", "Маша", "Лена"]
 var configured_avatar_indices: Array[int] = [0, 1, 2, 3]
+var custom_profile_avatar_path := ""
 var new_game_name_inputs: Array[LineEdit] = []
 var new_game_avatar_selectors: Array[OptionButton] = []
 var new_game_bot_difficulty_selector: OptionButton
 var profile_name_input: LineEdit
 var profile_avatar_selector: OptionButton
+var profile_avatar_status_label: Label
+var profile_avatar_file_dialog: FileDialog
+var pending_profile_avatar_path := ""
+var is_avatar_file_dialog_for_new_game := false
+var profile_music_status_label: Label
+var profile_music_playlist_container: VBoxContainer
+var profile_music_file_dialog: FileDialog
+var is_music_file_dialog_opened_from_table := false
+var last_music_import_status := ""
 var sound_players: Array[AudioStreamPlayer] = []
 var sound_streams: Dictionary = {}
 var next_sound_player_index := 0
 var background_music_player: AudioStreamPlayer
+var background_music_streams: Array[AudioStreamWAV] = []
+var custom_music_paths: Array[String] = []
+var available_custom_music_paths: Array[String] = []
+var loaded_custom_music_path := ""
+var custom_music_stream: AudioStream
+var music_controls_popup: PopupPanel
+var music_popup_volume_label: Label
+var music_popup_volume_slider: HSlider
+var music_popup_repeat_button: Button
+var music_popup_shuffle_button: Button
+var music_popup_folder_button: Button
+var music_popup_clear_button: Button
+var music_popup_import_label: Label
+var music_popup_search_input: LineEdit
+var music_popup_previous_page_button: Button
+var music_popup_next_page_button: Button
+var music_popup_page_label: Label
+var music_popup_playlist_container: VBoxContainer
 
 
 func _ready() -> void:
@@ -159,6 +212,12 @@ func _ready() -> void:
 	_create_table_markers()
 	_create_sound_players()
 	_create_background_music_player()
+	music_player_panel.reparent(self)
+	_set_control_layout(music_player_panel, 0.0, 1.0, 0.0, 1.0, 36.0, -102.0, 312.0, -24.0)
+	music_player_panel.z_index = 90
+	_create_music_controls_popup()
+	_create_profile_avatar_file_dialog()
+	_create_profile_music_file_dialog()
 	joker_controls.reparent(self)
 	_create_main_menu()
 	joker_controls.z_index = 80
@@ -168,6 +227,11 @@ func _ready() -> void:
 	round_history_toggle_button.pressed.connect(_on_round_history_toggle_pressed)
 	hand_sort_by_suit_button.pressed.connect(_on_hand_sort_by_suit_pressed)
 	hand_sort_trumps_left_button.pressed.connect(_on_hand_sort_trumps_left_pressed)
+	music_previous_button.pressed.connect(_on_music_previous_pressed)
+	music_play_pause_button.pressed.connect(_on_music_play_pause_pressed)
+	music_next_button.pressed.connect(_on_music_next_pressed)
+	music_playlist_button.pressed.connect(_on_music_playlist_pressed)
+	music_add_button.pressed.connect(_on_music_add_pressed)
 	next_round_button.pressed.connect(_on_next_round_pressed)
 	pause_menu_button.pressed.connect(_on_pause_menu_pressed)
 	_show_main_menu()
@@ -188,6 +252,7 @@ func _create_table_visual_styles() -> void:
 	dealer_marker_style = _create_flat_style(Color(0.33, 0.2, 0.07, 1.0), Color(0.96, 0.77, 0.31, 1.0), 2, 12, 3)
 	lead_marker_style = _create_flat_style(Color(0.055, 0.2, 0.13, 1.0), Color(0.64, 0.86, 0.52, 1.0), 1, 8, 2)
 	avatar_badge_style = _create_flat_style(Color(0.04, 0.1, 0.07, 1.0), Color(0.75, 0.58, 0.2, 1.0), 2, 6, 2)
+	music_player_panel.add_theme_stylebox_override("panel", _create_flat_style(Color(0.012, 0.055, 0.034, 0.94), Color(0.38, 0.255, 0.11, 0.0), 0, 6, 0))
 
 
 func _create_flat_style(
@@ -248,12 +313,14 @@ func _show_main_menu() -> void:
 	is_pause_menu_open = false
 	_stop_background_music()
 	menu_overlay.visible = true
+	_refresh_music_player()
 	_build_main_menu_content()
 
 
 func _hide_main_menu() -> void:
 	menu_overlay.visible = false
 	_start_background_music()
+	_refresh_music_player()
 
 
 func _build_main_menu_content() -> void:
@@ -277,8 +344,8 @@ func _show_new_game_setup() -> void:
 	_clear_children(menu_content)
 	new_game_name_inputs.clear()
 	new_game_avatar_selectors.clear()
-	_add_menu_title("Новая партия", "Укажи имена и выбери символы игроков")
-	_add_menu_label("Символы — временные авторские аватары. Позже их можно будет заменить полноценными иллюстрациями.", 14, Color(0.72, 0.85, 0.76, 1.0))
+	_add_menu_title("Новая партия", "Укажи имена и выбери аватары игроков")
+	_add_menu_label("Для своего профиля можно сразу выбрать личную картинку или настроить её позже в разделе «Профиль».", 14, Color(0.72, 0.85, 0.76, 1.0))
 
 	for player_index in PLAYER_NAMES.size():
 		_add_new_game_player_row(player_index)
@@ -306,8 +373,8 @@ func _add_new_game_player_row(player_index: int) -> void:
 	var name_input := LineEdit.new()
 	name_input.text = configured_player_names[player_index]
 	name_input.placeholder_text = "Имя игрока"
-	name_input.max_length = 16
-	name_input.custom_minimum_size = Vector2(250.0, 38.0)
+	name_input.max_length = MAX_PLAYER_NAME_LENGTH
+	name_input.custom_minimum_size = Vector2(200.0 if player_index == HUMAN_PLAYER_INDEX else 250.0, 38.0)
 	name_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	name_input.add_theme_font_size_override("font_size", 17)
 	row.add_child(name_input)
@@ -316,11 +383,21 @@ func _add_new_game_player_row(player_index: int) -> void:
 	var avatar_selector := OptionButton.new()
 	avatar_selector.custom_minimum_size = Vector2(156.0, 38.0)
 	avatar_selector.add_theme_font_size_override("font_size", 16)
-	for avatar_index in 4:
+	var avatar_option_count := HUMAN_AVATAR_COUNT if player_index == HUMAN_PLAYER_INDEX else BUILT_IN_AVATAR_COUNT
+	for avatar_index in avatar_option_count:
 		avatar_selector.add_item(_get_avatar_option_label(avatar_index))
-	avatar_selector.selected = configured_avatar_indices[player_index]
+	avatar_selector.selected = clampi(configured_avatar_indices[player_index], 0, avatar_option_count - 1)
 	row.add_child(avatar_selector)
 	new_game_avatar_selectors.append(avatar_selector)
+
+	if player_index == HUMAN_PLAYER_INDEX:
+		var upload_avatar_button := Button.new()
+		upload_avatar_button.text = "Загрузить"
+		upload_avatar_button.tooltip_text = "Выбрать свою картинку"
+		upload_avatar_button.custom_minimum_size = Vector2(94.0, 38.0)
+		upload_avatar_button.add_theme_font_size_override("font_size", 14)
+		upload_avatar_button.pressed.connect(_open_new_game_avatar_file_dialog)
+		row.add_child(upload_avatar_button)
 
 
 func _add_new_game_bot_difficulty_row() -> void:
@@ -348,9 +425,9 @@ func _add_new_game_bot_difficulty_row() -> void:
 
 func _start_configured_new_game() -> void:
 	for player_index in PLAYER_NAMES.size():
-		var selected_name: String = new_game_name_inputs[player_index].text.strip_edges()
-		configured_player_names[player_index] = selected_name if not selected_name.is_empty() else str(PLAYER_NAMES[player_index])
-		configured_avatar_indices[player_index] = new_game_avatar_selectors[player_index].selected
+		configured_player_names[player_index] = _sanitize_player_name(new_game_name_inputs[player_index].text, str(PLAYER_NAMES[player_index]))
+		var max_avatar_index := CUSTOM_AVATAR_INDEX if player_index == HUMAN_PLAYER_INDEX else BUILT_IN_AVATAR_COUNT - 1
+		configured_avatar_indices[player_index] = clampi(new_game_avatar_selectors[player_index].selected, 0, max_avatar_index)
 
 	bot_difficulty = clampi(new_game_bot_difficulty_selector.selected, 0, BOT_DIFFICULTY_COUNT - 1)
 	_save_persistent_settings()
@@ -368,6 +445,8 @@ func _get_avatar_option_label(avatar_index: int) -> String:
 			return "Луна"
 		3:
 			return "Искра"
+		CUSTOM_AVATAR_INDEX:
+			return "Своя картинка"
 
 	return "Символ"
 
@@ -384,9 +463,15 @@ func _get_bot_difficulty_label(difficulty: BotDifficulty) -> String:
 	return "Обычный — сбалансировано"
 
 
+func _sanitize_player_name(value: String, fallback: String) -> String:
+	var sanitized_name := value.strip_edges().left(MAX_PLAYER_NAME_LENGTH)
+	return sanitized_name if not sanitized_name.is_empty() else fallback.left(MAX_PLAYER_NAME_LENGTH)
+
+
 func _show_profile_menu() -> void:
 	menu_overlay.visible = true
 	_clear_children(menu_content)
+	pending_profile_avatar_path = custom_profile_avatar_path
 	_add_menu_title("Профиль", "Настрой локальное имя и аватар для следующих партий")
 	_add_menu_label("В Steam-версии здесь позже появится возможность использовать имя и аватар профиля Steam.", 14, Color(0.72, 0.85, 0.76, 1.0))
 	_add_menu_spacer(10.0)
@@ -400,7 +485,7 @@ func _show_profile_menu() -> void:
 	profile_name_input = LineEdit.new()
 	profile_name_input.text = configured_player_names[HUMAN_PLAYER_INDEX]
 	profile_name_input.placeholder_text = "Имя игрока"
-	profile_name_input.max_length = 16
+	profile_name_input.max_length = MAX_PLAYER_NAME_LENGTH
 	profile_name_input.custom_minimum_size = Vector2(0.0, 42.0)
 	profile_name_input.add_theme_font_size_override("font_size", 18)
 	menu_content.add_child(profile_name_input)
@@ -414,21 +499,35 @@ func _show_profile_menu() -> void:
 	profile_avatar_selector = OptionButton.new()
 	profile_avatar_selector.custom_minimum_size = Vector2(0.0, 42.0)
 	profile_avatar_selector.add_theme_font_size_override("font_size", 17)
-	for avatar_index in 4:
+	for avatar_index in HUMAN_AVATAR_COUNT:
 		profile_avatar_selector.add_item(_get_avatar_option_label(avatar_index))
-	profile_avatar_selector.selected = configured_avatar_indices[HUMAN_PLAYER_INDEX]
+	profile_avatar_selector.selected = clampi(configured_avatar_indices[HUMAN_PLAYER_INDEX], 0, CUSTOM_AVATAR_INDEX)
+	profile_avatar_selector.item_selected.connect(_on_profile_avatar_selected)
 	menu_content.add_child(profile_avatar_selector)
 
-	_add_menu_label("Загрузка личной картинки появится после подключения файлового выбора; пока аватары можно заменить в папке проекта.", 14, Color(0.72, 0.85, 0.76, 1.0))
+	profile_avatar_status_label = Label.new()
+	profile_avatar_status_label.add_theme_font_size_override("font_size", 14)
+	profile_avatar_status_label.add_theme_color_override("font_color", Color(0.72, 0.85, 0.76, 1.0))
+	profile_avatar_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	menu_content.add_child(profile_avatar_status_label)
+	_update_profile_avatar_status()
+
+	_add_menu_button("Выбрать свою картинку", _open_profile_avatar_file_dialog)
+	_add_menu_button("Вернуть стандартный аватар", _on_reset_profile_avatar_pressed)
 	_add_menu_spacer(10.0)
+	_add_menu_button("Музыка профиля", _show_music_profile_menu)
 	_add_menu_button("Сохранить профиль", _save_profile, true)
 	_add_menu_button("Назад", _return_from_menu_subpage)
 
 
 func _save_profile() -> void:
-	var selected_name: String = profile_name_input.text.strip_edges()
-	configured_player_names[HUMAN_PLAYER_INDEX] = selected_name if not selected_name.is_empty() else str(PLAYER_NAMES[HUMAN_PLAYER_INDEX])
-	configured_avatar_indices[HUMAN_PLAYER_INDEX] = clampi(profile_avatar_selector.selected, 0, 3)
+	configured_player_names[HUMAN_PLAYER_INDEX] = _sanitize_player_name(profile_name_input.text, str(PLAYER_NAMES[HUMAN_PLAYER_INDEX]))
+	var selected_avatar_index := clampi(profile_avatar_selector.selected, 0, CUSTOM_AVATAR_INDEX)
+	if selected_avatar_index == CUSTOM_AVATAR_INDEX and pending_profile_avatar_path.is_empty():
+		selected_avatar_index = 0
+
+	configured_avatar_indices[HUMAN_PLAYER_INDEX] = selected_avatar_index
+	custom_profile_avatar_path = pending_profile_avatar_path if selected_avatar_index == CUSTOM_AVATAR_INDEX else ""
 	_save_persistent_settings()
 
 	if game.current_round.state != Round.State.SETUP:
@@ -441,6 +540,339 @@ func _save_profile() -> void:
 		return
 
 	_build_main_menu_content()
+
+
+func _create_profile_avatar_file_dialog() -> void:
+	profile_avatar_file_dialog = FileDialog.new()
+	profile_avatar_file_dialog.name = "ProfileAvatarFileDialog"
+	profile_avatar_file_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+	profile_avatar_file_dialog.access = FileDialog.ACCESS_FILESYSTEM
+	profile_avatar_file_dialog.filters = PackedStringArray(["*.png,*.jpg,*.jpeg,*.webp;Изображения"])
+	profile_avatar_file_dialog.file_selected.connect(_on_profile_avatar_file_selected)
+	add_child(profile_avatar_file_dialog)
+
+
+func _open_profile_avatar_file_dialog() -> void:
+	is_avatar_file_dialog_for_new_game = false
+	if profile_avatar_file_dialog != null:
+		profile_avatar_file_dialog.popup_centered_ratio(0.75)
+
+
+func _open_new_game_avatar_file_dialog() -> void:
+	is_avatar_file_dialog_for_new_game = true
+	if profile_avatar_file_dialog != null:
+		profile_avatar_file_dialog.popup_centered_ratio(0.75)
+
+
+func _on_profile_avatar_file_selected(source_path: String) -> void:
+	var apply_to_new_game := is_avatar_file_dialog_for_new_game
+	is_avatar_file_dialog_for_new_game = false
+	var image: Image = Image.load_from_file(source_path)
+	if image == null or image.is_empty():
+		if is_instance_valid(profile_avatar_status_label):
+			profile_avatar_status_label.text = "Не удалось прочитать картинку. Выбери PNG, JPG или WebP."
+		return
+
+	var largest_side := maxi(image.get_width(), image.get_height())
+	if largest_side > 512:
+		var resize_scale := 512.0 / float(largest_side)
+		var resized_width := maxi(1, roundi(float(image.get_width()) * resize_scale))
+		var resized_height := maxi(1, roundi(float(image.get_height()) * resize_scale))
+		image.resize(resized_width, resized_height, Image.INTERPOLATE_LANCZOS)
+
+	var local_avatar_path := ProjectSettings.globalize_path(CUSTOM_PROFILE_AVATAR_PATH)
+	var save_result: Error = image.save_png(local_avatar_path)
+	if save_result != OK or not FileAccess.file_exists(CUSTOM_PROFILE_AVATAR_PATH):
+		if is_instance_valid(profile_avatar_status_label):
+			profile_avatar_status_label.text = "Не удалось сохранить личный аватар."
+		return
+
+	if apply_to_new_game:
+		custom_profile_avatar_path = CUSTOM_PROFILE_AVATAR_PATH
+		configured_avatar_indices[HUMAN_PLAYER_INDEX] = CUSTOM_AVATAR_INDEX
+		if new_game_avatar_selectors.size() > HUMAN_PLAYER_INDEX:
+			new_game_avatar_selectors[HUMAN_PLAYER_INDEX].selected = CUSTOM_AVATAR_INDEX
+		_save_persistent_settings()
+		return
+
+	pending_profile_avatar_path = CUSTOM_PROFILE_AVATAR_PATH
+	if is_instance_valid(profile_avatar_selector):
+		profile_avatar_selector.selected = CUSTOM_AVATAR_INDEX
+	_update_profile_avatar_status()
+
+
+func _on_profile_avatar_selected(selected_index: int) -> void:
+	if selected_index != CUSTOM_AVATAR_INDEX:
+		pending_profile_avatar_path = ""
+	_update_profile_avatar_status()
+
+
+func _on_reset_profile_avatar_pressed() -> void:
+	pending_profile_avatar_path = ""
+	if is_instance_valid(profile_avatar_selector):
+		profile_avatar_selector.select(0)
+	_update_profile_avatar_status()
+
+
+func _update_profile_avatar_status() -> void:
+	if not is_instance_valid(profile_avatar_status_label):
+		return
+
+	if not pending_profile_avatar_path.is_empty():
+		profile_avatar_status_label.text = "Личная картинка готова. Нажми «Сохранить профиль», чтобы применить её."
+	elif is_instance_valid(profile_avatar_selector) and profile_avatar_selector.selected == CUSTOM_AVATAR_INDEX:
+		profile_avatar_status_label.text = "Сначала выбери файл PNG, JPG или WebP."
+	else:
+		profile_avatar_status_label.text = "Используется один из встроенных авторских аватаров."
+
+
+func _create_profile_music_file_dialog() -> void:
+	profile_music_file_dialog = FileDialog.new()
+	profile_music_file_dialog.name = "ProfileMusicFileDialog"
+	profile_music_file_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILES
+	profile_music_file_dialog.access = FileDialog.ACCESS_FILESYSTEM
+	profile_music_file_dialog.filters = PackedStringArray([
+		"*.mp3;MP3",
+		"*.ogg;Ogg Vorbis",
+		"*.wav;WAV"
+	])
+	profile_music_file_dialog.files_selected.connect(_on_profile_music_files_selected)
+	profile_music_file_dialog.dir_selected.connect(_on_profile_music_directory_selected)
+	add_child(profile_music_file_dialog)
+
+
+func _show_music_profile_menu() -> void:
+	menu_overlay.visible = true
+	_clear_children(menu_content)
+	_add_menu_title("Музыка профиля", "Собери личный плейлист: он появится в плеере рядом с темами игры")
+	_add_menu_label("Поддерживаются MP3, Ogg Vorbis и WAV до 40 МБ каждый. Файлы остаются на твоём компьютере: если переместить файл, игра просто пропустит его.", 14, Color(0.72, 0.85, 0.76, 1.0))
+	_add_menu_spacer(10.0)
+
+	profile_music_status_label = Label.new()
+	profile_music_status_label.add_theme_font_size_override("font_size", 16)
+	profile_music_status_label.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
+	profile_music_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	menu_content.add_child(profile_music_status_label)
+	_update_profile_music_status()
+
+	var playlist_scroll := ScrollContainer.new()
+	playlist_scroll.custom_minimum_size = Vector2(0.0, 180.0)
+	playlist_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	playlist_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	menu_content.add_child(playlist_scroll)
+
+	profile_music_playlist_container = VBoxContainer.new()
+	profile_music_playlist_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	profile_music_playlist_container.add_theme_constant_override("separation", 6)
+	playlist_scroll.add_child(profile_music_playlist_container)
+	_refresh_profile_music_playlist()
+
+	_add_menu_spacer(8.0)
+	_add_menu_button("Добавить файлы", _open_profile_music_file_dialog, true)
+	_add_menu_button("Добавить папку с музыкой", _on_profile_music_folder_pressed)
+	_add_menu_button("Очистить плейлист", _on_clear_profile_music_pressed)
+	_add_menu_button("Назад к профилю", _show_profile_menu)
+
+
+func _open_profile_music_file_dialog() -> void:
+	is_music_file_dialog_opened_from_table = false
+	_open_music_files_dialog()
+
+
+func _on_music_add_pressed() -> void:
+	is_music_file_dialog_opened_from_table = true
+	_open_music_files_dialog()
+
+
+func _on_profile_music_folder_pressed() -> void:
+	is_music_file_dialog_opened_from_table = false
+	_open_music_folder_dialog()
+
+
+func _on_music_popup_folder_pressed() -> void:
+	is_music_file_dialog_opened_from_table = true
+	_open_music_folder_dialog()
+
+
+func _open_music_files_dialog() -> void:
+	if profile_music_file_dialog != null:
+		profile_music_file_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILES
+		profile_music_file_dialog.popup_centered_ratio(0.75)
+
+
+func _open_music_folder_dialog() -> void:
+	if profile_music_file_dialog != null:
+		profile_music_file_dialog.file_mode = FileDialog.FILE_MODE_OPEN_DIR
+		profile_music_file_dialog.popup_centered_ratio(0.75)
+
+
+func _on_profile_music_files_selected(selected_paths: PackedStringArray) -> void:
+	var opened_from_table := is_music_file_dialog_opened_from_table
+	is_music_file_dialog_opened_from_table = false
+	var paths_to_add: Array[String] = []
+	for selected_path in selected_paths:
+		paths_to_add.append(selected_path)
+	_add_custom_music_paths(paths_to_add, opened_from_table)
+
+
+func _on_profile_music_directory_selected(selected_directory: String) -> void:
+	var opened_from_table := is_music_file_dialog_opened_from_table
+	is_music_file_dialog_opened_from_table = false
+	var directory := DirAccess.open(selected_directory)
+	if directory == null:
+		_report_music_import("Не удалось открыть выбранную папку.", opened_from_table)
+		return
+
+	var paths_to_add: Array[String] = []
+	for file_name in directory.get_files():
+		var file_path := selected_directory.path_join(file_name)
+		if file_path.get_extension().to_lower() in ["mp3", "ogg", "wav"]:
+			paths_to_add.append(file_path)
+	paths_to_add.sort()
+
+	if paths_to_add.is_empty():
+		_report_music_import("В папке не найдено MP3, Ogg Vorbis или WAV-файлов.", opened_from_table)
+		return
+
+	_add_custom_music_paths(paths_to_add, opened_from_table)
+
+
+func _add_custom_music_paths(paths_to_add: Array[String], opened_from_table: bool) -> void:
+	var added_paths: Array[String] = []
+	var skipped_count := 0
+
+	for music_path in paths_to_add:
+		if custom_music_paths.has(music_path) or not _is_custom_music_path_supported(music_path):
+			skipped_count += 1
+			continue
+
+		custom_music_paths.append(music_path)
+		available_custom_music_paths.append(music_path)
+		added_paths.append(music_path)
+
+	if added_paths.is_empty():
+		_report_music_import("Ни одного нового подходящего трека не добавлено.", opened_from_table)
+		return
+
+	var first_added_path: String = added_paths[0]
+	loaded_custom_music_path = ""
+	custom_music_stream = null
+	music_track_index = MUSIC_TRACK_COUNT + available_custom_music_paths.find(first_added_path)
+	music_is_paused = false
+	music_playback_position = 0.0
+	music_playlist_page = 0
+	music_playlist_search_query = ""
+	_apply_selected_music_track()
+	if not menu_overlay.visible:
+		_start_background_music()
+	_save_persistent_settings()
+	_update_profile_music_status()
+	_refresh_profile_music_playlist()
+	_refresh_music_player()
+	_refresh_music_controls_popup()
+
+	var summary := "Добавлено: %d · пропущено: %d." % [added_paths.size(), skipped_count]
+	_report_music_import(summary, opened_from_table)
+
+
+func _report_music_import(status: String, opened_from_table: bool) -> void:
+	if not opened_from_table and is_instance_valid(profile_music_status_label) and profile_music_status_label.is_inside_tree():
+		profile_music_status_label.text = status
+		return
+
+	last_music_import_status = status
+	_open_music_controls_popup()
+
+
+func _on_clear_profile_music_pressed() -> void:
+	custom_music_paths.clear()
+	available_custom_music_paths.clear()
+	loaded_custom_music_path = ""
+	custom_music_stream = null
+	music_playlist_page = 0
+	music_playlist_search_query = ""
+	last_music_import_status = "Личный плейлист очищен."
+	if music_track_index >= MUSIC_TRACK_COUNT:
+		music_track_index = 0
+	_apply_selected_music_track()
+	_save_persistent_settings()
+	_update_profile_music_status()
+	_refresh_profile_music_playlist()
+	_refresh_music_player()
+	_refresh_music_controls_popup()
+
+
+func _on_remove_profile_music_pressed(track_path: String) -> void:
+	custom_music_paths.erase(track_path)
+	available_custom_music_paths.erase(track_path)
+	if loaded_custom_music_path == track_path:
+		loaded_custom_music_path = ""
+		custom_music_stream = null
+	_ensure_valid_music_track_index()
+	music_playlist_page = 0
+	_apply_selected_music_track()
+	_save_persistent_settings()
+	_update_profile_music_status()
+	_refresh_profile_music_playlist()
+	_refresh_music_player()
+	_refresh_music_controls_popup()
+
+
+func _update_profile_music_status() -> void:
+	if not is_instance_valid(profile_music_status_label):
+		return
+
+	if custom_music_paths.is_empty():
+		profile_music_status_label.text = "Сейчас доступны только три встроенные темы игры."
+		return
+
+	var available_track_count := _get_available_custom_music_paths().size()
+	profile_music_status_label.text = "В плейлисте: %d · доступны сейчас: %d." % [custom_music_paths.size(), available_track_count]
+
+
+func _refresh_profile_music_playlist() -> void:
+	if not is_instance_valid(profile_music_playlist_container):
+		return
+
+	_clear_children(profile_music_playlist_container)
+	if custom_music_paths.is_empty():
+		var empty_label := Label.new()
+		empty_label.text = "Личных треков пока нет."
+		empty_label.add_theme_font_size_override("font_size", 15)
+		empty_label.add_theme_color_override("font_color", Color(0.72, 0.85, 0.76, 1.0))
+		profile_music_playlist_container.add_child(empty_label)
+		return
+
+	var preview_count := mini(custom_music_paths.size(), PROFILE_PLAYLIST_PREVIEW_COUNT)
+	for preview_index in preview_count:
+		var track_path: String = custom_music_paths[preview_index]
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 8)
+		profile_music_playlist_container.add_child(row)
+
+		var track_label := Label.new()
+		track_label.text = "♫ %s%s" % [_shorten_music_title(track_path.get_file()), "" if _is_custom_music_path_supported(track_path) else " — файл не найден"]
+		track_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		track_label.clip_text = true
+		track_label.tooltip_text = track_path
+		track_label.add_theme_font_size_override("font_size", 15)
+		track_label.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0) if _is_custom_music_path_supported(track_path) else Color(0.9, 0.66, 0.48, 1.0))
+		row.add_child(track_label)
+
+		var remove_button := Button.new()
+		remove_button.text = "Убрать"
+		remove_button.custom_minimum_size = Vector2(82.0, 32.0)
+		remove_button.add_theme_font_size_override("font_size", 14)
+		remove_button.pressed.connect(_on_remove_profile_music_pressed.bind(track_path))
+		row.add_child(remove_button)
+
+	if custom_music_paths.size() > preview_count:
+		var remaining_label := Label.new()
+		remaining_label.text = "…ещё %d треков. Полный список с поиском — в плеере за столом." % (custom_music_paths.size() - preview_count)
+		remaining_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		remaining_label.add_theme_font_size_override("font_size", 14)
+		remaining_label.add_theme_color_override("font_color", Color(0.72, 0.85, 0.76, 1.0))
+		profile_music_playlist_container.add_child(remaining_label)
 
 
 func _show_rules_menu() -> void:
@@ -680,12 +1112,135 @@ func _on_sound_volume_selected(selected_index: int) -> void:
 
 func _on_music_volume_selected(selected_index: int) -> void:
 	music_volume_index = clampi(selected_index, 0, MUSIC_VOLUME_COUNT - 1)
+	music_volume_percent = _get_music_volume_percent_for_index(music_volume_index)
 	_apply_music_volume()
-	if music_volume_index == 0:
+	if music_volume_percent == 0:
 		_stop_background_music()
 	elif not menu_overlay.visible:
 		_start_background_music()
 	_save_persistent_settings()
+	_refresh_music_player()
+	_refresh_music_controls_popup()
+
+
+func _on_music_previous_pressed() -> void:
+	_select_music_track(-1)
+
+
+func _on_music_play_pause_pressed() -> void:
+	if music_is_paused:
+		music_is_paused = false
+		if not menu_overlay.visible:
+			_start_background_music()
+	else:
+		if background_music_player != null and background_music_player.playing:
+			music_playback_position = background_music_player.get_playback_position()
+		music_is_paused = true
+		_stop_background_music()
+	_save_persistent_settings()
+	_refresh_music_player()
+
+
+func _on_music_next_pressed() -> void:
+	_select_music_track(1)
+
+
+func _on_music_repeat_pressed() -> void:
+	music_repeat_enabled = not music_repeat_enabled
+	_save_persistent_settings()
+	_refresh_music_controls_popup()
+
+
+func _on_music_shuffle_pressed() -> void:
+	music_shuffle_enabled = not music_shuffle_enabled
+	_save_persistent_settings()
+	_refresh_music_controls_popup()
+
+
+func _on_music_playlist_search_changed(search_text: String) -> void:
+	music_playlist_search_query = search_text.strip_edges().to_lower()
+	music_playlist_page = 0
+	_refresh_music_controls_popup()
+
+
+func _on_music_playlist_previous_page_pressed() -> void:
+	music_playlist_page = maxi(0, music_playlist_page - 1)
+	_refresh_music_controls_popup()
+
+
+func _on_music_playlist_next_page_pressed() -> void:
+	var filtered_track_indices := _get_filtered_music_track_indices()
+	var total_pages: int = maxi(1, ceili(float(filtered_track_indices.size()) / float(MUSIC_PLAYLIST_PAGE_SIZE)))
+	music_playlist_page = mini(total_pages - 1, music_playlist_page + 1)
+	_refresh_music_controls_popup()
+
+
+func _on_music_playlist_pressed() -> void:
+	if music_controls_popup == null:
+		return
+
+	if music_controls_popup.visible:
+		music_controls_popup.hide()
+		return
+
+	_open_music_controls_popup()
+
+
+func _open_music_controls_popup() -> void:
+	if music_controls_popup == null:
+		return
+
+	_refresh_music_controls_popup()
+	var popup_size := Vector2i(340, 610)
+	var popup_top := maxi(20, roundi(get_viewport_rect().size.y - float(popup_size.y) - 118.0))
+	music_controls_popup.popup(Rect2i(Vector2i(36, popup_top), popup_size))
+
+
+func _on_music_volume_slider_changed(value: float) -> void:
+	music_volume_percent = clampi(roundi(value), 0, 100)
+	music_volume_index = _get_music_volume_index_for_percent(music_volume_percent)
+	_apply_music_volume()
+	if music_volume_percent == 0:
+		_stop_background_music()
+	elif not menu_overlay.visible and not music_is_paused:
+		_start_background_music()
+	_save_persistent_settings()
+	_refresh_music_player()
+	_refresh_music_controls_popup()
+
+
+func _on_music_popup_track_pressed(selected_index: int) -> void:
+	if selected_index < 0 or selected_index >= _get_available_music_track_count():
+		return
+
+	music_track_index = selected_index
+	music_is_paused = false
+	music_playback_position = 0.0
+	_apply_selected_music_track()
+	if not menu_overlay.visible:
+		_start_background_music()
+	_save_persistent_settings()
+	_refresh_music_player()
+	_refresh_music_controls_popup()
+	if music_controls_popup != null:
+		music_controls_popup.hide()
+
+
+func _select_music_track(direction: int) -> void:
+	var available_track_count := _get_available_music_track_count()
+	music_track_index += direction
+	if music_track_index < 0:
+		music_track_index = available_track_count - 1
+	elif music_track_index >= available_track_count:
+		music_track_index = 0
+
+	music_playback_position = 0.0
+	_apply_selected_music_track()
+	if not menu_overlay.visible and not music_is_paused:
+		_start_background_music()
+	_save_persistent_settings()
+	_refresh_music_player()
+	_refresh_music_controls_popup()
 
 
 func _load_persistent_settings() -> void:
@@ -694,10 +1249,20 @@ func _load_persistent_settings() -> void:
 		return
 
 	for player_index in PLAYER_NAMES.size():
-		var saved_name: String = str(config.get_value("players", "name_%d" % player_index, configured_player_names[player_index])).strip_edges()
-		configured_player_names[player_index] = saved_name if not saved_name.is_empty() else str(PLAYER_NAMES[player_index])
+		var saved_name: String = str(config.get_value("players", "name_%d" % player_index, configured_player_names[player_index]))
+		configured_player_names[player_index] = _sanitize_player_name(saved_name, str(PLAYER_NAMES[player_index]))
 		var saved_avatar: int = int(config.get_value("players", "avatar_%d" % player_index, configured_avatar_indices[player_index]))
-		configured_avatar_indices[player_index] = clampi(saved_avatar, 0, 3)
+		var max_avatar_index := CUSTOM_AVATAR_INDEX if player_index == HUMAN_PLAYER_INDEX else BUILT_IN_AVATAR_COUNT - 1
+		configured_avatar_indices[player_index] = clampi(saved_avatar, 0, max_avatar_index)
+
+	var saved_custom_avatar_path: String = str(config.get_value("players", "custom_avatar_path", ""))
+	if saved_custom_avatar_path.begins_with("user://") and FileAccess.file_exists(saved_custom_avatar_path):
+		custom_profile_avatar_path = saved_custom_avatar_path
+	else:
+		custom_profile_avatar_path = ""
+
+	if configured_avatar_indices[HUMAN_PLAYER_INDEX] == CUSTOM_AVATAR_INDEX and custom_profile_avatar_path.is_empty():
+		configured_avatar_indices[HUMAN_PLAYER_INDEX] = 0
 
 	var saved_difficulty: int = int(config.get_value("game", "bot_difficulty", BotDifficulty.NORMAL))
 	bot_difficulty = clampi(saved_difficulty, 0, BOT_DIFFICULTY_COUNT - 1)
@@ -707,6 +1272,27 @@ func _load_persistent_settings() -> void:
 	sound_volume_index = clampi(saved_sound_volume, 0, SOUND_VOLUME_COUNT - 1)
 	var saved_music_volume: int = int(config.get_value("audio", "music_volume", music_volume_index))
 	music_volume_index = clampi(saved_music_volume, 0, MUSIC_VOLUME_COUNT - 1)
+	var saved_music_percent: int = int(config.get_value("audio", "music_volume_percent", -1))
+	music_volume_percent = clampi(saved_music_percent, 0, 100) if saved_music_percent >= 0 else _get_music_volume_percent_for_index(music_volume_index)
+	music_volume_index = _get_music_volume_index_for_percent(music_volume_percent)
+	var saved_music_track: int = int(config.get_value("audio", "music_track", music_track_index))
+	music_track_index = maxi(0, saved_music_track)
+	music_is_paused = bool(config.get_value("audio", "music_paused", false))
+	music_repeat_enabled = bool(config.get_value("audio", "music_repeat", false))
+	music_shuffle_enabled = bool(config.get_value("audio", "music_shuffle", false))
+	custom_music_paths.clear()
+	var saved_custom_music_paths: Variant = config.get_value("audio", "custom_music_paths", PackedStringArray())
+	if saved_custom_music_paths is PackedStringArray or saved_custom_music_paths is Array:
+		for saved_path_variant in saved_custom_music_paths:
+			var saved_path := str(saved_path_variant)
+			if not saved_path.is_empty() and not custom_music_paths.has(saved_path):
+				custom_music_paths.append(saved_path)
+
+	if custom_music_paths.is_empty():
+		var legacy_custom_music_path := str(config.get_value("audio", "custom_music_path", ""))
+		if not legacy_custom_music_path.is_empty():
+			custom_music_paths.append(legacy_custom_music_path)
+	_refresh_available_custom_music_paths()
 
 	var fullscreen_enabled: bool = bool(config.get_value("display", "fullscreen", false))
 	DisplayServer.window_set_mode(
@@ -720,11 +1306,21 @@ func _save_persistent_settings() -> void:
 	for player_index in PLAYER_NAMES.size():
 		config.set_value("players", "name_%d" % player_index, configured_player_names[player_index])
 		config.set_value("players", "avatar_%d" % player_index, configured_avatar_indices[player_index])
+	config.set_value("players", "custom_avatar_path", custom_profile_avatar_path)
 
 	config.set_value("game", "bot_difficulty", bot_difficulty)
 	config.set_value("game", "bot_speed", bot_speed_index)
 	config.set_value("audio", "sound_volume", sound_volume_index)
 	config.set_value("audio", "music_volume", music_volume_index)
+	config.set_value("audio", "music_volume_percent", music_volume_percent)
+	config.set_value("audio", "music_track", music_track_index)
+	config.set_value("audio", "music_paused", music_is_paused)
+	config.set_value("audio", "music_repeat", music_repeat_enabled)
+	config.set_value("audio", "music_shuffle", music_shuffle_enabled)
+	var saved_custom_music_paths := PackedStringArray()
+	for custom_music_path in custom_music_paths:
+		saved_custom_music_paths.append(custom_music_path)
+	config.set_value("audio", "custom_music_paths", saved_custom_music_paths)
 	config.set_value(
 		"display",
 		"fullscreen",
@@ -899,9 +1495,13 @@ func _load_saved_session() -> bool:
 	configured_player_names.clear()
 	configured_avatar_indices.clear()
 	for player_index in PLAYER_NAMES.size():
-		var restored_name: String = str(saved_names[player_index]).strip_edges()
-		configured_player_names.append(restored_name if not restored_name.is_empty() else str(PLAYER_NAMES[player_index]))
-		configured_avatar_indices.append(clampi(int(saved_avatars[player_index]), 0, 3))
+		var restored_name: String = str(saved_names[player_index])
+		configured_player_names.append(_sanitize_player_name(restored_name, str(PLAYER_NAMES[player_index])))
+		var max_avatar_index := CUSTOM_AVATAR_INDEX if player_index == HUMAN_PLAYER_INDEX else BUILT_IN_AVATAR_COUNT - 1
+		configured_avatar_indices.append(clampi(int(saved_avatars[player_index]), 0, max_avatar_index))
+
+	if configured_avatar_indices[HUMAN_PLAYER_INDEX] == CUSTOM_AVATAR_INDEX and custom_profile_avatar_path.is_empty():
+		configured_avatar_indices[HUMAN_PLAYER_INDEX] = 0
 
 	bot_difficulty = clampi(int(save_data.get("bot_difficulty", BotDifficulty.NORMAL)), 0, BOT_DIFFICULTY_COUNT - 1)
 	var restored_game := _deserialize_game_state(game_data_variant, configured_player_names)
@@ -1183,25 +1783,59 @@ func _create_background_music_player() -> void:
 	background_music_player = AudioStreamPlayer.new()
 	background_music_player.name = "BackgroundMusicPlayer"
 	background_music_player.bus = &"Master"
-	background_music_player.stream = _create_background_music_stream()
+	for track_index in MUSIC_TRACK_COUNT:
+		background_music_streams.append(_create_background_music_stream(track_index))
+	_ensure_valid_music_track_index()
+	background_music_player.stream = _get_selected_music_stream()
+	background_music_player.finished.connect(_on_background_music_finished)
 	add_child(background_music_player)
 	_apply_music_volume()
 
 
-func _create_background_music_stream() -> AudioStreamWAV:
+func _create_background_music_stream(track_index: int) -> AudioStreamWAV:
 	var mix_rate := 22050
 	var duration := 12.0
 	var sample_count: int = roundi(duration * mix_rate)
 	var data := PackedByteArray()
 	data.resize(sample_count * 2)
-	var chords: Array[Array] = [
-		[164.81, 196.0, 246.94, 293.66],
-		[130.81, 164.81, 196.0, 261.63],
-		[196.0, 246.94, 293.66, 392.0],
-		[146.83, 174.61, 220.0, 293.66]
-	]
-	var chord_duration := duration / float(chords.size())
+	var chords: Array[Array] = []
 	var step_duration := 0.5
+	var pad_gain := 0.1
+	var arpeggio_gain := 0.075
+	var bass_gain := 0.045
+
+	match track_index:
+		1:
+			chords = [
+				[146.83, 174.61, 220.0, 293.66],
+				[110.0, 146.83, 174.61, 220.0],
+				[130.81, 164.81, 196.0, 261.63],
+				[123.47, 146.83, 196.0, 246.94]
+			]
+			step_duration = 0.75
+			pad_gain = 0.085
+			arpeggio_gain = 0.06
+			bass_gain = 0.055
+		2:
+			chords = [
+				[196.0, 246.94, 293.66, 392.0],
+				[174.61, 220.0, 261.63, 349.23],
+				[164.81, 207.65, 246.94, 329.63],
+				[146.83, 196.0, 246.94, 293.66]
+			]
+			step_duration = 0.375
+			pad_gain = 0.07
+			arpeggio_gain = 0.09
+			bass_gain = 0.035
+		_:
+			chords = [
+				[164.81, 196.0, 246.94, 293.66],
+				[130.81, 164.81, 196.0, 261.63],
+				[196.0, 246.94, 293.66, 392.0],
+				[146.83, 174.61, 220.0, 293.66]
+			]
+
+	var chord_duration := duration / float(chords.size())
 
 	for sample_index in sample_count:
 		var time: float = float(sample_index) / float(mix_rate)
@@ -1219,16 +1853,20 @@ func _create_background_music_stream() -> AudioStreamWAV:
 		var step_time := fmod(time, step_duration)
 		var arpeggio_envelope := pow(sin(PI * step_time / step_duration), 1.6)
 		var arpeggio := sin(TAU * float(chord[step_index]) * 2.0 * time) * arpeggio_envelope
+		if track_index == 1:
+			arpeggio = (arpeggio * 0.72 + sin(TAU * float(chord[step_index]) * 3.0 * time) * 0.28 * arpeggio_envelope)
+		elif track_index == 2:
+			arpeggio = sin(TAU * float(chord[step_index]) * 3.0 * time) * arpeggio_envelope
 		var bass := sin(TAU * float(chord[0]) * 0.5 * time)
 		var loop_fade := pow(sin(PI * progress), 0.5)
-		var sample: float = (pad * 0.1 * chord_fade + arpeggio * 0.075 + bass * 0.045) * loop_fade
+		var sample: float = (pad * pad_gain * chord_fade + arpeggio * arpeggio_gain + bass * bass_gain) * loop_fade
 		_write_pcm_sample(data, sample_index, sample)
 
 	var stream := AudioStreamWAV.new()
 	stream.format = AudioStreamWAV.FORMAT_16_BITS
 	stream.mix_rate = mix_rate
 	stream.stereo = false
-	stream.loop_mode = AudioStreamWAV.LOOP_FORWARD
+	stream.loop_mode = AudioStreamWAV.LOOP_DISABLED
 	stream.loop_begin = 0
 	stream.loop_end = sample_count
 	stream.data = data
@@ -1243,15 +1881,54 @@ func _write_pcm_sample(data: PackedByteArray, sample_index: int, sample: float) 
 
 
 func _start_background_music() -> void:
-	if background_music_player == null or music_volume_index == 0 or background_music_player.playing:
+	if background_music_player == null or music_volume_percent == 0 or music_is_paused or background_music_player.playing:
 		return
 
-	background_music_player.play()
+	background_music_player.play(music_playback_position)
+	music_playback_position = 0.0
 
 
 func _stop_background_music() -> void:
 	if background_music_player != null:
 		background_music_player.stop()
+
+
+func _apply_selected_music_track() -> void:
+	if background_music_player == null or background_music_streams.is_empty():
+		return
+
+	_ensure_valid_music_track_index()
+	_stop_background_music()
+	music_playback_position = 0.0
+	background_music_player.stream = _get_selected_music_stream()
+
+
+func _on_background_music_finished() -> void:
+	if music_is_paused or menu_overlay.visible:
+		return
+
+	if music_repeat_enabled:
+		background_music_player.play()
+		return
+
+	var available_track_count := _get_available_music_track_count()
+	if available_track_count <= 0:
+		return
+
+	if music_shuffle_enabled and available_track_count > 1:
+		var next_track_index := music_track_index
+		while next_track_index == music_track_index:
+			next_track_index = bot_random.randi_range(0, available_track_count - 1)
+		music_track_index = next_track_index
+	else:
+		music_track_index = (music_track_index + 1) % available_track_count
+
+	music_playback_position = 0.0
+	_apply_selected_music_track()
+	_start_background_music()
+	_save_persistent_settings()
+	_refresh_music_player()
+	_refresh_music_controls_popup()
 
 
 func _apply_music_volume() -> void:
@@ -1260,17 +1937,342 @@ func _apply_music_volume() -> void:
 
 
 func _get_music_volume_db() -> float:
-	match music_volume_index:
-		0:
-			return -80.0
-		1:
-			return -30.0
-		2:
-			return -22.0
-		3:
-			return -15.0
+	if music_volume_percent <= 0:
+		return -80.0
 
-	return -30.0
+	return lerpf(-36.0, -15.0, float(music_volume_percent) / 100.0)
+
+
+func _get_music_volume_percent_for_index(selected_index: int) -> int:
+	match selected_index:
+		0:
+			return 0
+		1:
+			return 30
+		2:
+			return 60
+		3:
+			return 100
+
+	return 30
+
+
+func _get_music_volume_index_for_percent(percent: int) -> int:
+	if percent <= 0:
+		return 0
+	if percent <= 35:
+		return 1
+	if percent <= 75:
+		return 2
+	return 3
+
+
+func _get_music_track_label() -> String:
+	return _get_music_track_label_for_index(music_track_index)
+
+
+func _get_music_track_label_for_index(track_index: int) -> String:
+	return _shorten_music_title(_get_full_music_track_label_for_index(track_index))
+
+
+func _get_full_music_track_label_for_index(track_index: int) -> String:
+	if track_index >= MUSIC_TRACK_COUNT:
+		var custom_track_index := track_index - MUSIC_TRACK_COUNT
+		var available_custom_tracks := _get_available_custom_music_paths()
+		if custom_track_index >= 0 and custom_track_index < available_custom_tracks.size():
+			return available_custom_tracks[custom_track_index].get_file()
+
+	match track_index:
+		1:
+			return "Ночная колода"
+		2:
+			return "Тёплый круг"
+
+	return "Тихий стол"
+
+
+func _shorten_music_title(title: String) -> String:
+	if title.length() <= MAX_MUSIC_TITLE_LENGTH:
+		return title
+
+	return "%s…" % title.left(MAX_MUSIC_TITLE_LENGTH - 1)
+
+
+func _get_filtered_music_track_indices() -> Array[int]:
+	var filtered_indices: Array[int] = []
+	for track_index in _get_available_music_track_count():
+		var track_title := _get_full_music_track_label_for_index(track_index).to_lower()
+		if music_playlist_search_query.is_empty() or track_title.contains(music_playlist_search_query):
+			filtered_indices.append(track_index)
+
+	return filtered_indices
+
+
+func _get_available_music_track_count() -> int:
+	return MUSIC_TRACK_COUNT + _get_available_custom_music_paths().size()
+
+
+func _ensure_valid_music_track_index() -> void:
+	if music_track_index < 0 or music_track_index >= _get_available_music_track_count():
+		music_track_index = 0
+
+
+func _get_selected_music_stream() -> AudioStream:
+	if music_track_index >= MUSIC_TRACK_COUNT:
+		var custom_track_index := music_track_index - MUSIC_TRACK_COUNT
+		if custom_track_index >= 0 and custom_track_index < available_custom_music_paths.size():
+			var selected_custom_path := available_custom_music_paths[custom_track_index]
+			if custom_music_stream == null or loaded_custom_music_path != selected_custom_path:
+				custom_music_stream = _load_custom_music_stream_from_path(selected_custom_path)
+				loaded_custom_music_path = selected_custom_path if custom_music_stream != null else ""
+			if custom_music_stream != null:
+				return custom_music_stream
+
+			available_custom_music_paths.erase(selected_custom_path)
+			music_track_index = clampi(MUSIC_TRACK_COUNT + custom_track_index, 0, _get_available_music_track_count() - 1)
+			loaded_custom_music_path = ""
+			custom_music_stream = null
+			_save_persistent_settings()
+			return _get_selected_music_stream()
+
+	return background_music_streams[clampi(music_track_index, 0, MUSIC_TRACK_COUNT - 1)]
+
+
+func _get_available_custom_music_paths() -> Array[String]:
+	return available_custom_music_paths
+
+
+func _refresh_available_custom_music_paths() -> void:
+	available_custom_music_paths.clear()
+	for custom_music_path in custom_music_paths:
+		available_custom_music_paths.append(custom_music_path)
+	loaded_custom_music_path = ""
+	custom_music_stream = null
+
+
+func _is_custom_music_path_supported(custom_music_path: String) -> bool:
+	if custom_music_path.is_empty() or not FileAccess.file_exists(custom_music_path):
+		return false
+
+	var file_size := FileAccess.get_size(custom_music_path)
+	if file_size <= 0 or file_size > MAX_CUSTOM_MUSIC_FILE_SIZE_BYTES:
+		return false
+
+	return custom_music_path.get_extension().to_lower() in ["mp3", "ogg", "wav"]
+
+
+func _load_custom_music_stream_from_path(custom_music_path: String) -> AudioStream:
+	if not _is_custom_music_path_supported(custom_music_path):
+		return null
+
+	match custom_music_path.get_extension().to_lower():
+		"mp3":
+			var mp3_stream: AudioStreamMP3 = AudioStreamMP3.load_from_file(custom_music_path)
+			if mp3_stream == null:
+				return null
+			mp3_stream.loop = false
+			return mp3_stream
+		"ogg":
+			var ogg_stream: AudioStreamOggVorbis = AudioStreamOggVorbis.load_from_file(custom_music_path)
+			if ogg_stream == null:
+				return null
+			ogg_stream.loop = false
+			return ogg_stream
+		"wav":
+			var wav_stream: AudioStreamWAV = AudioStreamWAV.load_from_file(custom_music_path)
+			if wav_stream == null:
+				return null
+			wav_stream.loop_mode = AudioStreamWAV.LOOP_DISABLED
+			return wav_stream
+		_:
+			return null
+
+
+func _create_music_controls_popup() -> void:
+	music_controls_popup = PopupPanel.new()
+	music_controls_popup.name = "MusicControlsPopup"
+	music_controls_popup.add_theme_stylebox_override(
+		"panel",
+		_create_flat_style(Color(0.02, 0.075, 0.05, 0.98), Color(0.7, 0.52, 0.16, 0.95), 2, 10, 4)
+	)
+	add_child(music_controls_popup)
+
+	var margins := MarginContainer.new()
+	margins.add_theme_constant_override("margin_left", 14)
+	margins.add_theme_constant_override("margin_top", 12)
+	margins.add_theme_constant_override("margin_right", 14)
+	margins.add_theme_constant_override("margin_bottom", 12)
+	music_controls_popup.add_child(margins)
+
+	var content := VBoxContainer.new()
+	content.add_theme_constant_override("separation", 8)
+	margins.add_child(content)
+
+	var volume_title := Label.new()
+	volume_title.text = "Громкость музыки"
+	volume_title.add_theme_font_size_override("font_size", 16)
+	volume_title.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
+	content.add_child(volume_title)
+
+	music_popup_volume_label = Label.new()
+	music_popup_volume_label.add_theme_font_size_override("font_size", 14)
+	music_popup_volume_label.add_theme_color_override("font_color", Color(0.72, 0.85, 0.76, 1.0))
+	content.add_child(music_popup_volume_label)
+
+	music_popup_volume_slider = HSlider.new()
+	music_popup_volume_slider.min_value = 0.0
+	music_popup_volume_slider.max_value = 100.0
+	music_popup_volume_slider.step = 1.0
+	music_popup_volume_slider.custom_minimum_size = Vector2(0.0, 28.0)
+	music_popup_volume_slider.value_changed.connect(_on_music_volume_slider_changed)
+	content.add_child(music_popup_volume_slider)
+
+	var play_modes := HBoxContainer.new()
+	play_modes.add_theme_constant_override("separation", 8)
+	content.add_child(play_modes)
+
+	music_popup_repeat_button = Button.new()
+	music_popup_repeat_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	music_popup_repeat_button.custom_minimum_size = Vector2(0.0, 32.0)
+	music_popup_repeat_button.add_theme_font_size_override("font_size", 14)
+	music_popup_repeat_button.tooltip_text = "После окончания повторять текущий трек"
+	music_popup_repeat_button.pressed.connect(_on_music_repeat_pressed)
+	play_modes.add_child(music_popup_repeat_button)
+
+	music_popup_shuffle_button = Button.new()
+	music_popup_shuffle_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	music_popup_shuffle_button.custom_minimum_size = Vector2(0.0, 32.0)
+	music_popup_shuffle_button.add_theme_font_size_override("font_size", 14)
+	music_popup_shuffle_button.tooltip_text = "После окончания выбирать случайный следующий трек"
+	music_popup_shuffle_button.pressed.connect(_on_music_shuffle_pressed)
+	play_modes.add_child(music_popup_shuffle_button)
+
+	var playlist_actions := HBoxContainer.new()
+	playlist_actions.add_theme_constant_override("separation", 8)
+	content.add_child(playlist_actions)
+
+	music_popup_folder_button = Button.new()
+	music_popup_folder_button.text = "📁 Добавить папку"
+	music_popup_folder_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	music_popup_folder_button.custom_minimum_size = Vector2(0.0, 32.0)
+	music_popup_folder_button.add_theme_font_size_override("font_size", 14)
+	music_popup_folder_button.pressed.connect(_on_music_popup_folder_pressed)
+	playlist_actions.add_child(music_popup_folder_button)
+
+	music_popup_clear_button = Button.new()
+	music_popup_clear_button.text = "Очистить свои"
+	music_popup_clear_button.custom_minimum_size = Vector2(112.0, 32.0)
+	music_popup_clear_button.add_theme_font_size_override("font_size", 14)
+	music_popup_clear_button.tooltip_text = "Удалить из плейлиста только добавленные треки"
+	music_popup_clear_button.pressed.connect(_on_clear_profile_music_pressed)
+	playlist_actions.add_child(music_popup_clear_button)
+
+	music_popup_import_label = Label.new()
+	music_popup_import_label.add_theme_font_size_override("font_size", 14)
+	music_popup_import_label.add_theme_color_override("font_color", Color(0.72, 0.85, 0.76, 1.0))
+	music_popup_import_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	content.add_child(music_popup_import_label)
+
+	var playlist_title := Label.new()
+	playlist_title.text = "Плейлист"
+	playlist_title.add_theme_font_size_override("font_size", 16)
+	playlist_title.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
+	content.add_child(playlist_title)
+
+	music_popup_search_input = LineEdit.new()
+	music_popup_search_input.placeholder_text = "Поиск по названию"
+	music_popup_search_input.custom_minimum_size = Vector2(0.0, 32.0)
+	music_popup_search_input.add_theme_font_size_override("font_size", 15)
+	music_popup_search_input.text_changed.connect(_on_music_playlist_search_changed)
+	content.add_child(music_popup_search_input)
+
+	var page_controls := HBoxContainer.new()
+	page_controls.add_theme_constant_override("separation", 8)
+	content.add_child(page_controls)
+
+	music_popup_previous_page_button = Button.new()
+	music_popup_previous_page_button.text = "◀"
+	music_popup_previous_page_button.custom_minimum_size = Vector2(44.0, 30.0)
+	music_popup_previous_page_button.pressed.connect(_on_music_playlist_previous_page_pressed)
+	page_controls.add_child(music_popup_previous_page_button)
+
+	music_popup_page_label = Label.new()
+	music_popup_page_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	music_popup_page_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	music_popup_page_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	music_popup_page_label.add_theme_font_size_override("font_size", 14)
+	music_popup_page_label.add_theme_color_override("font_color", Color(0.72, 0.85, 0.76, 1.0))
+	page_controls.add_child(music_popup_page_label)
+
+	music_popup_next_page_button = Button.new()
+	music_popup_next_page_button.text = "▶"
+	music_popup_next_page_button.custom_minimum_size = Vector2(44.0, 30.0)
+	music_popup_next_page_button.pressed.connect(_on_music_playlist_next_page_pressed)
+	page_controls.add_child(music_popup_next_page_button)
+
+	var playlist_scroll := ScrollContainer.new()
+	playlist_scroll.custom_minimum_size = Vector2(0.0, 240.0)
+	playlist_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	playlist_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	content.add_child(playlist_scroll)
+
+	music_popup_playlist_container = VBoxContainer.new()
+	music_popup_playlist_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	music_popup_playlist_container.add_theme_constant_override("separation", 5)
+	playlist_scroll.add_child(music_popup_playlist_container)
+
+
+func _refresh_music_controls_popup() -> void:
+	if not is_instance_valid(music_popup_volume_label) or not is_instance_valid(music_popup_volume_slider) or not is_instance_valid(music_popup_repeat_button) or not is_instance_valid(music_popup_shuffle_button) or not is_instance_valid(music_popup_folder_button) or not is_instance_valid(music_popup_clear_button) or not is_instance_valid(music_popup_import_label) or not is_instance_valid(music_popup_search_input) or not is_instance_valid(music_popup_previous_page_button) or not is_instance_valid(music_popup_next_page_button) or not is_instance_valid(music_popup_page_label) or not is_instance_valid(music_popup_playlist_container):
+		return
+
+	music_popup_volume_label.text = "%d%%" % music_volume_percent
+	music_popup_volume_slider.set_value_no_signal(music_volume_percent)
+	music_popup_repeat_button.text = "↻ Повтор: %s" % ("вкл" if music_repeat_enabled else "выкл")
+	music_popup_shuffle_button.text = "⤨ Случайно: %s" % ("вкл" if music_shuffle_enabled else "выкл")
+	music_popup_import_label.text = last_music_import_status
+	music_popup_import_label.visible = not last_music_import_status.is_empty()
+	music_popup_clear_button.disabled = custom_music_paths.is_empty()
+	if music_popup_search_input.text != music_playlist_search_query:
+		music_popup_search_input.set_text(music_playlist_search_query)
+	_clear_children(music_popup_playlist_container)
+
+	var filtered_track_indices := _get_filtered_music_track_indices()
+	var total_pages: int = maxi(1, ceili(float(filtered_track_indices.size()) / float(MUSIC_PLAYLIST_PAGE_SIZE)))
+	music_playlist_page = clampi(music_playlist_page, 0, total_pages - 1)
+	var first_result_index := music_playlist_page * MUSIC_PLAYLIST_PAGE_SIZE
+	var last_result_index := mini(first_result_index + MUSIC_PLAYLIST_PAGE_SIZE, filtered_track_indices.size())
+	music_popup_previous_page_button.disabled = music_playlist_page <= 0
+	music_popup_next_page_button.disabled = music_playlist_page >= total_pages - 1
+	if filtered_track_indices.is_empty():
+		music_popup_page_label.text = "Ничего не найдено"
+	else:
+		music_popup_page_label.text = "%d–%d из %d" % [first_result_index + 1, last_result_index, filtered_track_indices.size()]
+
+	for result_index in range(first_result_index, last_result_index):
+		var track_index: int = filtered_track_indices[result_index]
+		var track_button := Button.new()
+		track_button.text = "%s%s" % ["✓ " if track_index == music_track_index else "   ", _get_music_track_label_for_index(track_index)]
+		track_button.tooltip_text = _get_full_music_track_label_for_index(track_index)
+		track_button.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		track_button.custom_minimum_size = Vector2(0.0, 34.0)
+		track_button.add_theme_font_size_override("font_size", 15)
+		track_button.pressed.connect(_on_music_popup_track_pressed.bind(track_index))
+		music_popup_playlist_container.add_child(track_button)
+
+
+func _refresh_music_player() -> void:
+	var is_table_visible := menu_overlay != null and not menu_overlay.visible
+	music_player_panel.visible = is_table_visible
+
+	music_track_label.text = "♫ %s · %d%%" % [_get_music_track_label(), music_volume_percent]
+	music_track_label.tooltip_text = _get_full_music_track_label_for_index(music_track_index)
+	music_play_pause_button.text = "▶ Играть" if music_is_paused else "Ⅱ Пауза"
+	music_previous_button.disabled = false
+	music_play_pause_button.disabled = false
+	music_next_button.disabled = false
+	music_playlist_button.disabled = false
+	music_add_button.disabled = false
 
 
 func _reset_game_session() -> void:
@@ -1786,6 +2788,7 @@ func _refresh_ui() -> void:
 	_refresh_hand()
 	_refresh_undo_button()
 	_refresh_score_sheet()
+	_refresh_music_player()
 
 
 func _refresh_header() -> void:
@@ -1889,6 +2892,8 @@ func _get_player_avatar_symbol(player_index: int) -> String:
 
 func _get_player_avatar_texture_path(player_index: int) -> String:
 	var avatar_index := configured_avatar_indices[player_index] if player_index >= 0 and player_index < configured_avatar_indices.size() else 0
+	if player_index == HUMAN_PLAYER_INDEX and avatar_index == CUSTOM_AVATAR_INDEX:
+		return custom_profile_avatar_path
 
 	match avatar_index:
 		0:
@@ -1901,6 +2906,21 @@ func _get_player_avatar_texture_path(player_index: int) -> String:
 			return "res://Assets/Avatars/avatar_spark.png"
 
 	return ""
+
+
+func _get_player_avatar_texture(player_index: int) -> Texture2D:
+	var texture_path := _get_player_avatar_texture_path(player_index)
+	if texture_path.is_empty():
+		return null
+
+	if texture_path.begins_with("user://"):
+		var local_texture_path := ProjectSettings.globalize_path(texture_path)
+		var image: Image = Image.load_from_file(local_texture_path)
+		if image == null or image.is_empty():
+			return null
+		return ImageTexture.create_from_image(image)
+
+	return ResourceLoader.load(texture_path, "Texture2D") as Texture2D
 
 
 func _create_player_avatar_badges() -> void:
@@ -1938,7 +2958,7 @@ func _create_player_avatar_badges() -> void:
 func _refresh_player_avatar_badges() -> void:
 	for player_index in avatar_badges.size():
 		avatar_badges[player_index].tooltip_text = "Аватар: %s" % game.players[player_index].display_name
-		var avatar_texture: Texture2D = ResourceLoader.load(_get_player_avatar_texture_path(player_index), "Texture2D") as Texture2D
+		var avatar_texture: Texture2D = _get_player_avatar_texture(player_index)
 		avatar_images[player_index].texture = avatar_texture
 		avatar_labels[player_index].visible = avatar_texture == null
 		avatar_labels[player_index].text = _get_player_avatar_symbol(player_index)
@@ -2721,7 +3741,7 @@ func _place_table_marker(marker: PanelContainer, player_index: int, is_dealer: b
 		1:
 			_set_control_layout(marker, 0.0, 0.0, 0.0, 0.0, 350.0, 324.0, 428.0, 352.0)
 		2:
-			_set_control_layout(marker, 0.5, 0.0, 0.5, 0.0, -258.0, 108.0, -180.0, 136.0)
+			_set_control_layout(marker, 0.5, 0.0, 0.5, 0.0, -258.0, 160.0, -180.0, 188.0)
 		3:
 			_set_control_layout(marker, 1.0, 0.0, 1.0, 0.0, -428.0, 324.0, -350.0, 352.0)
 
