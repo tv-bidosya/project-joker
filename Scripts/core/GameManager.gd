@@ -13,6 +13,9 @@ const CARD_APPEAR_DURATION := 0.22
 const TRICK_WINNER_HOLD_DURATION := 0.7
 const BOT_SPEED_COUNT := 3
 const BOT_DIFFICULTY_COUNT := 3
+const PERSISTENT_SETTINGS_PATH := "user://project_joker_settings.cfg"
+const SESSION_SAVE_PATH := "user://project_joker_session.save"
+const SESSION_SAVE_VERSION := 1
 
 
 enum HandSortMode {
@@ -126,6 +129,8 @@ func _ready() -> void:
 	_run_bot_rule_checks()
 	_run_hand_sort_checks()
 	_run_round_history_checks()
+	_run_session_save_checks()
+	_load_persistent_settings()
 	_create_table_visual_styles()
 	_create_player_panels()
 	_create_player_avatar_badges()
@@ -232,6 +237,8 @@ func _build_main_menu_content() -> void:
 	_clear_children(menu_content)
 	_add_menu_title("PROJECT JOKER", "Локальная карточная партия для четырёх игроков")
 	_add_menu_spacer(18.0)
+	if _has_saved_session():
+		_add_menu_button("Продолжить партию", _on_continue_saved_game_pressed, true)
 	_add_menu_button("Новая партия", _show_new_game_setup, true)
 	_add_menu_button("Правила", _show_rules_menu)
 	_add_menu_button("Настройки", _show_settings_menu)
@@ -322,6 +329,7 @@ func _start_configured_new_game() -> void:
 		configured_avatar_indices[player_index] = new_game_avatar_selectors[player_index].selected
 
 	bot_difficulty = clampi(new_game_bot_difficulty_selector.selected, 0, BOT_DIFFICULTY_COUNT - 1)
+	_save_persistent_settings()
 
 	_on_new_game_pressed()
 
@@ -470,12 +478,14 @@ func _add_menu_button(label_text: String, callback: Callable, is_primary: bool =
 
 func _on_new_game_pressed() -> void:
 	is_pause_menu_open = false
+	_delete_saved_session()
 	_reset_game_session()
 	_hide_main_menu()
 	_start_round()
 
 
 func _on_return_to_menu_pressed() -> void:
+	_delete_saved_session()
 	_reset_game_session()
 	_show_main_menu()
 
@@ -515,6 +525,7 @@ func _show_end_session_confirmation() -> void:
 
 
 func _confirm_end_current_session() -> void:
+	_delete_saved_session()
 	_reset_game_session()
 	_show_main_menu()
 
@@ -535,10 +546,390 @@ func _on_fullscreen_toggled(enabled: bool) -> void:
 	DisplayServer.window_set_mode(
 		DisplayServer.WINDOW_MODE_FULLSCREEN if enabled else DisplayServer.WINDOW_MODE_MAXIMIZED
 	)
+	_save_persistent_settings()
 
 
 func _on_bot_speed_selected(selected_index: int) -> void:
 	bot_speed_index = clampi(selected_index, 0, BOT_SPEED_COUNT - 1)
+	_save_persistent_settings()
+
+
+func _load_persistent_settings() -> void:
+	var config := ConfigFile.new()
+	if config.load(PERSISTENT_SETTINGS_PATH) != OK:
+		return
+
+	for player_index in PLAYER_NAMES.size():
+		var saved_name: String = str(config.get_value("players", "name_%d" % player_index, configured_player_names[player_index])).strip_edges()
+		configured_player_names[player_index] = saved_name if not saved_name.is_empty() else str(PLAYER_NAMES[player_index])
+		var saved_avatar: int = int(config.get_value("players", "avatar_%d" % player_index, configured_avatar_indices[player_index]))
+		configured_avatar_indices[player_index] = clampi(saved_avatar, 0, 3)
+
+	var saved_difficulty: int = int(config.get_value("game", "bot_difficulty", BotDifficulty.NORMAL))
+	bot_difficulty = clampi(saved_difficulty, 0, BOT_DIFFICULTY_COUNT - 1)
+	var saved_speed: int = int(config.get_value("game", "bot_speed", bot_speed_index))
+	bot_speed_index = clampi(saved_speed, 0, BOT_SPEED_COUNT - 1)
+
+	var fullscreen_enabled: bool = bool(config.get_value("display", "fullscreen", false))
+	DisplayServer.window_set_mode(
+		DisplayServer.WINDOW_MODE_FULLSCREEN if fullscreen_enabled else DisplayServer.WINDOW_MODE_MAXIMIZED
+	)
+
+
+func _save_persistent_settings() -> void:
+	var config := ConfigFile.new()
+
+	for player_index in PLAYER_NAMES.size():
+		config.set_value("players", "name_%d" % player_index, configured_player_names[player_index])
+		config.set_value("players", "avatar_%d" % player_index, configured_avatar_indices[player_index])
+
+	config.set_value("game", "bot_difficulty", bot_difficulty)
+	config.set_value("game", "bot_speed", bot_speed_index)
+	config.set_value(
+		"display",
+		"fullscreen",
+		DisplayServer.window_get_mode() == DisplayServer.WINDOW_MODE_FULLSCREEN
+	)
+	config.save(PERSISTENT_SETTINGS_PATH)
+
+
+func _has_saved_session() -> bool:
+	return FileAccess.file_exists(SESSION_SAVE_PATH)
+
+
+func _save_current_session() -> void:
+	if game.current_round.state == Round.State.SETUP or _is_full_game_complete():
+		return
+
+	var save_file := FileAccess.open(SESSION_SAVE_PATH, FileAccess.WRITE)
+	if save_file == null:
+		push_error("Не удалось открыть файл сохранения партии.")
+		return
+
+	save_file.store_var(_create_session_save_data(), false)
+
+
+func _delete_saved_session() -> void:
+	if _has_saved_session():
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(SESSION_SAVE_PATH))
+
+
+func _create_session_save_data() -> Dictionary:
+	var actions: Array[String] = []
+	for action in recent_actions:
+		actions.append(action)
+
+	return {
+		"version": SESSION_SAVE_VERSION,
+		"player_names": configured_player_names.duplicate(),
+		"avatar_indices": configured_avatar_indices.duplicate(),
+		"bot_difficulty": bot_difficulty,
+		"game": _serialize_game_state(),
+		"normal_round_index": normal_round_index,
+		"dark_round_index": dark_round_index,
+		"no_trump_round_index": no_trump_round_index,
+		"golden_round_index": golden_round_index,
+		"misere_round_index": misere_round_index,
+		"round_history": round_history.duplicate(true),
+		"recent_actions": actions,
+		"last_trick_text": last_trick_text,
+		"action_text": action_text,
+		"hand_sort_mode": hand_sort_mode,
+		"score_sheet_visible": is_score_sheet_visible,
+		"round_history_visible": is_round_history_visible
+	}
+
+
+func _serialize_game_state() -> Dictionary:
+	var player_states: Array[Dictionary] = []
+
+	for player in game.players:
+		player_states.append({
+			"hand": _serialize_cards(player.hand),
+			"bid": player.bid,
+			"tricks_taken": player.tricks_taken,
+			"total_score": player.total_score,
+			"exact_orders_completed": player.exact_orders_completed
+		})
+
+	return {
+		"players": player_states,
+		"deck_cards": _serialize_cards(game.deck.cards),
+		"round": {
+			"number": game.current_round.number,
+			"cards_per_player": game.current_round.cards_per_player,
+			"round_type": game.current_round.round_type,
+			"trump": game.current_round.trump,
+			"dealer_index": game.current_round.dealer_index,
+			"player_count": game.current_round.player_count,
+			"current_player_index": game.current_round.current_player_index,
+			"lead_player_index": game.current_round.lead_player_index,
+			"bids": game.current_round.bids.duplicate(),
+			"bids_made": game.current_round.bids_made,
+			"tricks_played": game.current_round.tricks_played,
+			"state": game.current_round.state
+		},
+		"active_trick": _serialize_active_trick(),
+		"trump_card": _serialize_optional_card(game.trump_card),
+		"last_completed_trick_cards": _serialize_cards(game.last_completed_trick_cards),
+		"last_completed_trick_played_by": game.last_completed_trick_played_by.duplicate(),
+		"last_completed_trick_joker_mode": game.last_completed_trick_joker_mode,
+		"last_completed_trick_declared_suit": game.last_completed_trick_declared_suit,
+		"last_completed_trick_forced_card_rank": game.last_completed_trick_forced_card_rank,
+		"dealer_index": game.dealer_index,
+		"last_trick_winner_index": game.last_trick_winner_index,
+		"round_number": game.round_number,
+		"cards_are_dealt": game.cards_are_dealt
+	}
+
+
+func _serialize_active_trick() -> Dictionary:
+	if game.active_trick == null:
+		return {}
+
+	return {
+		"player_count": game.active_trick.player_count,
+		"trump": game.active_trick.trump,
+		"leader_index": game.active_trick.leader_index,
+		"current_player_index": game.active_trick.current_player_index,
+		"lead_suit": game.active_trick.lead_suit,
+		"joker_mode": game.active_trick.joker_mode,
+		"declared_suit": game.active_trick.declared_suit,
+		"forced_card_rank": game.active_trick.forced_card_rank,
+		"played_cards": _serialize_cards(game.active_trick.played_cards),
+		"played_by": game.active_trick.played_by.duplicate()
+	}
+
+
+func _serialize_cards(cards: Array[Card]) -> Array[Dictionary]:
+	var serialized_cards: Array[Dictionary] = []
+
+	for card in cards:
+		serialized_cards.append(_serialize_card(card))
+
+	return serialized_cards
+
+
+func _serialize_optional_card(card: Card) -> Dictionary:
+	return {} if card == null else _serialize_card(card)
+
+
+func _serialize_card(card: Card) -> Dictionary:
+	return {
+		"suit": card.suit,
+		"rank": card.rank,
+		"is_joker": card.is_joker
+	}
+
+
+func _on_continue_saved_game_pressed() -> void:
+	if not _load_saved_session():
+		_delete_saved_session()
+		_build_main_menu_content()
+		return
+
+	is_pause_menu_open = false
+	_hide_main_menu()
+	_refresh_ui()
+	_advance_automatic_actions()
+
+
+func _load_saved_session() -> bool:
+	if not _has_saved_session():
+		return false
+
+	var save_file := FileAccess.open(SESSION_SAVE_PATH, FileAccess.READ)
+	if save_file == null:
+		return false
+
+	var saved_data: Variant = save_file.get_var(false)
+	if not (saved_data is Dictionary):
+		return false
+
+	var save_data: Dictionary = saved_data
+	if int(save_data.get("version", 0)) != SESSION_SAVE_VERSION:
+		return false
+
+	var saved_names: Array = save_data.get("player_names", [])
+	var saved_avatars: Array = save_data.get("avatar_indices", [])
+	var game_data_variant: Variant = save_data.get("game", {})
+	if saved_names.size() != PLAYER_NAMES.size() or saved_avatars.size() != PLAYER_NAMES.size() or not (game_data_variant is Dictionary):
+		return false
+
+	configured_player_names.clear()
+	configured_avatar_indices.clear()
+	for player_index in PLAYER_NAMES.size():
+		var restored_name: String = str(saved_names[player_index]).strip_edges()
+		configured_player_names.append(restored_name if not restored_name.is_empty() else str(PLAYER_NAMES[player_index]))
+		configured_avatar_indices.append(clampi(int(saved_avatars[player_index]), 0, 3))
+
+	bot_difficulty = clampi(int(save_data.get("bot_difficulty", BotDifficulty.NORMAL)), 0, BOT_DIFFICULTY_COUNT - 1)
+	var restored_game := _deserialize_game_state(game_data_variant, configured_player_names)
+	if restored_game == null:
+		return false
+
+	game = restored_game
+	normal_round_index = int(save_data.get("normal_round_index", 0))
+	dark_round_index = int(save_data.get("dark_round_index", -1))
+	no_trump_round_index = int(save_data.get("no_trump_round_index", -1))
+	golden_round_index = int(save_data.get("golden_round_index", -1))
+	misere_round_index = int(save_data.get("misere_round_index", -1))
+	last_trick_text = str(save_data.get("last_trick_text", "Взятка ещё не началась"))
+	action_text = str(save_data.get("action_text", "Партия продолжена."))
+	hand_sort_mode = clampi(int(save_data.get("hand_sort_mode", HandSortMode.BY_SUIT)), HandSortMode.BY_SUIT, HandSortMode.TRUMPS_LEFT)
+	is_score_sheet_visible = bool(save_data.get("score_sheet_visible", false))
+	is_round_history_visible = bool(save_data.get("round_history_visible", true))
+
+	round_history.clear()
+	var saved_round_history: Array = save_data.get("round_history", [])
+	for record in saved_round_history:
+		if record is Dictionary:
+			round_history.append(record)
+
+	recent_actions.clear()
+	var saved_actions: Array = save_data.get("recent_actions", [])
+	for saved_action in saved_actions:
+		recent_actions.append(str(saved_action))
+
+	is_processing_automatic_actions = false
+	test_checkpoints.clear()
+	pending_test_checkpoint.clear()
+	pending_joker_card = null
+	pending_joker_suit = -1
+	_reset_trick_presentation()
+	_restore_next_round_button()
+	_save_persistent_settings()
+	return true
+
+
+func _deserialize_game_state(game_data: Dictionary, player_names: Array[String]) -> Game:
+	var player_states: Array = game_data.get("players", [])
+	var round_data_variant: Variant = game_data.get("round", {})
+	if player_states.size() != PLAYER_NAMES.size() or not (round_data_variant is Dictionary):
+		return null
+
+	var restored_game := Game.new(player_names)
+	var restored_player_states: Array[Dictionary] = []
+	for player_state_variant in player_states:
+		if not (player_state_variant is Dictionary):
+			return null
+		var player_state: Dictionary = player_state_variant
+		var hand_data: Array = player_state.get("hand", [])
+		restored_player_states.append({
+			"hand": _deserialize_cards(hand_data),
+			"bid": int(player_state.get("bid", -1)),
+			"tricks_taken": int(player_state.get("tricks_taken", 0)),
+			"total_score": int(player_state.get("total_score", 0)),
+			"exact_orders_completed": int(player_state.get("exact_orders_completed", 0))
+		})
+
+	var round_data: Dictionary = round_data_variant
+	var active_trick_data: Dictionary = game_data.get("active_trick", {})
+	var trump_card_data: Dictionary = game_data.get("trump_card", {})
+	var deck_cards_data: Array = game_data.get("deck_cards", [])
+	var last_cards_data: Array = game_data.get("last_completed_trick_cards", [])
+	var played_by_data: Array = game_data.get("last_completed_trick_played_by", [])
+	var bids_data: Array = round_data.get("bids", [])
+
+	restored_game.restore_snapshot({
+		"players": restored_player_states,
+		"deck_cards": _deserialize_cards(deck_cards_data),
+		"round": {
+			"number": int(round_data.get("number", 0)),
+			"cards_per_player": int(round_data.get("cards_per_player", 0)),
+			"round_type": int(round_data.get("round_type", Round.RoundType.NORMAL)),
+			"trump": int(round_data.get("trump", Round.TrumpSuit.NONE)),
+			"dealer_index": int(round_data.get("dealer_index", -1)),
+			"player_count": int(round_data.get("player_count", PLAYER_NAMES.size())),
+			"current_player_index": int(round_data.get("current_player_index", -1)),
+			"lead_player_index": int(round_data.get("lead_player_index", -1)),
+			"bids": bids_data,
+			"bids_made": int(round_data.get("bids_made", 0)),
+			"tricks_played": int(round_data.get("tricks_played", 0)),
+			"state": int(round_data.get("state", Round.State.SETUP))
+		},
+		"active_trick": _deserialize_active_trick(active_trick_data),
+		"trump_card": _deserialize_optional_card(trump_card_data),
+		"last_completed_trick_cards": _deserialize_cards(last_cards_data),
+		"last_completed_trick_played_by": played_by_data,
+		"last_completed_trick_joker_mode": int(game_data.get("last_completed_trick_joker_mode", Trick.JokerMode.NONE)),
+		"last_completed_trick_declared_suit": int(game_data.get("last_completed_trick_declared_suit", -1)),
+		"last_completed_trick_forced_card_rank": int(game_data.get("last_completed_trick_forced_card_rank", Trick.ForcedCardRank.NONE)),
+		"dealer_index": int(game_data.get("dealer_index", -1)),
+		"last_trick_winner_index": int(game_data.get("last_trick_winner_index", -1)),
+		"round_number": int(game_data.get("round_number", 0)),
+		"cards_are_dealt": bool(game_data.get("cards_are_dealt", false))
+	})
+
+	return restored_game
+
+
+func _deserialize_active_trick(trick_data: Dictionary) -> Dictionary:
+	if trick_data.is_empty():
+		return {}
+
+	var played_cards_data: Array = trick_data.get("played_cards", [])
+	var played_by_data: Array = trick_data.get("played_by", [])
+	return {
+		"player_count": int(trick_data.get("player_count", PLAYER_NAMES.size())),
+		"trump": int(trick_data.get("trump", Round.TrumpSuit.NONE)),
+		"leader_index": int(trick_data.get("leader_index", -1)),
+		"current_player_index": int(trick_data.get("current_player_index", -1)),
+		"lead_suit": int(trick_data.get("lead_suit", -1)),
+		"joker_mode": int(trick_data.get("joker_mode", Trick.JokerMode.NONE)),
+		"declared_suit": int(trick_data.get("declared_suit", -1)),
+		"forced_card_rank": int(trick_data.get("forced_card_rank", Trick.ForcedCardRank.NONE)),
+		"played_cards": _deserialize_cards(played_cards_data),
+		"played_by": played_by_data
+	}
+
+
+func _deserialize_cards(cards_data: Array) -> Array[Card]:
+	var cards: Array[Card] = []
+
+	for card_data_variant in cards_data:
+		if not (card_data_variant is Dictionary):
+			continue
+		var card: Card = _deserialize_card(card_data_variant)
+		if card != null:
+			cards.append(card)
+
+	return cards
+
+
+func _deserialize_optional_card(card_data: Dictionary) -> Card:
+	return null if card_data.is_empty() else _deserialize_card(card_data)
+
+
+func _deserialize_card(card_data: Dictionary) -> Card:
+	var card := Card.new()
+	card.suit = clampi(int(card_data.get("suit", Card.Suit.CLUBS)), Card.Suit.CLUBS, Card.Suit.DIAMONDS)
+	card.rank = clampi(int(card_data.get("rank", Card.Rank.SIX)), Card.Rank.SIX, Card.Rank.ACE)
+	card.is_joker = bool(card_data.get("is_joker", false))
+	return card
+
+
+func _restore_next_round_button() -> void:
+	var round_is_finished := game.current_round.state == Round.State.FINISHED
+	next_round_button.visible = round_is_finished
+	next_round_button.disabled = false
+
+	if not round_is_finished:
+		return
+
+	if _is_full_game_complete():
+		next_round_button.text = "Партия завершена"
+		next_round_button.disabled = true
+	elif _is_normal_round() and normal_round_index >= NORMAL_ROUND_COUNT - 1:
+		next_round_button.text = "Начать тёмную серию"
+	elif _is_dark_round() and dark_round_index >= DARK_ROUND_COUNT - 1:
+		next_round_button.text = "Начать бескозырную серию"
+	elif _is_no_trump_round() and no_trump_round_index >= NO_TRUMP_ROUND_COUNT - 1:
+		next_round_button.text = "Начать золотую серию"
+	elif _is_golden_round() and golden_round_index >= GOLDEN_ROUND_COUNT - 1:
+		next_round_button.text = "Начать мизерную серию"
+	else:
+		next_round_button.text = "Следующая раздача"
 
 
 func _get_bot_action_delay() -> float:
@@ -623,6 +1014,7 @@ func _start_round() -> void:
 	next_round_button.visible = false
 	next_round_button.disabled = false
 	_refresh_ui()
+	_save_current_session()
 	_advance_automatic_actions()
 
 
@@ -701,6 +1093,7 @@ func _play_automatic_bid() -> bool:
 	action_text = "%s заказывает %d." % [game.players[player_index].display_name, bid]
 	_add_history(action_text)
 	_announce_dark_cards_dealt(cards_were_hidden)
+	_save_current_session()
 	return true
 
 
@@ -737,6 +1130,7 @@ func _play_automatic_card() -> bool:
 	_record_play(player.display_name, card, player_index)
 	if card.is_joker:
 		_add_history(_get_joker_rule_text(joker_mode, declared_suit, Trick.ForcedCardRank.NONE, is_leading_joker))
+	_save_current_session()
 	return true
 
 
@@ -757,6 +1151,7 @@ func _on_bid_pressed(bid: int) -> void:
 	action_text = "Ты заказываешь %d." % bid
 	_add_history(action_text)
 	_announce_dark_cards_dealt(cards_were_hidden)
+	_save_current_session()
 	_refresh_ui()
 	_advance_automatic_actions()
 
@@ -779,6 +1174,7 @@ func _on_card_pressed(card: Card) -> void:
 		return
 
 	_record_play("Ты", card, HUMAN_PLAYER_INDEX)
+	_save_current_session()
 	_advance_automatic_actions()
 
 
@@ -813,6 +1209,7 @@ func _on_joker_choice(
 	_add_history(_get_joker_rule_text(mode, declared_suit, forced_card_rank, is_leading_joker))
 	pending_joker_card = null
 	pending_joker_suit = -1
+	_save_current_session()
 	_advance_automatic_actions()
 
 
@@ -829,6 +1226,7 @@ func _on_undo_pressed() -> void:
 	action_text = "Тест: возвращено к началу прошлого твоего решения."
 	recent_actions = checkpoint["recent_actions"].duplicate()
 	pending_test_checkpoint = _create_test_checkpoint()
+	_save_current_session()
 	_refresh_ui()
 
 
@@ -837,6 +1235,7 @@ func _on_score_sheet_toggle_pressed() -> void:
 		return
 
 	is_score_sheet_visible = not is_score_sheet_visible
+	_save_current_session()
 	_refresh_ui()
 
 
@@ -845,6 +1244,7 @@ func _on_round_history_toggle_pressed() -> void:
 		return
 
 	is_round_history_visible = not is_round_history_visible
+	_save_current_session()
 	_refresh_ui()
 
 
@@ -853,6 +1253,7 @@ func _on_hand_sort_by_suit_pressed() -> void:
 		return
 
 	hand_sort_mode = HandSortMode.BY_SUIT
+	_save_current_session()
 	_refresh_ui()
 
 
@@ -861,6 +1262,7 @@ func _on_hand_sort_trumps_left_pressed() -> void:
 		return
 
 	hand_sort_mode = HandSortMode.TRUMPS_LEFT
+	_save_current_session()
 	_refresh_ui()
 
 
@@ -955,7 +1357,10 @@ func _finish_round() -> void:
 	_refresh_ui()
 
 	if _is_full_game_complete():
+		_delete_saved_session()
 		_show_final_session_menu()
+	else:
+		_save_current_session()
 
 
 func _record_play(player_name: String, card: Card, player_index: int) -> void:
@@ -3083,6 +3488,30 @@ func _run_bot_rule_checks() -> void:
 	assert(test_game.play_card(misere_third_index, six_spades), "Проверка бота: шестёрка пики должна быть сыграна.")
 	var misere_choice: Card = _choose_automatic_card(test_game.players[misere_bot_index])
 	assert(misere_choice == king_spades, "Проверка бота: в неизбежной мизерной взятке нужно сбрасывать старшую карту.")
+
+	game = original_game
+
+
+func _run_session_save_checks() -> void:
+	var original_game := game
+	var test_names: Array[String] = ["Тест 1", "Тест 2", "Тест 3", "Тест 4"]
+	var test_game := Game.new(test_names)
+	assert(test_game.start_round(2, Round.RoundType.NORMAL, Round.TrumpSuit.CLUBS), "Проверка сохранения: тестовая раздача должна запускаться.")
+	test_game.current_round.start_playing_without_bids()
+	game = test_game
+
+	var leader_index := test_game.current_round.current_player_index
+	var leading_card: Card = test_game.players[leader_index].hand[0]
+	assert(test_game.play_card(leader_index, leading_card), "Проверка сохранения: первая карта должна сыграться.")
+
+	var saved_game_data := _serialize_game_state()
+	var restored_game := _deserialize_game_state(saved_game_data, test_names)
+	assert(restored_game != null, "Проверка сохранения: состояние игры должно восстановиться.")
+	assert(restored_game.players.size() == test_game.players.size(), "Проверка сохранения: число игроков должно сохраниться.")
+	assert(restored_game.deck.cards.size() == test_game.deck.cards.size(), "Проверка сохранения: остаток колоды должен сохраниться.")
+	assert(restored_game.active_trick != null, "Проверка сохранения: незавершённая взятка должна сохраниться.")
+	assert(restored_game.active_trick.played_cards.size() == 1, "Проверка сохранения: карта на столе должна сохраниться.")
+	assert(restored_game.players[leader_index].hand.size() == test_game.players[leader_index].hand.size(), "Проверка сохранения: рука игрока должна сохраниться.")
 
 	game = original_game
 
