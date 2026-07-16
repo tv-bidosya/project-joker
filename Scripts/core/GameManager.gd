@@ -64,8 +64,10 @@ enum BotDifficulty {
 
 var game := Game.new(PLAYER_NAMES)
 var player_labels: Array[Label] = []
+var player_stats_labels: Array[Label] = []
 var player_panels: Array[PanelContainer] = []
 var avatar_badges: Array[PanelContainer] = []
+var avatar_images: Array[TextureRect] = []
 var avatar_labels: Array[Label] = []
 var trick_card_views: Array[CardView] = []
 var bot_card_back_holders: Array[Control] = []
@@ -117,6 +119,8 @@ var configured_avatar_indices: Array[int] = [0, 1, 2, 3]
 var new_game_name_inputs: Array[LineEdit] = []
 var new_game_avatar_selectors: Array[OptionButton] = []
 var new_game_bot_difficulty_selector: OptionButton
+var profile_name_input: LineEdit
+var profile_avatar_selector: OptionButton
 
 
 func _ready() -> void:
@@ -240,6 +244,7 @@ func _build_main_menu_content() -> void:
 	if _has_saved_session():
 		_add_menu_button("Продолжить партию", _on_continue_saved_game_pressed, true)
 	_add_menu_button("Новая партия", _show_new_game_setup, true)
+	_add_menu_button("Профиль", _show_profile_menu)
 	_add_menu_button("Правила", _show_rules_menu)
 	_add_menu_button("Настройки", _show_settings_menu)
 	_add_menu_button("Выход", _on_quit_pressed)
@@ -337,15 +342,15 @@ func _start_configured_new_game() -> void:
 func _get_avatar_option_label(avatar_index: int) -> String:
 	match avatar_index:
 		0:
-			return "★ Звезда"
+			return "Лис"
 		1:
-			return "☀ Солнце"
+			return "Солнце"
 		2:
-			return "☾ Луна"
+			return "Луна"
 		3:
-			return "✦ Искра"
+			return "Искра"
 
-	return "• Символ"
+	return "Символ"
 
 
 func _get_bot_difficulty_label(difficulty: BotDifficulty) -> String:
@@ -358,6 +363,65 @@ func _get_bot_difficulty_label(difficulty: BotDifficulty) -> String:
 			return "Сложный — расчётливо"
 
 	return "Обычный — сбалансировано"
+
+
+func _show_profile_menu() -> void:
+	menu_overlay.visible = true
+	_clear_children(menu_content)
+	_add_menu_title("Профиль", "Настрой локальное имя и аватар для следующих партий")
+	_add_menu_label("В Steam-версии здесь позже появится возможность использовать имя и аватар профиля Steam.", 14, Color(0.72, 0.85, 0.76, 1.0))
+	_add_menu_spacer(10.0)
+
+	var name_label := Label.new()
+	name_label.text = "Имя игрока"
+	name_label.add_theme_font_size_override("font_size", 17)
+	name_label.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
+	menu_content.add_child(name_label)
+
+	profile_name_input = LineEdit.new()
+	profile_name_input.text = configured_player_names[HUMAN_PLAYER_INDEX]
+	profile_name_input.placeholder_text = "Имя игрока"
+	profile_name_input.max_length = 16
+	profile_name_input.custom_minimum_size = Vector2(0.0, 42.0)
+	profile_name_input.add_theme_font_size_override("font_size", 18)
+	menu_content.add_child(profile_name_input)
+
+	var avatar_label := Label.new()
+	avatar_label.text = "Аватар"
+	avatar_label.add_theme_font_size_override("font_size", 17)
+	avatar_label.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
+	menu_content.add_child(avatar_label)
+
+	profile_avatar_selector = OptionButton.new()
+	profile_avatar_selector.custom_minimum_size = Vector2(0.0, 42.0)
+	profile_avatar_selector.add_theme_font_size_override("font_size", 17)
+	for avatar_index in 4:
+		profile_avatar_selector.add_item(_get_avatar_option_label(avatar_index))
+	profile_avatar_selector.selected = configured_avatar_indices[HUMAN_PLAYER_INDEX]
+	menu_content.add_child(profile_avatar_selector)
+
+	_add_menu_label("Загрузка личной картинки появится после подключения файлового выбора; пока аватары можно заменить в папке проекта.", 14, Color(0.72, 0.85, 0.76, 1.0))
+	_add_menu_spacer(10.0)
+	_add_menu_button("Сохранить профиль", _save_profile, true)
+	_add_menu_button("Назад", _return_from_menu_subpage)
+
+
+func _save_profile() -> void:
+	var selected_name: String = profile_name_input.text.strip_edges()
+	configured_player_names[HUMAN_PLAYER_INDEX] = selected_name if not selected_name.is_empty() else str(PLAYER_NAMES[HUMAN_PLAYER_INDEX])
+	configured_avatar_indices[HUMAN_PLAYER_INDEX] = clampi(profile_avatar_selector.selected, 0, 3)
+	_save_persistent_settings()
+
+	if game.current_round.state != Round.State.SETUP:
+		game.players[HUMAN_PLAYER_INDEX].display_name = configured_player_names[HUMAN_PLAYER_INDEX]
+		_save_current_session()
+		_refresh_ui()
+
+	if is_pause_menu_open:
+		_build_pause_menu_content()
+		return
+
+	_build_main_menu_content()
 
 
 func _show_rules_menu() -> void:
@@ -504,6 +568,7 @@ func _build_pause_menu_content() -> void:
 	_add_menu_title("Пауза", "Текущая локальная партия ждёт твоего решения")
 	_add_menu_spacer(18.0)
 	_add_menu_button("Продолжить", _resume_current_game, true)
+	_add_menu_button("Профиль", _show_profile_menu)
 	_add_menu_button("Правила", _show_rules_menu)
 	_add_menu_button("Настройки", _show_settings_menu)
 	_add_menu_button("Завершить партию", _show_end_session_confirmation)
@@ -1506,23 +1571,18 @@ func _refresh_player_panels() -> void:
 		var person_label := " (ты)" if player_index == HUMAN_PLAYER_INDEX else ""
 		var hand_text := "скрыто" if _is_dark_round() and not game.cards_are_dealt else str(player.hand.size())
 		player_panels[player_index].add_theme_stylebox_override("panel", _get_player_panel_style(player_index, is_current))
+		player_labels[player_index].text = "%s%s%s" % [marker, player.display_name, person_label]
 
 		if _round_uses_bids():
 			var bid_text := "—" if player.bid < 0 else str(player.bid)
-			player_labels[player_index].text = "%s%s%s\nКарт: %s | Заказ: %s\nВзято: %d | Очки: %d" % [
-				marker,
-				player.display_name,
-				person_label,
+			player_stats_labels[player_index].text = "Карт: %s | Заказ: %s\nВзято: %d | Очки: %d" % [
 				hand_text,
 				bid_text,
 				player.tricks_taken,
 				player.total_score
 			]
 		else:
-			player_labels[player_index].text = "%s%s%s\nКарт: %s\nВзято: %d | Очки: %d" % [
-				marker,
-				player.display_name,
-				person_label,
+			player_stats_labels[player_index].text = "Карт: %s\nВзято: %d | Очки: %d" % [
 				hand_text,
 				player.tricks_taken,
 				player.total_score
@@ -1557,6 +1617,22 @@ func _get_player_avatar_symbol(player_index: int) -> String:
 	return "•"
 
 
+func _get_player_avatar_texture_path(player_index: int) -> String:
+	var avatar_index := configured_avatar_indices[player_index] if player_index >= 0 and player_index < configured_avatar_indices.size() else 0
+
+	match avatar_index:
+		0:
+			return "res://Assets/Avatars/avatar_fox.png"
+		1:
+			return "res://Assets/Avatars/avatar_sun.png"
+		2:
+			return "res://Assets/Avatars/avatar_moon.png"
+		3:
+			return "res://Assets/Avatars/avatar_spark.png"
+
+	return ""
+
+
 func _create_player_avatar_badges() -> void:
 	for player_index in PLAYER_NAMES.size():
 		var badge := PanelContainer.new()
@@ -1564,33 +1640,50 @@ func _create_player_avatar_badges() -> void:
 		badge.add_theme_stylebox_override("panel", avatar_badge_style)
 		_place_player_avatar_badge(badge, player_index)
 
+		var avatar_content := Control.new()
+		avatar_content.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		badge.add_child(avatar_content)
+
+		var avatar_image := TextureRect.new()
+		avatar_image.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		avatar_image.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		avatar_image.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+		avatar_image.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		avatar_content.add_child(avatar_image)
+
 		var avatar_label := Label.new()
+		avatar_label.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 		avatar_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		avatar_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 		avatar_label.add_theme_font_size_override("font_size", 22)
 		avatar_label.add_theme_color_override("font_color", Color(0.98, 0.9, 0.6, 1.0))
-		badge.add_child(avatar_label)
+		avatar_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		avatar_content.add_child(avatar_label)
 		players_container.add_child(badge)
 		avatar_badges.append(badge)
+		avatar_images.append(avatar_image)
 		avatar_labels.append(avatar_label)
 
 
 func _refresh_player_avatar_badges() -> void:
 	for player_index in avatar_badges.size():
 		avatar_badges[player_index].tooltip_text = "Аватар: %s" % game.players[player_index].display_name
+		var avatar_texture: Texture2D = ResourceLoader.load(_get_player_avatar_texture_path(player_index), "Texture2D") as Texture2D
+		avatar_images[player_index].texture = avatar_texture
+		avatar_labels[player_index].visible = avatar_texture == null
 		avatar_labels[player_index].text = _get_player_avatar_symbol(player_index)
 
 
 func _place_player_avatar_badge(badge: PanelContainer, player_index: int) -> void:
 	match player_index:
 		HUMAN_PLAYER_INDEX:
-			_set_control_layout(badge, 0.5, 1.0, 0.5, 1.0, 182.0, -388.0, 230.0, -340.0)
+			_set_control_layout(badge, 0.5, 1.0, 0.5, 1.0, 182.0, -390.0, 246.0, -326.0)
 		1:
-			_set_control_layout(badge, 0.0, 0.0, 0.0, 0.0, 620.0, 374.0, 668.0, 422.0)
+			_set_control_layout(badge, 0.0, 0.0, 0.0, 0.0, 620.0, 366.0, 684.0, 430.0)
 		2:
-			_set_control_layout(badge, 0.5, 0.0, 0.5, 0.0, 180.0, 92.0, 228.0, 140.0)
+			_set_control_layout(badge, 0.5, 0.0, 0.5, 0.0, -244.0, 90.0, -180.0, 154.0)
 		3:
-			_set_control_layout(badge, 1.0, 0.0, 1.0, 0.0, -668.0, 374.0, -620.0, 422.0)
+			_set_control_layout(badge, 1.0, 0.0, 1.0, 0.0, -684.0, 366.0, -620.0, 430.0)
 
 
 func _refresh_table() -> void:
@@ -2144,13 +2237,24 @@ func _create_player_panels() -> void:
 		var panel := PanelContainer.new()
 		_place_player_panel(panel, player_index)
 
-		var label := Label.new()
-		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-		label.add_theme_font_size_override("font_size", 17)
-		panel.add_child(label)
+		var content := VBoxContainer.new()
+		content.add_theme_constant_override("separation", 0)
+		panel.add_child(content)
+
+		var name_label := Label.new()
+		name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		name_label.add_theme_font_size_override("font_size", 18)
+		name_label.add_theme_color_override("font_color", Color(0.95, 0.97, 0.93, 1.0))
+		content.add_child(name_label)
+
+		var stats_label := Label.new()
+		stats_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		stats_label.add_theme_font_size_override("font_size", 14)
+		stats_label.add_theme_color_override("font_color", Color(0.82, 0.88, 0.82, 1.0))
+		content.add_child(stats_label)
 		players_container.add_child(panel)
-		player_labels.append(label)
+		player_labels.append(name_label)
+		player_stats_labels.append(stats_label)
 		player_panels.append(panel)
 
 
