@@ -14,6 +14,7 @@ const TRICK_WINNER_HOLD_DURATION := 0.7
 const BOT_SPEED_COUNT := 3
 const BOT_DIFFICULTY_COUNT := 3
 const SOUND_VOLUME_COUNT := 4
+const MUSIC_VOLUME_COUNT := 4
 const PERSISTENT_SETTINGS_PATH := "user://project_joker_settings.cfg"
 const SESSION_SAVE_PATH := "user://project_joker_session.save"
 const SESSION_SAVE_VERSION := 1
@@ -122,6 +123,7 @@ var menu_content: VBoxContainer
 var bot_speed_index := 1
 var bot_difficulty: BotDifficulty = BotDifficulty.NORMAL
 var sound_volume_index := 2
+var music_volume_index := 1
 var is_pause_menu_open := false
 var configured_player_names: Array[String] = ["Андрей", "Олег", "Маша", "Лена"]
 var configured_avatar_indices: Array[int] = [0, 1, 2, 3]
@@ -133,6 +135,7 @@ var profile_avatar_selector: OptionButton
 var sound_players: Array[AudioStreamPlayer] = []
 var sound_streams: Dictionary = {}
 var next_sound_player_index := 0
+var background_music_player: AudioStreamPlayer
 
 
 func _ready() -> void:
@@ -155,6 +158,7 @@ func _ready() -> void:
 	_create_deck_visual()
 	_create_table_markers()
 	_create_sound_players()
+	_create_background_music_player()
 	joker_controls.reparent(self)
 	_create_main_menu()
 	joker_controls.z_index = 80
@@ -242,12 +246,14 @@ func _create_main_menu() -> void:
 
 func _show_main_menu() -> void:
 	is_pause_menu_open = false
+	_stop_background_music()
 	menu_overlay.visible = true
 	_build_main_menu_content()
 
 
 func _hide_main_menu() -> void:
 	menu_overlay.visible = false
+	_start_background_music()
 
 
 func _build_main_menu_content() -> void:
@@ -498,7 +504,24 @@ func _show_settings_menu() -> void:
 	sound_selector.item_selected.connect(_on_sound_volume_selected)
 	menu_content.add_child(sound_selector)
 
-	_add_menu_label("Сейчас доступны короткие процедурные звуки раздачи, хода картой и взятки. Музыка появится отдельным шагом.", 14, Color(0.72, 0.85, 0.76, 1.0))
+	var music_label := Label.new()
+	music_label.text = "Громкость музыки"
+	music_label.add_theme_font_size_override("font_size", 18)
+	music_label.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
+	menu_content.add_child(music_label)
+
+	var music_selector := OptionButton.new()
+	music_selector.add_item("Без музыки")
+	music_selector.add_item("Тихо")
+	music_selector.add_item("Обычно")
+	music_selector.add_item("Громко")
+	music_selector.selected = music_volume_index
+	music_selector.custom_minimum_size = Vector2(0.0, 42.0)
+	music_selector.add_theme_font_size_override("font_size", 17)
+	music_selector.item_selected.connect(_on_music_volume_selected)
+	menu_content.add_child(music_selector)
+
+	_add_menu_label("Музыка играет только за игровым столом. Позже сюда можно будет добавить выбор пользовательского музыкального файла.", 14, Color(0.72, 0.85, 0.76, 1.0))
 	_add_menu_spacer(8.0)
 	_add_menu_button("Назад", _return_from_menu_subpage)
 
@@ -655,6 +678,16 @@ func _on_sound_volume_selected(selected_index: int) -> void:
 	_save_persistent_settings()
 
 
+func _on_music_volume_selected(selected_index: int) -> void:
+	music_volume_index = clampi(selected_index, 0, MUSIC_VOLUME_COUNT - 1)
+	_apply_music_volume()
+	if music_volume_index == 0:
+		_stop_background_music()
+	elif not menu_overlay.visible:
+		_start_background_music()
+	_save_persistent_settings()
+
+
 func _load_persistent_settings() -> void:
 	var config := ConfigFile.new()
 	if config.load(PERSISTENT_SETTINGS_PATH) != OK:
@@ -672,6 +705,8 @@ func _load_persistent_settings() -> void:
 	bot_speed_index = clampi(saved_speed, 0, BOT_SPEED_COUNT - 1)
 	var saved_sound_volume: int = int(config.get_value("audio", "sound_volume", sound_volume_index))
 	sound_volume_index = clampi(saved_sound_volume, 0, SOUND_VOLUME_COUNT - 1)
+	var saved_music_volume: int = int(config.get_value("audio", "music_volume", music_volume_index))
+	music_volume_index = clampi(saved_music_volume, 0, MUSIC_VOLUME_COUNT - 1)
 
 	var fullscreen_enabled: bool = bool(config.get_value("display", "fullscreen", false))
 	DisplayServer.window_set_mode(
@@ -689,6 +724,7 @@ func _save_persistent_settings() -> void:
 	config.set_value("game", "bot_difficulty", bot_difficulty)
 	config.set_value("game", "bot_speed", bot_speed_index)
 	config.set_value("audio", "sound_volume", sound_volume_index)
+	config.set_value("audio", "music_volume", music_volume_index)
 	config.set_value(
 		"display",
 		"fullscreen",
@@ -1083,10 +1119,7 @@ func _create_procedural_sound(
 		var attack := minf(progress / 0.012, 1.0)
 		var release := pow(maxf(0.0, 1.0 - progress), 1.7)
 		var sample: float = (tone + overtone * overtone_mix) * attack * release * amplitude
-		var sample_value: int = clampi(roundi(sample * 32767.0), -32767, 32767)
-		var unsigned_sample: int = sample_value if sample_value >= 0 else sample_value + 65536
-		data[sample_index * 2] = unsigned_sample & 0xff
-		data[sample_index * 2 + 1] = (unsigned_sample >> 8) & 0xff
+		_write_pcm_sample(data, sample_index, sample)
 
 	var stream := AudioStreamWAV.new()
 	stream.format = AudioStreamWAV.FORMAT_16_BITS
@@ -1144,6 +1177,100 @@ func _get_sound_volume_db() -> float:
 			return -8.0
 
 	return -15.0
+
+
+func _create_background_music_player() -> void:
+	background_music_player = AudioStreamPlayer.new()
+	background_music_player.name = "BackgroundMusicPlayer"
+	background_music_player.bus = &"Master"
+	background_music_player.stream = _create_background_music_stream()
+	add_child(background_music_player)
+	_apply_music_volume()
+
+
+func _create_background_music_stream() -> AudioStreamWAV:
+	var mix_rate := 22050
+	var duration := 12.0
+	var sample_count: int = roundi(duration * mix_rate)
+	var data := PackedByteArray()
+	data.resize(sample_count * 2)
+	var chords: Array[Array] = [
+		[164.81, 196.0, 246.94, 293.66],
+		[130.81, 164.81, 196.0, 261.63],
+		[196.0, 246.94, 293.66, 392.0],
+		[146.83, 174.61, 220.0, 293.66]
+	]
+	var chord_duration := duration / float(chords.size())
+	var step_duration := 0.5
+
+	for sample_index in sample_count:
+		var time: float = float(sample_index) / float(mix_rate)
+		var progress: float = time / duration
+		var chord_index: int = mini(int(time / chord_duration), chords.size() - 1)
+		var chord: Array = chords[chord_index]
+		var chord_time := fmod(time, chord_duration)
+		var chord_fade := sin(PI * chord_time / chord_duration)
+		var pad := 0.0
+		for note in chord:
+			pad += sin(TAU * float(note) * time)
+		pad /= float(chord.size())
+
+		var step_index: int = int(time / step_duration) % chord.size()
+		var step_time := fmod(time, step_duration)
+		var arpeggio_envelope := pow(sin(PI * step_time / step_duration), 1.6)
+		var arpeggio := sin(TAU * float(chord[step_index]) * 2.0 * time) * arpeggio_envelope
+		var bass := sin(TAU * float(chord[0]) * 0.5 * time)
+		var loop_fade := pow(sin(PI * progress), 0.5)
+		var sample: float = (pad * 0.1 * chord_fade + arpeggio * 0.075 + bass * 0.045) * loop_fade
+		_write_pcm_sample(data, sample_index, sample)
+
+	var stream := AudioStreamWAV.new()
+	stream.format = AudioStreamWAV.FORMAT_16_BITS
+	stream.mix_rate = mix_rate
+	stream.stereo = false
+	stream.loop_mode = AudioStreamWAV.LOOP_FORWARD
+	stream.loop_begin = 0
+	stream.loop_end = sample_count
+	stream.data = data
+	return stream
+
+
+func _write_pcm_sample(data: PackedByteArray, sample_index: int, sample: float) -> void:
+	var sample_value: int = clampi(roundi(clampf(sample, -1.0, 1.0) * 32767.0), -32767, 32767)
+	var unsigned_sample: int = sample_value if sample_value >= 0 else sample_value + 65536
+	data[sample_index * 2] = unsigned_sample & 0xff
+	data[sample_index * 2 + 1] = (unsigned_sample >> 8) & 0xff
+
+
+func _start_background_music() -> void:
+	if background_music_player == null or music_volume_index == 0 or background_music_player.playing:
+		return
+
+	background_music_player.play()
+
+
+func _stop_background_music() -> void:
+	if background_music_player != null:
+		background_music_player.stop()
+
+
+func _apply_music_volume() -> void:
+	if background_music_player != null:
+		background_music_player.volume_db = _get_music_volume_db()
+
+
+func _get_music_volume_db() -> float:
+	match music_volume_index:
+		0:
+			return -80.0
+		1:
+			return -30.0
+		2:
+			return -22.0
+		3:
+			return -15.0
+
+	return -30.0
 
 
 func _reset_game_session() -> void:
