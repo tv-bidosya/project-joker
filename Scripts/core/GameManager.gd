@@ -190,6 +190,8 @@ var music_popup_previous_page_button: Button
 var music_popup_next_page_button: Button
 var music_popup_page_label: Label
 var music_popup_playlist_container: VBoxContainer
+var score_sheet_backdrop: ColorRect
+var score_sheet_close_button: Button
 var tutorial_panel: PanelContainer
 var tutorial_title_label: Label
 var tutorial_text_label: Label
@@ -209,6 +211,7 @@ func _ready() -> void:
 	_run_session_save_checks()
 	_load_persistent_settings()
 	_create_table_visual_styles()
+	_create_score_sheet_overlay()
 	_create_player_panels()
 	_create_player_avatar_badges()
 	_create_trick_slots()
@@ -259,6 +262,40 @@ func _create_table_visual_styles() -> void:
 	lead_marker_style = _create_flat_style(Color(0.055, 0.2, 0.13, 1.0), Color(0.64, 0.86, 0.52, 1.0), 1, 8, 2)
 	avatar_badge_style = _create_flat_style(Color(0.04, 0.1, 0.07, 1.0), Color(0.75, 0.58, 0.2, 1.0), 2, 6, 2)
 	music_player_panel.add_theme_stylebox_override("panel", _create_flat_style(Color(0.012, 0.055, 0.034, 0.94), Color(0.38, 0.255, 0.11, 0.0), 0, 6, 0))
+
+
+func _create_score_sheet_overlay() -> void:
+	score_sheet_backdrop = ColorRect.new()
+	score_sheet_backdrop.name = "ScoreSheetBackdrop"
+	score_sheet_backdrop.color = Color(0.002, 0.012, 0.008, 0.74)
+	score_sheet_backdrop.mouse_filter = Control.MOUSE_FILTER_STOP
+	score_sheet_backdrop.z_index = 94
+	score_sheet_backdrop.visible = false
+	score_sheet_backdrop.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	add_child(score_sheet_backdrop)
+
+	# Расписка открывается отдельным плотным окном поверх стола,
+	# чтобы таблицу можно было спокойно прочитать в любой момент партии.
+	score_sheet_panel.reparent(self)
+	score_sheet_panel.z_index = 95
+	var score_sheet_style: StyleBoxFlat = _create_flat_style(Color(0.012, 0.07, 0.045, 1.0), Color(0.78, 0.62, 0.24, 1.0), 3, 14, 10)
+	score_sheet_style.content_margin_left = 24.0
+	score_sheet_style.content_margin_top = 20.0
+	score_sheet_style.content_margin_right = 24.0
+	score_sheet_style.content_margin_bottom = 20.0
+	score_sheet_panel.add_theme_stylebox_override("panel", score_sheet_style)
+	_set_control_layout(score_sheet_panel, 0.5, 0.5, 0.5, 0.5, -780.0, -450.0, 780.0, 450.0)
+
+	score_sheet_close_button = Button.new()
+	score_sheet_close_button.name = "ScoreSheetCloseButton"
+	score_sheet_close_button.text = "Закрыть"
+	score_sheet_close_button.custom_minimum_size = Vector2(0.0, 38.0)
+	score_sheet_close_button.add_theme_font_size_override("font_size", 16)
+	score_sheet_close_button.z_index = 96
+	score_sheet_close_button.visible = false
+	_set_control_layout(score_sheet_close_button, 0.5, 0.5, 0.5, 0.5, 584.0, -426.0, 744.0, -382.0)
+	score_sheet_close_button.pressed.connect(_on_score_sheet_toggle_pressed)
+	add_child(score_sheet_close_button)
 
 
 func _create_flat_style(
@@ -3220,6 +3257,11 @@ func _get_displayed_joker_forced_card_rank() -> Trick.ForcedCardRank:
 
 func _refresh_score_sheet() -> void:
 	score_sheet_panel.visible = is_score_sheet_visible
+	if is_instance_valid(score_sheet_backdrop):
+		score_sheet_backdrop.visible = is_score_sheet_visible
+	if is_instance_valid(score_sheet_close_button):
+		score_sheet_close_button.visible = is_score_sheet_visible
+		score_sheet_close_button.disabled = is_processing_automatic_actions
 	score_sheet_toggle_button.text = "Скрыть расписку" if is_score_sheet_visible else "📋 Расписка"
 	score_sheet_toggle_button.disabled = is_processing_automatic_actions
 	score_sheet_title.text = "Расписка: %d из %d раздач сыграно · полный план партии" % [round_history.size(), TOTAL_ROUND_COUNT]
