@@ -22,6 +22,7 @@ const MAX_PLAYER_NAME_LENGTH := 16
 const MAX_MUSIC_TITLE_LENGTH := 26
 const MUSIC_PLAYLIST_PAGE_SIZE := 25
 const PROFILE_PLAYLIST_PREVIEW_COUNT := 20
+const AUTO_TURN_DURATION_SECONDS := 60.0
 const BUILT_IN_AVATAR_COUNT := 4
 const CUSTOM_AVATAR_INDEX := BUILT_IN_AVATAR_COUNT
 const HUMAN_AVATAR_COUNT := BUILT_IN_AVATAR_COUNT + 1
@@ -97,6 +98,7 @@ var player_panels: Array[PanelContainer] = []
 var avatar_badges: Array[PanelContainer] = []
 var avatar_images: Array[TextureRect] = []
 var avatar_labels: Array[Label] = []
+var turn_timer_indicator: TurnTimerIndicator
 var trick_card_views: Array[CardView] = []
 var bot_card_back_holders: Array[Control] = []
 var deck_back_panels: Array[PanelContainer] = []
@@ -143,6 +145,9 @@ var menu_content: VBoxContainer
 var bot_speed_index := 1
 var bot_difficulty: BotDifficulty = BotDifficulty.NORMAL
 var tutorial_enabled := false
+var auto_turn_enabled := false
+var turn_timer_active := false
+var turn_timer_remaining := AUTO_TURN_DURATION_SECONDS
 var sound_volume_index := 2
 var music_volume_index := 1
 var music_volume_percent := 30
@@ -1057,6 +1062,15 @@ func _show_settings_menu() -> void:
 	tutorial_toggle.toggled.connect(_on_tutorial_toggled)
 	menu_content.add_child(tutorial_toggle)
 
+	var auto_turn_toggle := CheckButton.new()
+	auto_turn_toggle.text = "Автоход по таймеру: 60 секунд"
+	auto_turn_toggle.button_pressed = auto_turn_enabled
+	auto_turn_toggle.add_theme_font_size_override("font_size", 18)
+	auto_turn_toggle.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
+	auto_turn_toggle.toggled.connect(_on_auto_turn_toggled)
+	menu_content.add_child(auto_turn_toggle)
+	_add_menu_label("Если время твоего решения выйдет, игра выберет корректный заказ, карту или условие Джокера по уровню ботов.", 14, Color(0.72, 0.85, 0.76, 1.0))
+
 	_add_menu_button("Начать обучение заново", _on_tutorial_enable_pressed)
 	_add_menu_label("Подсказки не мешают игре и всегда доступны из настроек или меню паузы.", 14, Color(0.72, 0.85, 0.76, 1.0))
 	_add_menu_spacer(8.0)
@@ -1210,6 +1224,18 @@ func _on_tutorial_toggled(enabled: bool) -> void:
 	tutorial_enabled = enabled
 	_save_persistent_settings()
 	_refresh_tutorial_panel()
+
+
+func _on_auto_turn_toggled(enabled: bool) -> void:
+	auto_turn_enabled = enabled
+	_save_persistent_settings()
+
+	if auto_turn_enabled:
+		_start_human_turn_timer()
+	else:
+		_stop_human_turn_timer()
+
+	_refresh_ui()
 
 
 func _on_tutorial_enable_pressed() -> void:
@@ -1398,6 +1424,7 @@ func _load_persistent_settings() -> void:
 	var saved_speed: int = int(config.get_value("game", "bot_speed", bot_speed_index))
 	bot_speed_index = clampi(saved_speed, 0, BOT_SPEED_COUNT - 1)
 	tutorial_enabled = bool(config.get_value("game", "tutorial_enabled", tutorial_enabled))
+	auto_turn_enabled = bool(config.get_value("game", "auto_turn_enabled", auto_turn_enabled))
 	var saved_sound_volume: int = int(config.get_value("audio", "sound_volume", sound_volume_index))
 	sound_volume_index = clampi(saved_sound_volume, 0, SOUND_VOLUME_COUNT - 1)
 	var saved_music_volume: int = int(config.get_value("audio", "music_volume", music_volume_index))
@@ -1442,6 +1469,7 @@ func _save_persistent_settings() -> void:
 	config.set_value("game", "bot_difficulty", bot_difficulty)
 	config.set_value("game", "bot_speed", bot_speed_index)
 	config.set_value("game", "tutorial_enabled", tutorial_enabled)
+	config.set_value("game", "auto_turn_enabled", auto_turn_enabled)
 	config.set_value("audio", "sound_volume", sound_volume_index)
 	config.set_value("audio", "music_volume", music_volume_index)
 	config.set_value("audio", "music_volume_percent", music_volume_percent)
@@ -2495,6 +2523,7 @@ func _refresh_music_player() -> void:
 
 
 func _reset_game_session() -> void:
+	_stop_human_turn_timer()
 	game = Game.new(configured_player_names)
 	normal_round_index = 0
 	dark_round_index = -1
@@ -2596,6 +2625,7 @@ func _advance_automatic_actions() -> void:
 				else:
 					action_text = "Твой заказ: выбери число взяток."
 				is_processing_automatic_actions = false
+				_start_human_turn_timer()
 				_refresh_ui()
 				return
 
@@ -2618,6 +2648,7 @@ func _advance_automatic_actions() -> void:
 				_prepare_test_checkpoint()
 				action_text = "Твой ход: выбери допустимую карту."
 				is_processing_automatic_actions = false
+				_start_human_turn_timer()
 				_refresh_ui()
 				return
 
@@ -2702,6 +2733,7 @@ func _on_bid_pressed(bid: int) -> void:
 		_refresh_ui()
 		return
 
+	_stop_human_turn_timer()
 	action_text = "Ты заказываешь %d." % bid
 	_add_history(action_text)
 	_announce_dark_cards_dealt(cards_were_hidden)
@@ -2727,6 +2759,7 @@ func _on_card_pressed(card: Card) -> void:
 		_refresh_ui()
 		return
 
+	_stop_human_turn_timer()
 	_record_play("Ты", card, HUMAN_PLAYER_INDEX)
 	_save_current_session()
 	_advance_automatic_actions()
@@ -2759,6 +2792,7 @@ func _on_joker_choice(
 		_refresh_ui()
 		return
 
+	_stop_human_turn_timer()
 	_record_play("Ты", pending_joker_card, HUMAN_PLAYER_INDEX)
 	_add_history(_get_joker_rule_text(mode, declared_suit, forced_card_rank, is_leading_joker))
 	pending_joker_card = null
@@ -2772,6 +2806,7 @@ func _on_undo_pressed() -> void:
 		return
 
 	var checkpoint: Dictionary = test_checkpoints.pop_back()
+	_stop_human_turn_timer()
 	game.restore_snapshot(checkpoint["game"])
 	_reset_trick_presentation()
 	pending_joker_card = null
@@ -3092,6 +3127,7 @@ func _refresh_ui() -> void:
 	_refresh_score_sheet()
 	_refresh_music_player()
 	_refresh_tutorial_panel()
+	_refresh_turn_timer_indicator()
 
 
 func _refresh_header() -> void:
@@ -3249,6 +3285,12 @@ func _create_player_avatar_badges() -> void:
 		avatar_label.add_theme_color_override("font_color", Color(0.98, 0.9, 0.6, 1.0))
 		avatar_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		avatar_content.add_child(avatar_label)
+
+		if player_index == HUMAN_PLAYER_INDEX:
+			turn_timer_indicator = TurnTimerIndicator.new()
+			turn_timer_indicator.visible = false
+			turn_timer_indicator.z_index = 2
+			avatar_content.add_child(turn_timer_indicator)
 		players_container.add_child(badge)
 		avatar_badges.append(badge)
 		avatar_images.append(avatar_image)
@@ -4040,7 +4082,7 @@ func _place_table_marker(marker: PanelContainer, player_index: int, is_dealer: b
 			1:
 				_set_control_layout(marker, 0.0, 0.0, 0.0, 0.0, 562.0, 342.0, 610.0, 370.0)
 			2:
-				_set_control_layout(marker, 0.5, 0.0, 0.5, 0.0, 122.0, 360.0, 170.0, 388.0)
+				_set_control_layout(marker, 0.5, 0.0, 0.5, 0.0, 122.0, 402.0, 170.0, 430.0)
 			3:
 				_set_control_layout(marker, 1.0, 0.0, 1.0, 0.0, -610.0, 342.0, -562.0, 370.0)
 		return
@@ -4159,6 +4201,126 @@ func _is_human_turn() -> bool:
 		and game.current_round.state == Round.State.PLAYING
 		and _get_current_player_index() == HUMAN_PLAYER_INDEX
 	)
+
+
+func _process(delta: float) -> void:
+	if not turn_timer_active or not auto_turn_enabled:
+		return
+
+	if menu_overlay != null and menu_overlay.visible:
+		return
+
+	if not _is_human_decision_pending():
+		_stop_human_turn_timer()
+		return
+
+	turn_timer_remaining = maxf(0.0, turn_timer_remaining - delta)
+	_refresh_turn_timer_indicator()
+
+	if is_zero_approx(turn_timer_remaining):
+		_resolve_human_turn_timeout()
+
+
+func _is_human_decision_pending() -> bool:
+	return (
+		not is_processing_automatic_actions
+		and (game.current_round.state == Round.State.BIDDING or game.current_round.state == Round.State.PLAYING)
+		and _get_current_player_index() == HUMAN_PLAYER_INDEX
+	)
+
+
+func _start_human_turn_timer() -> void:
+	if not auto_turn_enabled or turn_timer_active or not _is_human_decision_pending():
+		return
+
+	turn_timer_remaining = AUTO_TURN_DURATION_SECONDS
+	turn_timer_active = true
+	_refresh_turn_timer_indicator()
+
+
+func _stop_human_turn_timer() -> void:
+	turn_timer_active = false
+	turn_timer_remaining = AUTO_TURN_DURATION_SECONDS
+	_refresh_turn_timer_indicator()
+
+
+func _refresh_turn_timer_indicator() -> void:
+	if not is_instance_valid(turn_timer_indicator):
+		return
+
+	var should_show_timer := auto_turn_enabled and turn_timer_active and _is_human_decision_pending()
+	turn_timer_indicator.visible = should_show_timer
+	if should_show_timer:
+		turn_timer_indicator.set_time_remaining(turn_timer_remaining, AUTO_TURN_DURATION_SECONDS)
+
+
+func _resolve_human_turn_timeout() -> void:
+	_stop_human_turn_timer()
+
+	if game.current_round.state == Round.State.BIDDING:
+		_play_automatic_human_bid()
+		return
+
+	if game.current_round.state == Round.State.PLAYING:
+		_play_automatic_human_card()
+
+
+func _play_automatic_human_bid() -> void:
+	var cards_were_hidden := _is_dark_round() and not game.cards_are_dealt
+	var bid := _choose_automatic_bid(HUMAN_PLAYER_INDEX)
+
+	_commit_test_checkpoint()
+	if not game.place_bid(HUMAN_PLAYER_INDEX, bid):
+		action_text = "Время вышло, но автоматический заказ не удалось применить."
+		_refresh_ui()
+		return
+
+	action_text = "Время вышло: за тебя выбран заказ %d." % bid
+	_add_history(action_text)
+	_announce_dark_cards_dealt(cards_were_hidden)
+	_save_current_session()
+	_refresh_ui()
+	_advance_automatic_actions()
+
+
+func _play_automatic_human_card() -> void:
+	var player := game.players[HUMAN_PLAYER_INDEX]
+	var card: Card = pending_joker_card
+	if card == null:
+		card = _choose_automatic_card(player)
+
+	if card == null:
+		action_text = "Время вышло, но автоматический ход не нашёл допустимую карту."
+		_refresh_ui()
+		return
+
+	var is_leading_joker := card.is_joker and game.active_trick == null
+	var joker_mode: Trick.JokerMode = Trick.JokerMode.NONE
+	var declared_suit := -1
+	var played_successfully := false
+
+	_commit_test_checkpoint()
+	if card.is_joker:
+		joker_mode = _choose_automatic_joker_mode(player)
+		declared_suit = pending_joker_suit if pending_joker_suit >= 0 else _choose_automatic_joker_suit(player, joker_mode == Trick.JokerMode.NORMAL_CARD_WINS)
+		played_successfully = game.play_card(HUMAN_PLAYER_INDEX, card, joker_mode, declared_suit)
+	else:
+		played_successfully = game.play_card(HUMAN_PLAYER_INDEX, card)
+
+	if not played_successfully:
+		action_text = "Время вышло, но автоматический ход не удалось применить."
+		_refresh_ui()
+		return
+
+	pending_joker_card = null
+	pending_joker_suit = -1
+	action_text = "Время вышло: за тебя сыграна %s." % card.get_card_name()
+	_add_history(action_text)
+	_record_play("Автоход", card, HUMAN_PLAYER_INDEX)
+	if card.is_joker:
+		_add_history(_get_joker_rule_text(joker_mode, declared_suit, Trick.ForcedCardRank.NONE, is_leading_joker))
+	_save_current_session()
+	_advance_automatic_actions()
 
 
 func _is_card_available_to_human(card: Card) -> bool:
