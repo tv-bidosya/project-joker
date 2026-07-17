@@ -139,6 +139,7 @@ var menu_panel: PanelContainer
 var menu_content: VBoxContainer
 var bot_speed_index := 1
 var bot_difficulty: BotDifficulty = BotDifficulty.NORMAL
+var tutorial_enabled := false
 var sound_volume_index := 2
 var music_volume_index := 1
 var music_volume_percent := 30
@@ -189,6 +190,10 @@ var music_popup_previous_page_button: Button
 var music_popup_next_page_button: Button
 var music_popup_page_label: Label
 var music_popup_playlist_container: VBoxContainer
+var tutorial_panel: PanelContainer
+var tutorial_title_label: Label
+var tutorial_text_label: Label
+var tutorial_disable_button: Button
 
 
 func _ready() -> void:
@@ -216,6 +221,7 @@ func _ready() -> void:
 	_set_control_layout(music_player_panel, 0.0, 1.0, 0.0, 1.0, 36.0, -102.0, 312.0, -24.0)
 	music_player_panel.z_index = 90
 	_create_music_controls_popup()
+	_create_tutorial_panel()
 	_create_profile_avatar_file_dialog()
 	_create_profile_music_file_dialog()
 	joker_controls.reparent(self)
@@ -330,6 +336,7 @@ func _build_main_menu_content() -> void:
 	if _has_saved_session():
 		_add_menu_button("Продолжить партию", _on_continue_saved_game_pressed, true)
 	_add_menu_button("Новая партия", _show_new_game_setup, true)
+	_add_menu_button("Обучение", _show_tutorial_menu)
 	_add_menu_button("Профиль", _show_profile_menu)
 	_add_menu_button("Правила", _show_rules_menu)
 	_add_menu_button("Настройки", _show_settings_menu)
@@ -889,6 +896,23 @@ func _show_rules_menu() -> void:
 	_add_menu_button("Назад", _return_from_menu_subpage)
 
 
+func _show_tutorial_menu() -> void:
+	if menu_overlay != null:
+		menu_overlay.visible = true
+	_clear_children(menu_content)
+	_add_menu_title("Обучение", "Короткие подсказки помогают освоиться за столом и не блокируют игру")
+	_add_menu_label("Сейчас подсказки: %s." % ("включены" if tutorial_enabled else "выключены"), 16, Color(0.97, 0.86, 0.55, 1.0))
+	_add_menu_label("• Заказы: перед розыгрышем назови, сколько взяток планируешь взять.", 16)
+	_add_menu_label("• Розыгрыш: если масть захода есть на руке, её нужно положить. Если масти нет — действуют правила козыря и Джокера.", 16)
+	_add_menu_label("• Джокер: при первом ходе можно объявить масть и условие; в середине взятки он может забирать или быть сбросом.", 16)
+	_add_menu_label("• После раздачи сверяй заказ, взятые карты и очки в итогах справа или в расписке.", 16)
+	_add_menu_spacer(10.0)
+	_add_menu_button("Включить подсказки", _on_tutorial_enable_pressed)
+	_add_menu_button("Отключить подсказки", _on_tutorial_disable_pressed)
+	_add_menu_button("Назад", _return_from_menu_subpage, true)
+	_refresh_tutorial_panel()
+
+
 func _show_settings_menu() -> void:
 	menu_overlay.visible = true
 	_clear_children(menu_content)
@@ -953,7 +977,16 @@ func _show_settings_menu() -> void:
 	music_selector.item_selected.connect(_on_music_volume_selected)
 	menu_content.add_child(music_selector)
 
-	_add_menu_label("Музыка играет только за игровым столом. Позже сюда можно будет добавить выбор пользовательского музыкального файла.", 14, Color(0.72, 0.85, 0.76, 1.0))
+	var tutorial_toggle := CheckButton.new()
+	tutorial_toggle.text = "Режим обучения: подсказки на столе"
+	tutorial_toggle.button_pressed = tutorial_enabled
+	tutorial_toggle.add_theme_font_size_override("font_size", 18)
+	tutorial_toggle.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
+	tutorial_toggle.toggled.connect(_on_tutorial_toggled)
+	menu_content.add_child(tutorial_toggle)
+
+	_add_menu_button("Начать обучение заново", _on_tutorial_enable_pressed)
+	_add_menu_label("Подсказки не мешают игре и всегда доступны из настроек или меню паузы.", 14, Color(0.72, 0.85, 0.76, 1.0))
 	_add_menu_spacer(8.0)
 	_add_menu_button("Назад", _return_from_menu_subpage)
 
@@ -1053,6 +1086,7 @@ func _build_pause_menu_content() -> void:
 	_add_menu_title("Пауза", "Текущая локальная партия ждёт твоего решения")
 	_add_menu_spacer(18.0)
 	_add_menu_button("Продолжить", _resume_current_game, true)
+	_add_menu_button("Обучение", _show_tutorial_menu)
 	_add_menu_button("Профиль", _show_profile_menu)
 	_add_menu_button("Правила", _show_rules_menu)
 	_add_menu_button("Настройки", _show_settings_menu)
@@ -1097,6 +1131,28 @@ func _on_fullscreen_toggled(enabled: bool) -> void:
 		DisplayServer.WINDOW_MODE_FULLSCREEN if enabled else DisplayServer.WINDOW_MODE_MAXIMIZED
 	)
 	_save_persistent_settings()
+
+
+func _on_tutorial_toggled(enabled: bool) -> void:
+	tutorial_enabled = enabled
+	_save_persistent_settings()
+	_refresh_tutorial_panel()
+
+
+func _on_tutorial_enable_pressed() -> void:
+	tutorial_enabled = true
+	_save_persistent_settings()
+	_refresh_tutorial_panel()
+	if menu_overlay != null and menu_overlay.visible:
+		_show_tutorial_menu()
+
+
+func _on_tutorial_disable_pressed() -> void:
+	tutorial_enabled = false
+	_save_persistent_settings()
+	_refresh_tutorial_panel()
+	if menu_overlay != null and menu_overlay.visible:
+		_show_tutorial_menu()
 
 
 func _on_bot_speed_selected(selected_index: int) -> void:
@@ -1268,6 +1324,7 @@ func _load_persistent_settings() -> void:
 	bot_difficulty = clampi(saved_difficulty, 0, BOT_DIFFICULTY_COUNT - 1)
 	var saved_speed: int = int(config.get_value("game", "bot_speed", bot_speed_index))
 	bot_speed_index = clampi(saved_speed, 0, BOT_SPEED_COUNT - 1)
+	tutorial_enabled = bool(config.get_value("game", "tutorial_enabled", tutorial_enabled))
 	var saved_sound_volume: int = int(config.get_value("audio", "sound_volume", sound_volume_index))
 	sound_volume_index = clampi(saved_sound_volume, 0, SOUND_VOLUME_COUNT - 1)
 	var saved_music_volume: int = int(config.get_value("audio", "music_volume", music_volume_index))
@@ -1310,6 +1367,7 @@ func _save_persistent_settings() -> void:
 
 	config.set_value("game", "bot_difficulty", bot_difficulty)
 	config.set_value("game", "bot_speed", bot_speed_index)
+	config.set_value("game", "tutorial_enabled", tutorial_enabled)
 	config.set_value("audio", "sound_volume", sound_volume_index)
 	config.set_value("audio", "music_volume", music_volume_index)
 	config.set_value("audio", "music_volume_percent", music_volume_percent)
@@ -2222,6 +2280,92 @@ func _create_music_controls_popup() -> void:
 	playlist_scroll.add_child(music_popup_playlist_container)
 
 
+func _create_tutorial_panel() -> void:
+	tutorial_panel = PanelContainer.new()
+	tutorial_panel.name = "TutorialPanel"
+	tutorial_panel.z_index = 85
+	tutorial_panel.visible = false
+	tutorial_panel.add_theme_stylebox_override(
+		"panel",
+		_create_flat_style(Color(0.028, 0.085, 0.055, 0.97), Color(0.78, 0.62, 0.24, 0.95), 2, 10, 4)
+	)
+	add_child(tutorial_panel)
+	# Нижняя левая зона рядом с твоей рукой: здесь подсказка не закрывает
+	# историю, карточки игроков, ставки и карты на столе.
+	_set_control_layout(tutorial_panel, 0.0, 1.0, 0.0, 1.0, 40.0, -430.0, 380.0, -230.0)
+
+	var margins := MarginContainer.new()
+	margins.add_theme_constant_override("margin_left", 14)
+	margins.add_theme_constant_override("margin_top", 12)
+	margins.add_theme_constant_override("margin_right", 14)
+	margins.add_theme_constant_override("margin_bottom", 12)
+	tutorial_panel.add_child(margins)
+
+	var content := VBoxContainer.new()
+	content.add_theme_constant_override("separation", 8)
+	margins.add_child(content)
+
+	tutorial_title_label = Label.new()
+	tutorial_title_label.text = "✦ Режим обучения"
+	tutorial_title_label.add_theme_font_size_override("font_size", 17)
+	tutorial_title_label.add_theme_color_override("font_color", Color(0.97, 0.86, 0.55, 1.0))
+	content.add_child(tutorial_title_label)
+
+	tutorial_text_label = Label.new()
+	tutorial_text_label.custom_minimum_size = Vector2(0.0, 76.0)
+	tutorial_text_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	tutorial_text_label.add_theme_font_size_override("font_size", 14)
+	tutorial_text_label.add_theme_color_override("font_color", Color(0.88, 0.94, 0.88, 1.0))
+	content.add_child(tutorial_text_label)
+
+	tutorial_disable_button = Button.new()
+	tutorial_disable_button.text = "Выключить подсказки"
+	tutorial_disable_button.custom_minimum_size = Vector2(0.0, 30.0)
+	tutorial_disable_button.add_theme_font_size_override("font_size", 14)
+	tutorial_disable_button.tooltip_text = "Включить подсказки снова можно в настройках или через меню"
+	tutorial_disable_button.pressed.connect(_on_tutorial_disable_pressed)
+	content.add_child(tutorial_disable_button)
+
+
+func _refresh_tutorial_panel() -> void:
+	if not is_instance_valid(tutorial_panel) or not is_instance_valid(tutorial_text_label):
+		return
+
+	var is_table_visible := menu_overlay != null and not menu_overlay.visible
+	# Во время выбора условия Джокера важнее показать все кнопки решения.
+	# Подсказка появится снова сразу после подтверждения выбора.
+	var can_show_tutorial := tutorial_enabled and is_table_visible and game.current_round.state != Round.State.SETUP and pending_joker_card == null
+	tutorial_panel.visible = can_show_tutorial
+	if not can_show_tutorial:
+		return
+
+	tutorial_text_label.text = _get_tutorial_hint_text()
+
+
+func _get_tutorial_hint_text() -> String:
+	match game.current_round.state:
+		Round.State.BIDDING:
+			if _is_dark_round():
+				return "Тёмная раздача: сначала игроки заказывают взятки вслепую, а карты открываются после всех заказов."
+			if game.current_round.current_player_index == HUMAN_PLAYER_INDEX:
+				return "Сейчас твой заказ. Назови, сколько взяток планируешь взять в этой раздаче. Последний заказ не может сравнять общую сумму с числом карт."
+			return "Заказы идут по кругу от игрока после сдающего. Следи за уже названными числами на карточках игроков."
+		Round.State.PLAYING:
+			if pending_joker_card != null:
+				if game.active_trick == null:
+					return "Ты вышел Джокером. Объяви масть и условие: Джокер забирает взятку или считается старшей/младшей объявленной мастью."
+				return "Джокер можно использовать как сильную карту или как сброс. Выбери, должен ли он забирать эту взятку."
+			if _get_current_player_index() == HUMAN_PLAYER_INDEX:
+				if game.active_trick == null:
+					return "Твой заход. Выбери карту, которой начнётся взятка; другие игроки по возможности должны ответить этой мастью."
+				return "Твой ответ. Если масть захода есть на руке — положи её. Если нет, дальше действуют козырь и правила Джокера."
+			return "Сейчас ход другого игрока. Карты в центре образуют взятку; победитель следующей взятки будет ходить первым."
+		Round.State.FINISHED:
+			return "Раздача завершена. Сверь заказ, число взяток и очки справа; полную историю всех раздач можно открыть кнопкой «Расписка»."
+
+	return "Подсказки будут меняться вместе с этапом раздачи."
+
+
 func _refresh_music_controls_popup() -> void:
 	if not is_instance_valid(music_popup_volume_label) or not is_instance_valid(music_popup_volume_slider) or not is_instance_valid(music_popup_repeat_button) or not is_instance_valid(music_popup_shuffle_button) or not is_instance_valid(music_popup_folder_button) or not is_instance_valid(music_popup_clear_button) or not is_instance_valid(music_popup_import_label) or not is_instance_valid(music_popup_search_input) or not is_instance_valid(music_popup_previous_page_button) or not is_instance_valid(music_popup_next_page_button) or not is_instance_valid(music_popup_page_label) or not is_instance_valid(music_popup_playlist_container):
 		return
@@ -2789,6 +2933,7 @@ func _refresh_ui() -> void:
 	_refresh_undo_button()
 	_refresh_score_sheet()
 	_refresh_music_player()
+	_refresh_tutorial_panel()
 
 
 func _refresh_header() -> void:
@@ -3951,6 +4096,11 @@ func _choose_automatic_card(player: Player) -> Card:
 		if taking_joker != null:
 			return taking_joker
 
+		# Взятку уже невозможно забрать: сохраняем сильные карты для следующего захода.
+		var weakest_losing_regular_card := _select_weakest_losing_regular_card(legal_cards)
+		if weakest_losing_regular_card != null:
+			return weakest_losing_regular_card
+
 		return _select_card_by_strength(legal_cards, true)
 
 	if _should_shed_high_card_in_misere(legal_cards):
@@ -3982,6 +4132,11 @@ func _choose_hard_automatic_card(player: Player, legal_cards: Array[Card]) -> Ca
 		var taking_joker := _get_joker_from_cards(legal_cards)
 		if taking_joker != null:
 			return taking_joker
+
+		# Даже при невыполненном заказе не тратим туза, если эта взятка проиграна.
+		var weakest_losing_regular_card := _select_weakest_losing_regular_card(legal_cards)
+		if weakest_losing_regular_card != null:
+			return weakest_losing_regular_card
 
 		return _select_card_by_strength(legal_cards, true)
 
@@ -4778,6 +4933,7 @@ func _run_hand_sort_checks() -> void:
 
 func _run_bot_rule_checks() -> void:
 	var original_game := game
+	var original_bot_difficulty: BotDifficulty = bot_difficulty
 	var test_game := Game.new(["Игрок 1", "Игрок 2", "Игрок 3", "Игрок 4"])
 	assert(
 		test_game.start_round(9, Round.RoundType.NORMAL, Round.TrumpSuit.HEARTS),
@@ -4857,6 +5013,29 @@ func _run_bot_rule_checks() -> void:
 	var joker_required_choice: Card = _choose_automatic_card(test_game.players[joker_check_bot_index])
 	assert(joker_required_choice == required_joker, "Проверка бота: Джокер должен быть выбран, когда обычный козырь не перебивает взятку.")
 
+	assert(test_game.start_round(1, Round.RoundType.NORMAL, Round.TrumpSuit.CLUBS), "Проверка бота: раздача для сохранения туза должна запускаться.")
+	test_game.current_round.start_playing_without_bids()
+	for player in test_game.players:
+		player.hand.clear()
+
+	var discard_leader_index: int = test_game.current_round.current_player_index
+	var discard_bot_index: int = (discard_leader_index + 1) % test_game.players.size()
+	var trump_lead := _create_card(Card.Suit.CLUBS, Card.Rank.ACE)
+	var low_discard := _create_card(Card.Suit.HEARTS, Card.Rank.SIX)
+	var saved_ace := _create_card(Card.Suit.DIAMONDS, Card.Rank.ACE)
+	test_game.players[discard_leader_index].receive_card(trump_lead)
+	test_game.players[discard_bot_index].receive_card(low_discard)
+	test_game.players[discard_bot_index].receive_card(saved_ace)
+	test_game.players[discard_bot_index].bid = 2
+	assert(test_game.play_card(discard_leader_index, trump_lead), "Проверка бота: козырная карта захода должна быть сыграна.")
+
+	bot_difficulty = BotDifficulty.NORMAL
+	var normal_discard_choice: Card = _choose_automatic_card(test_game.players[discard_bot_index])
+	assert(normal_discard_choice == low_discard, "Проверка бота: обычный бот должен сохранить туза, если взятку уже не забрать.")
+	bot_difficulty = BotDifficulty.HARD
+	var hard_discard_choice: Card = _choose_automatic_card(test_game.players[discard_bot_index])
+	assert(hard_discard_choice == low_discard, "Проверка бота: сложный бот должен сохранить туза, если взятку уже не забрать.")
+
 	assert(test_game.start_round(1, Round.RoundType.MISERE, Round.TrumpSuit.CLUBS), "Проверка бота: мизерная раздача для сброса старшей карты должна запускаться.")
 	for player in test_game.players:
 		player.hand.clear()
@@ -4884,6 +5063,7 @@ func _run_bot_rule_checks() -> void:
 	assert(misere_choice == king_spades, "Проверка бота: в неизбежной мизерной взятке нужно сбрасывать старшую карту.")
 
 	game = original_game
+	bot_difficulty = original_bot_difficulty
 
 
 func _run_session_save_checks() -> void:
