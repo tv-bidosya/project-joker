@@ -4040,14 +4040,14 @@ func _place_table_marker(marker: PanelContainer, player_index: int, is_dealer: b
 			1:
 				_set_control_layout(marker, 0.0, 0.0, 0.0, 0.0, 562.0, 342.0, 610.0, 370.0)
 			2:
-				_set_control_layout(marker, 0.5, 0.0, 0.5, 0.0, 122.0, 72.0, 170.0, 100.0)
+				_set_control_layout(marker, 0.5, 0.0, 0.5, 0.0, 122.0, 360.0, 170.0, 388.0)
 			3:
 				_set_control_layout(marker, 1.0, 0.0, 1.0, 0.0, -610.0, 342.0, -562.0, 370.0)
 		return
 
 	match player_index:
 		HUMAN_PLAYER_INDEX:
-			_set_control_layout(marker, 0.5, 1.0, 0.5, 1.0, -248.0, -370.0, -170.0, -342.0)
+			_set_control_layout(marker, 0.5, 1.0, 0.5, 1.0, -248.0, -444.0, -170.0, -416.0)
 		1:
 			_set_control_layout(marker, 0.0, 0.0, 0.0, 0.0, 350.0, 324.0, 428.0, 352.0)
 		2:
