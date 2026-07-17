@@ -89,7 +89,6 @@ enum SocialAction {
 @onready var bid_controls: HBoxContainer = %BidControls
 @onready var joker_controls: GridContainer = %JokerControls
 @onready var hand_container: HBoxContainer = %HandContainer
-@onready var hand_title: Label = %HandTitle
 @onready var hand_sort_by_suit_button: Button = %HandSortBySuitButton
 @onready var hand_sort_trumps_left_button: Button = %HandSortTrumpsLeftButton
 @onready var undo_button: Button = %UndoButton
@@ -3832,7 +3831,6 @@ func _place_joker_controls() -> void:
 
 func _refresh_hand() -> void:
 	_clear_children(hand_container)
-	hand_title.text = "Твоя рука"
 
 	if _is_dark_round() and not game.cards_are_dealt:
 		var hidden_cards_label := Label.new()
@@ -4037,9 +4035,10 @@ func _create_deck_visual() -> void:
 	deck_visual.add_child(deck_trump_panel)
 
 	deck_caption_label = Label.new()
-	deck_caption_label.position = Vector2(0.0, 118.0)
-	deck_caption_label.size = Vector2(125.0, 38.0)
+	deck_caption_label.position = Vector2(-48.0, 120.0)
+	deck_caption_label.size = Vector2(220.0, 24.0)
 	deck_caption_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	deck_caption_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	deck_caption_label.add_theme_color_override("font_color", Color(0.85, 0.95, 0.88, 1.0))
 	deck_caption_label.add_theme_font_size_override("font_size", 13)
 	deck_visual.add_child(deck_caption_label)
@@ -4066,9 +4065,9 @@ func _refresh_deck_visual() -> void:
 		)
 		deck_trump_panel.tooltip_text = "Открытая карта определяет козырь."
 		deck_caption_label.text = (
-			"Открытый Джокер\nБескозырка"
+			"Открытый Джокер · бескозырка"
 			if trump_card.is_joker
-			else "Открытый козырь\nВ колоде: %d" % game.deck.cards_left()
+			else "Открытый козырь · в колоде: %d" % game.deck.cards_left()
 		)
 		return
 
@@ -4077,7 +4076,7 @@ func _refresh_deck_visual() -> void:
 	deck_trump_label.add_theme_font_size_override("font_size", 32)
 	deck_trump_label.add_theme_color_override("font_color", Color(0.08, 0.08, 0.07, 1.0))
 	deck_trump_panel.tooltip_text = "Козырь задан правилами этой раздачи."
-	deck_caption_label.text = "Без козыря" if game.current_round.trump == Round.TrumpSuit.NONE else "Козырь задан\n%s" % trump_name
+	deck_caption_label.text = "Без козыря" if game.current_round.trump == Round.TrumpSuit.NONE else "Козырь задан: %s" % trump_name
 
 
 func _create_table_markers() -> void:
