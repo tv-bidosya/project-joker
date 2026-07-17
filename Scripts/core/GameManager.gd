@@ -24,6 +24,10 @@ const MUSIC_PLAYLIST_PAGE_SIZE := 25
 const PROFILE_PLAYLIST_PREVIEW_COUNT := 20
 const AUTO_TURN_DURATION_SECONDS := 60.0
 const REACTION_DISPLAY_DURATION := 1.25
+const STICKER_FLY_DURATION := 0.62
+const STICKER_HOLD_DURATION := 6.0
+const SOCIAL_ACTION_USE_LIMIT := 3
+const SOCIAL_ACTION_COOLDOWN_SECONDS := 120.0
 const BUILT_IN_AVATAR_COUNT := 4
 const CUSTOM_AVATAR_INDEX := BUILT_IN_AVATAR_COUNT
 const HUMAN_AVATAR_COUNT := BUILT_IN_AVATAR_COUNT + 1
@@ -50,6 +54,13 @@ enum SoundEffect {
 	DEAL,
 	CARD,
 	TRICK
+}
+
+
+enum SocialAction {
+	REACTION,
+	STICKER,
+	SOUNDPAD
 }
 
 
@@ -105,6 +116,16 @@ var reaction_picker: PanelContainer
 var reaction_bubble: PanelContainer
 var reaction_bubble_label: Label
 var reaction_bubble_tween: Tween
+var sticker_toggle_button: Button
+var sticker_picker: PanelContainer
+var sticker_picker_title: Label
+var sticker_picker_back_button: Button
+var sticker_picker_content: VBoxContainer
+var sticker_selected_target_index := -1
+var sticker_flyer: PanelContainer
+var sticker_flyer_label: Label
+var sticker_flyer_image: TextureRect
+var sticker_flyer_tween: Tween
 var trick_card_views: Array[CardView] = []
 var bot_card_back_holders: Array[Control] = []
 var deck_back_panels: Array[PanelContainer] = []
@@ -154,6 +175,16 @@ var tutorial_enabled := false
 var auto_turn_enabled := false
 var turn_timer_active := false
 var turn_timer_remaining := AUTO_TURN_DURATION_SECONDS
+var social_action_uses: Dictionary = {
+	SocialAction.REACTION: 0,
+	SocialAction.STICKER: 0,
+	SocialAction.SOUNDPAD: 0
+}
+var social_action_cooldown_until: Dictionary = {
+	SocialAction.REACTION: 0,
+	SocialAction.STICKER: 0,
+	SocialAction.SOUNDPAD: 0
+}
 var sound_volume_index := 2
 var music_volume_index := 1
 var music_volume_percent := 30
@@ -235,6 +266,7 @@ func _ready() -> void:
 	_create_deck_visual()
 	_create_table_markers()
 	_create_reaction_controls()
+	_create_sticker_controls()
 	_create_sound_players()
 	_create_background_music_player()
 	music_player_panel.reparent(self)
@@ -3136,6 +3168,8 @@ func _refresh_ui() -> void:
 	_refresh_tutorial_panel()
 	_refresh_turn_timer_indicator()
 	_refresh_reaction_controls()
+	_refresh_sticker_controls()
+	_refresh_social_action_buttons()
 
 
 func _refresh_header() -> void:
@@ -4059,12 +4093,12 @@ func _create_reaction_controls() -> void:
 	reaction_toggle_button.tooltip_text = "Реакции за столом"
 	reaction_toggle_button.visible = false
 	reaction_toggle_button.z_index = 30
-	reaction_toggle_button.add_theme_font_size_override("font_size", 23)
+	reaction_toggle_button.add_theme_font_size_override("font_size", 17)
 	reaction_toggle_button.add_theme_stylebox_override(
 		"normal",
 		_create_flat_style(Color(0.035, 0.12, 0.075, 0.98), Color(0.88, 0.68, 0.24, 1.0), 2, 8, 3)
 	)
-	_set_control_layout(reaction_toggle_button, 0.5, 1.0, 0.5, 1.0, 132.0, -392.0, 182.0, -342.0)
+	_set_control_layout(reaction_toggle_button, 0.5, 1.0, 0.5, 1.0, 132.0, -392.0, 188.0, -342.0)
 	reaction_toggle_button.pressed.connect(_on_reaction_toggle_pressed)
 	players_container.add_child(reaction_toggle_button)
 
@@ -4110,14 +4144,17 @@ func _create_reaction_controls() -> void:
 
 
 func _on_reaction_toggle_pressed() -> void:
-	if not _can_show_reaction_controls():
+	if not _can_show_reaction_controls() or not _is_social_action_ready(SocialAction.REACTION):
 		return
 
+	sticker_picker.visible = false
 	reaction_picker.visible = not reaction_picker.visible
 
 
 func _on_reaction_selected(reaction: String) -> void:
 	if not _can_show_reaction_controls():
+		return
+	if not _try_consume_social_action(SocialAction.REACTION):
 		return
 
 	reaction_picker.visible = false
@@ -4157,6 +4194,300 @@ func _refresh_reaction_controls() -> void:
 	if not can_show_controls:
 		reaction_picker.visible = false
 		_hide_reaction_bubble()
+
+
+func _create_sticker_controls() -> void:
+	sticker_toggle_button = Button.new()
+	sticker_toggle_button.text = "🎁"
+	sticker_toggle_button.tooltip_text = "Стикеры игрокам"
+	sticker_toggle_button.visible = false
+	sticker_toggle_button.z_index = 30
+	sticker_toggle_button.add_theme_font_size_override("font_size", 16)
+	sticker_toggle_button.add_theme_stylebox_override(
+		"normal",
+		_create_flat_style(Color(0.08, 0.085, 0.15, 0.98), Color(0.65, 0.54, 0.92, 1.0), 2, 8, 3)
+	)
+	_set_control_layout(sticker_toggle_button, 0.5, 1.0, 0.5, 1.0, 194.0, -392.0, 258.0, -342.0)
+	sticker_toggle_button.pressed.connect(_on_sticker_toggle_pressed)
+	players_container.add_child(sticker_toggle_button)
+
+	sticker_picker = PanelContainer.new()
+	sticker_picker.visible = false
+	sticker_picker.z_index = 31
+	sticker_picker.mouse_filter = Control.MOUSE_FILTER_STOP
+	sticker_picker.add_theme_stylebox_override(
+		"panel",
+		_create_flat_style(Color(0.03, 0.045, 0.1, 0.97), Color(0.65, 0.54, 0.92, 0.96), 2, 10, 5)
+	)
+	_set_control_layout(sticker_picker, 0.5, 1.0, 0.5, 1.0, 128.0, -500.0, 414.0, -408.0)
+
+	var sticker_layout := VBoxContainer.new()
+	sticker_layout.add_theme_constant_override("separation", 6)
+	sticker_picker.add_child(sticker_layout)
+
+	var sticker_header := HBoxContainer.new()
+	sticker_header.add_theme_constant_override("separation", 4)
+	sticker_layout.add_child(sticker_header)
+
+	sticker_picker_back_button = Button.new()
+	sticker_picker_back_button.text = "←"
+	sticker_picker_back_button.tooltip_text = "Выбрать другого игрока"
+	sticker_picker_back_button.custom_minimum_size = Vector2(32.0, 26.0)
+	sticker_picker_back_button.add_theme_font_size_override("font_size", 18)
+	sticker_picker_back_button.visible = false
+	sticker_picker_back_button.pressed.connect(_build_sticker_target_picker)
+	sticker_header.add_child(sticker_picker_back_button)
+
+	sticker_picker_title = Label.new()
+	sticker_picker_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	sticker_picker_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	sticker_picker_title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	sticker_picker_title.add_theme_font_size_override("font_size", 15)
+	sticker_picker_title.add_theme_color_override("font_color", Color(0.94, 0.91, 1.0, 1.0))
+	sticker_header.add_child(sticker_picker_title)
+
+	sticker_picker_content = VBoxContainer.new()
+	sticker_picker_content.add_theme_constant_override("separation", 6)
+	sticker_layout.add_child(sticker_picker_content)
+	players_container.add_child(sticker_picker)
+
+	sticker_flyer = PanelContainer.new()
+	sticker_flyer.visible = false
+	sticker_flyer.size = Vector2(76.0, 76.0)
+	sticker_flyer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	sticker_flyer.z_index = 32
+	sticker_flyer.add_theme_stylebox_override(
+		"panel",
+		_create_flat_style(Color(0.04, 0.055, 0.12, 0.97), Color(0.83, 0.72, 0.98, 1.0), 2, 18, 7)
+	)
+
+	sticker_flyer_image = TextureRect.new()
+	sticker_flyer_image.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	sticker_flyer_image.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	sticker_flyer_image.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	sticker_flyer_image.visible = false
+	sticker_flyer.add_child(sticker_flyer_image)
+
+	sticker_flyer_label = Label.new()
+	sticker_flyer_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	sticker_flyer_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	sticker_flyer_label.add_theme_font_size_override("font_size", 38)
+	sticker_flyer.add_child(sticker_flyer_label)
+	players_container.add_child(sticker_flyer)
+
+
+func _on_sticker_toggle_pressed() -> void:
+	if not _can_show_reaction_controls() or not _is_social_action_ready(SocialAction.STICKER):
+		return
+
+	reaction_picker.visible = false
+	sticker_selected_target_index = -1
+	_build_sticker_target_picker()
+	sticker_picker.visible = not sticker_picker.visible
+
+
+func _build_sticker_target_picker() -> void:
+	_clear_children(sticker_picker_content)
+	sticker_picker_back_button.visible = false
+	sticker_picker_title.text = "Кому отправить стикер?"
+	_set_control_layout(sticker_picker, 0.5, 1.0, 0.5, 1.0, 128.0, -500.0, 414.0, -408.0)
+
+	var target_row := HBoxContainer.new()
+	target_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	target_row.add_theme_constant_override("separation", 4)
+	sticker_picker_content.add_child(target_row)
+	for player_index in range(1, game.players.size()):
+		var target_button := Button.new()
+		target_button.text = game.players[player_index].display_name.left(8)
+		target_button.custom_minimum_size = Vector2(80.0, 38.0)
+		target_button.add_theme_font_size_override("font_size", 14)
+		target_button.pressed.connect(_on_sticker_target_selected.bind(player_index))
+		target_row.add_child(target_button)
+
+
+func _on_sticker_target_selected(player_index: int) -> void:
+	if player_index <= HUMAN_PLAYER_INDEX or player_index >= game.players.size():
+		return
+
+	sticker_selected_target_index = player_index
+	_build_sticker_choice_picker()
+
+
+func _build_sticker_choice_picker() -> void:
+	_clear_children(sticker_picker_content)
+	sticker_picker_back_button.visible = true
+	sticker_picker_title.text = "Что отправить %s?" % game.players[sticker_selected_target_index].display_name.left(12)
+	_set_control_layout(sticker_picker, 0.5, 1.0, 0.5, 1.0, 128.0, -558.0, 414.0, -408.0)
+
+	var sticker_scroll := ScrollContainer.new()
+	sticker_scroll.custom_minimum_size = Vector2(0.0, 88.0)
+	sticker_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	sticker_picker_content.add_child(sticker_scroll)
+
+	var sticker_grid := GridContainer.new()
+	sticker_grid.columns = 3
+	sticker_grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	sticker_grid.add_theme_constant_override("h_separation", 4)
+	sticker_grid.add_theme_constant_override("v_separation", 4)
+	sticker_scroll.add_child(sticker_grid)
+	for sticker in _get_available_stickers():
+		var sticker_button := Button.new()
+		var sticker_texture: Texture2D = sticker.get("texture", null) as Texture2D
+		sticker_button.text = str(sticker.get("symbol", "")) if sticker_texture == null else ""
+		sticker_button.icon = sticker_texture
+		sticker_button.expand_icon = sticker_texture != null
+		sticker_button.tooltip_text = str(sticker.get("tooltip", "Отправить стикер"))
+		sticker_button.custom_minimum_size = Vector2(58.0, 42.0)
+		sticker_button.add_theme_font_size_override("font_size", 23)
+		sticker_button.pressed.connect(_on_sticker_selected.bind(sticker))
+		sticker_grid.add_child(sticker_button)
+
+
+func _get_available_stickers() -> Array[Dictionary]:
+	var stickers: Array[Dictionary] = [
+		{"symbol": "🍫", "tooltip": "Шоколад"},
+		{"symbol": "☕", "tooltip": "Кофе"},
+		{"symbol": "🍺", "tooltip": "Пиво"},
+		{"symbol": "💋", "tooltip": "Поцелуй"},
+		{"symbol": "♥", "tooltip": "Сердечко"}
+	]
+	var sticker_directory: DirAccess = DirAccess.open("res://Assets/Stickers")
+	if sticker_directory == null:
+		return stickers
+
+	for file_name in sticker_directory.get_files():
+		var file_extension := file_name.get_extension().to_lower()
+		if file_extension not in PackedStringArray(["png", "webp", "jpg", "jpeg"]):
+			continue
+
+		var sticker_path := "res://Assets/Stickers/%s" % file_name
+		var sticker_texture: Texture2D = ResourceLoader.load(sticker_path, "Texture2D") as Texture2D
+		if sticker_texture == null:
+			continue
+
+		stickers.append({
+			"symbol": "",
+			"tooltip": file_name.get_basename(),
+			"texture": sticker_texture
+		})
+
+	return stickers
+
+
+func _on_sticker_selected(sticker: Dictionary) -> void:
+	if sticker_selected_target_index < 0 or sticker_selected_target_index >= game.players.size():
+		return
+	if not _try_consume_social_action(SocialAction.STICKER):
+		return
+
+	sticker_picker.visible = false
+	_configure_sticker_flyer(sticker)
+	sticker_flyer.visible = true
+	sticker_flyer.modulate = Color.WHITE
+	sticker_flyer.scale = Vector2.ONE
+
+	if is_instance_valid(sticker_flyer_tween):
+		sticker_flyer_tween.kill()
+
+	var source_center: Vector2 = avatar_badges[HUMAN_PLAYER_INDEX].get_global_rect().get_center()
+	var target_center: Vector2 = avatar_badges[sticker_selected_target_index].get_global_rect().get_center()
+	var flyer_size: Vector2 = sticker_flyer.size
+	sticker_flyer.global_position = source_center - flyer_size * 0.5
+
+	sticker_flyer_tween = create_tween()
+	sticker_flyer_tween.tween_property(sticker_flyer, "global_position", target_center - flyer_size * 0.5, STICKER_FLY_DURATION)
+	sticker_flyer_tween.parallel().tween_property(sticker_flyer, "scale", Vector2(1.12, 1.12), STICKER_FLY_DURATION * 0.7)
+	sticker_flyer_tween.tween_interval(STICKER_HOLD_DURATION)
+	sticker_flyer_tween.tween_property(sticker_flyer, "modulate:a", 0.0, 0.22)
+	sticker_flyer_tween.tween_callback(_hide_sticker_flyer)
+
+
+func _configure_sticker_flyer(sticker: Dictionary) -> void:
+	var sticker_texture: Texture2D = sticker.get("texture", null) as Texture2D
+	sticker_flyer_image.texture = sticker_texture
+	sticker_flyer_image.visible = sticker_texture != null
+	sticker_flyer_label.visible = sticker_texture == null
+	sticker_flyer_label.text = str(sticker.get("symbol", ""))
+
+
+func _hide_sticker_flyer() -> void:
+	if is_instance_valid(sticker_flyer):
+		sticker_flyer.visible = false
+
+
+func _refresh_sticker_controls() -> void:
+	if not is_instance_valid(sticker_toggle_button) or not is_instance_valid(sticker_picker):
+		return
+
+	var can_show_controls := _can_show_reaction_controls()
+	sticker_toggle_button.visible = can_show_controls
+	if not can_show_controls:
+		sticker_picker.visible = false
+		_hide_sticker_flyer()
+
+
+func _try_consume_social_action(action: SocialAction) -> bool:
+	if not _is_social_action_ready(action):
+		_refresh_social_action_buttons()
+		return false
+
+	var uses: int = int(social_action_uses.get(action, 0)) + 1
+	if uses >= SOCIAL_ACTION_USE_LIMIT:
+		social_action_uses[action] = 0
+		social_action_cooldown_until[action] = Time.get_ticks_msec() + roundi(SOCIAL_ACTION_COOLDOWN_SECONDS * 1000.0)
+	else:
+		social_action_uses[action] = uses
+
+	_refresh_social_action_buttons()
+	return true
+
+
+func _is_social_action_ready(action: SocialAction) -> bool:
+	return _get_social_action_cooldown_remaining(action) <= 0.0
+
+
+func _get_social_action_cooldown_remaining(action: SocialAction) -> float:
+	var cooldown_until: int = int(social_action_cooldown_until.get(action, 0))
+	var remaining_milliseconds: int = maxi(0, cooldown_until - Time.get_ticks_msec())
+	return float(remaining_milliseconds) / 1000.0
+
+
+func _get_social_action_uses_remaining(action: SocialAction) -> int:
+	if not _is_social_action_ready(action):
+		return 0
+
+	return maxi(0, SOCIAL_ACTION_USE_LIMIT - int(social_action_uses.get(action, 0)))
+
+
+func _get_social_action_status_text(action_name: String, action: SocialAction) -> String:
+	var cooldown_remaining := _get_social_action_cooldown_remaining(action)
+	if cooldown_remaining > 0.0:
+		var total_seconds := ceili(cooldown_remaining)
+		return "%s: перезарядка %d:%02d" % [action_name, total_seconds / 60, total_seconds % 60]
+
+	return "%s: осталось %d из %d" % [
+		action_name,
+		_get_social_action_uses_remaining(action),
+		SOCIAL_ACTION_USE_LIMIT
+	]
+
+
+func _refresh_social_action_buttons() -> void:
+	if is_instance_valid(reaction_toggle_button):
+		var reaction_ready := _is_social_action_ready(SocialAction.REACTION)
+		reaction_toggle_button.disabled = not reaction_ready
+		reaction_toggle_button.text = "☺ %d" % _get_social_action_uses_remaining(SocialAction.REACTION) if reaction_ready else "⌛"
+		reaction_toggle_button.tooltip_text = _get_social_action_status_text("Эмоции", SocialAction.REACTION)
+		if not reaction_ready and is_instance_valid(reaction_picker):
+			reaction_picker.visible = false
+
+	if is_instance_valid(sticker_toggle_button):
+		var sticker_ready := _is_social_action_ready(SocialAction.STICKER)
+		sticker_toggle_button.disabled = not sticker_ready
+		sticker_toggle_button.text = "🎁 %d" % _get_social_action_uses_remaining(SocialAction.STICKER) if sticker_ready else "⌛"
+		sticker_toggle_button.tooltip_text = _get_social_action_status_text("Стикеры", SocialAction.STICKER)
+		if not sticker_ready and is_instance_valid(sticker_picker):
+			sticker_picker.visible = false
 
 
 func _create_table_marker(label_text: String, tooltip: String, style: StyleBoxFlat, font_size: int) -> PanelContainer:
@@ -4318,6 +4649,8 @@ func _is_human_turn() -> bool:
 
 
 func _process(delta: float) -> void:
+	_refresh_social_action_buttons()
+
 	if not turn_timer_active or not auto_turn_enabled:
 		return
 
