@@ -91,6 +91,7 @@ enum SoundEffect {
 var game := Game.new(PLAYER_NAMES)
 var player_labels: Array[Label] = []
 var player_stats_labels: Array[Label] = []
+var player_score_labels: Array[Label] = []
 var player_panels: Array[PanelContainer] = []
 var avatar_badges: Array[PanelContainer] = []
 var avatar_images: Array[TextureRect] = []
@@ -212,6 +213,7 @@ func _ready() -> void:
 	_load_persistent_settings()
 	_create_table_visual_styles()
 	_create_score_sheet_overlay()
+	_create_table_surface()
 	_create_player_panels()
 	_create_player_avatar_badges()
 	_create_trick_slots()
@@ -262,6 +264,35 @@ func _create_table_visual_styles() -> void:
 	lead_marker_style = _create_flat_style(Color(0.055, 0.2, 0.13, 1.0), Color(0.64, 0.86, 0.52, 1.0), 1, 8, 2)
 	avatar_badge_style = _create_flat_style(Color(0.04, 0.1, 0.07, 1.0), Color(0.75, 0.58, 0.2, 1.0), 2, 6, 2)
 	music_player_panel.add_theme_stylebox_override("panel", _create_flat_style(Color(0.012, 0.055, 0.034, 0.94), Color(0.38, 0.255, 0.11, 0.0), 0, 6, 0))
+	round_results_panel.add_theme_stylebox_override("panel", _create_flat_style(Color(0.018, 0.08, 0.052, 0.97), Color(0.38, 0.255, 0.11, 0.78), 1, 10, 3))
+
+
+func _create_table_surface() -> void:
+	# Первый тестовый вариант стола: форму можно позднее заменить на квадратную,
+	# не меняя расположение игроков и игровую логику.
+	var outer_table := Panel.new()
+	outer_table.name = "OvalTableOuter"
+	outer_table.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	outer_table.add_theme_stylebox_override(
+		"panel",
+		_create_flat_style(Color(0.115, 0.062, 0.028, 1.0), Color(0.6, 0.39, 0.13, 1.0), 7, 286, 10)
+	)
+	_set_control_layout(outer_table, 0.5, 0.0, 0.5, 0.0, -660.0, 150.0, 660.0, 710.0)
+	players_container.add_child(outer_table)
+
+	var inner_table := Panel.new()
+	inner_table.name = "OvalTableCloth"
+	inner_table.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	inner_table.add_theme_stylebox_override(
+		"panel",
+		_create_flat_style(Color(0.035, 0.255, 0.145, 1.0), Color(0.74, 0.84, 0.66, 0.72), 3, 266, 0)
+	)
+	inner_table.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	inner_table.offset_left = 18.0
+	inner_table.offset_top = 18.0
+	inner_table.offset_right = -18.0
+	inner_table.offset_bottom = -18.0
+	outer_table.add_child(inner_table)
 
 
 func _create_score_sheet_overlay() -> void:
@@ -3023,25 +3054,22 @@ func _refresh_player_panels() -> void:
 			and game.current_round.state != Round.State.FINISHED
 		)
 		var marker := "Ход · " if is_current else ""
-		var person_label := " (ты)" if player_index == HUMAN_PLAYER_INDEX else ""
-		var hand_text := "скрыто" if _is_dark_round() and not game.cards_are_dealt else str(player.hand.size())
 		player_panels[player_index].add_theme_stylebox_override("panel", _get_player_panel_style(player_index, is_current))
-		player_labels[player_index].text = "%s%s%s" % [marker, player.display_name, person_label]
+		player_labels[player_index].text = "%s%s" % [marker, player.display_name]
 
 		if _round_uses_bids():
 			var bid_text := "—" if player.bid < 0 else str(player.bid)
-			player_stats_labels[player_index].text = "Карт: %s | Заказ: %s\nВзято: %d | Очки: %d" % [
-				hand_text,
+			player_stats_labels[player_index].text = "Заказ: %s  ·  Взято: %d" % [
 				bid_text,
-				player.tricks_taken,
-				player.total_score
+				player.tricks_taken
 			]
 		else:
-			player_stats_labels[player_index].text = "Карт: %s\nВзято: %d | Очки: %d" % [
-				hand_text,
-				player.tricks_taken,
-				player.total_score
-			]
+			player_stats_labels[player_index].text = "Взято: %d" % player.tricks_taken
+		player_score_labels[player_index].text = "Очки: %d" % player.total_score
+		player_score_labels[player_index].add_theme_color_override(
+			"font_color",
+			Color(0.97, 0.84, 0.38, 1.0) if player.total_score >= 0 else Color(0.96, 0.42, 0.34, 1.0)
+		)
 
 	_refresh_bot_card_backs()
 	_refresh_player_avatar_badges()
@@ -3127,7 +3155,7 @@ func _create_player_avatar_badges() -> void:
 		avatar_label.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 		avatar_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		avatar_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-		avatar_label.add_theme_font_size_override("font_size", 22)
+		avatar_label.add_theme_font_size_override("font_size", 30)
 		avatar_label.add_theme_color_override("font_color", Color(0.98, 0.9, 0.6, 1.0))
 		avatar_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		avatar_content.add_child(avatar_label)
@@ -3149,13 +3177,13 @@ func _refresh_player_avatar_badges() -> void:
 func _place_player_avatar_badge(badge: PanelContainer, player_index: int) -> void:
 	match player_index:
 		HUMAN_PLAYER_INDEX:
-			_set_control_layout(badge, 0.5, 1.0, 0.5, 1.0, 182.0, -390.0, 246.0, -326.0)
+			_set_control_layout(badge, 0.5, 1.0, 0.5, 1.0, -236.0, -402.0, -132.0, -298.0)
 		1:
-			_set_control_layout(badge, 0.0, 0.0, 0.0, 0.0, 620.0, 366.0, 684.0, 430.0)
+			_set_control_layout(badge, 0.0, 0.0, 0.0, 0.0, 180.0, 348.0, 284.0, 452.0)
 		2:
-			_set_control_layout(badge, 0.5, 0.0, 0.5, 0.0, -244.0, 90.0, -180.0, 154.0)
+			_set_control_layout(badge, 0.5, 0.0, 0.5, 0.0, -235.0, 74.0, -131.0, 178.0)
 		3:
-			_set_control_layout(badge, 1.0, 0.0, 1.0, 0.0, -684.0, 366.0, -620.0, 430.0)
+			_set_control_layout(badge, 1.0, 0.0, 1.0, 0.0, -284.0, 348.0, -180.0, 452.0)
 
 
 func _refresh_table() -> void:
@@ -3620,16 +3648,16 @@ func _place_joker_controls() -> void:
 
 	if is_leading_joker_choice:
 		joker_controls.columns = 1
-		_set_control_layout(joker_controls, 0.0, 0.0, 0.0, 0.0, 64.0, 400.0, 384.0, 782.0)
+		_set_control_layout(joker_controls, 0.0, 1.0, 0.0, 1.0, 64.0, -510.0, 444.0, -128.0)
 		return
 
 	joker_controls.columns = 2
-	_set_control_layout(joker_controls, 0.5, 1.0, 0.5, 1.0, -330.0, -340.0, 330.0, -288.0)
+	_set_control_layout(joker_controls, 0.5, 1.0, 0.5, 1.0, -280.0, -270.0, 280.0, -218.0)
 
 
 func _refresh_hand() -> void:
 	_clear_children(hand_container)
-	hand_title.text = "Твоя рука (%s)" % game.players[HUMAN_PLAYER_INDEX].display_name
+	hand_title.text = "Твоя рука"
 
 	if _is_dark_round() and not game.cards_are_dealt:
 		var hidden_cards_label := Label.new()
@@ -3715,23 +3743,30 @@ func _create_player_panels() -> void:
 		_place_player_panel(panel, player_index)
 
 		var content := VBoxContainer.new()
-		content.add_theme_constant_override("separation", 0)
+		content.add_theme_constant_override("separation", 2)
 		panel.add_child(content)
 
 		var name_label := Label.new()
 		name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		name_label.add_theme_font_size_override("font_size", 18)
+		name_label.add_theme_font_size_override("font_size", 19)
 		name_label.add_theme_color_override("font_color", Color(0.95, 0.97, 0.93, 1.0))
 		content.add_child(name_label)
 
 		var stats_label := Label.new()
 		stats_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		stats_label.add_theme_font_size_override("font_size", 14)
+		stats_label.add_theme_font_size_override("font_size", 15)
 		stats_label.add_theme_color_override("font_color", Color(0.82, 0.88, 0.82, 1.0))
 		content.add_child(stats_label)
+
+		var score_label := Label.new()
+		score_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		score_label.add_theme_font_size_override("font_size", 19)
+		score_label.add_theme_color_override("font_color", Color(0.97, 0.84, 0.38, 1.0))
+		content.add_child(score_label)
 		players_container.add_child(panel)
 		player_labels.append(name_label)
 		player_stats_labels.append(stats_label)
+		player_score_labels.append(score_label)
 		player_panels.append(panel)
 
 
@@ -3775,11 +3810,11 @@ func _create_bot_card_backs() -> void:
 func _place_bot_card_back_holder(holder: Control, player_index: int) -> void:
 	match player_index:
 		1:
-			_set_control_layout(holder, 0.0, 0.0, 0.0, 0.0, 400.0, 446.0, 492.0, 502.0)
+			_set_control_layout(holder, 0.0, 0.0, 0.0, 0.0, 440.0, 462.0, 532.0, 518.0)
 		2:
-			_set_control_layout(holder, 0.5, 0.0, 0.5, 0.0, 184.0, 96.0, 276.0, 152.0)
+			_set_control_layout(holder, 0.5, 0.0, 0.5, 0.0, 130.0, 112.0, 222.0, 168.0)
 		3:
-			_set_control_layout(holder, 1.0, 0.0, 1.0, 0.0, -492.0, 446.0, -400.0, 502.0)
+			_set_control_layout(holder, 1.0, 0.0, 1.0, 0.0, -392.0, 462.0, -300.0, 518.0)
 
 
 func _refresh_bot_card_backs() -> void:
@@ -3936,25 +3971,25 @@ func _place_table_marker(marker: PanelContainer, player_index: int, is_dealer: b
 func _place_player_panel(panel: PanelContainer, player_index: int) -> void:
 	match player_index:
 		HUMAN_PLAYER_INDEX:
-			_set_control_layout(panel, 0.5, 1.0, 0.5, 1.0, -170.0, -390.0, 170.0, -314.0)
+			_set_control_layout(panel, 0.5, 1.0, 0.5, 1.0, -120.0, -396.0, 120.0, -314.0)
 		1:
-			_set_control_layout(panel, 0.0, 0.0, 0.0, 0.0, 350.0, 360.0, 610.0, 436.0)
+			_set_control_layout(panel, 0.0, 0.0, 0.0, 0.0, 300.0, 358.0, 510.0, 440.0)
 		2:
-			_set_control_layout(panel, 0.5, 0.0, 0.5, 0.0, -170.0, 84.0, 170.0, 160.0)
+			_set_control_layout(panel, 0.5, 0.0, 0.5, 0.0, -115.0, 82.0, 115.0, 164.0)
 		3:
-			_set_control_layout(panel, 1.0, 0.0, 1.0, 0.0, -610.0, 360.0, -350.0, 436.0)
+			_set_control_layout(panel, 1.0, 0.0, 1.0, 0.0, -510.0, 358.0, -300.0, 440.0)
 
 
 func _place_trick_slot(panel: Control, player_index: int) -> void:
 	match player_index:
 		HUMAN_PLAYER_INDEX:
-			_set_control_layout(panel, 0.5, 0.0, 0.5, 0.0, -54.0, 460.0, 54.0, 592.0)
+			_set_control_layout(panel, 0.5, 0.0, 0.5, 0.0, -54.0, 455.0, 54.0, 587.0)
 		1:
-			_set_control_layout(panel, 0.5, 0.0, 0.5, 0.0, -220.0, 368.0, -112.0, 500.0)
+			_set_control_layout(panel, 0.5, 0.0, 0.5, 0.0, -265.0, 365.0, -157.0, 497.0)
 		2:
-			_set_control_layout(panel, 0.5, 0.0, 0.5, 0.0, -54.0, 178.0, 54.0, 310.0)
+			_set_control_layout(panel, 0.5, 0.0, 0.5, 0.0, -54.0, 255.0, 54.0, 387.0)
 		3:
-			_set_control_layout(panel, 0.5, 0.0, 0.5, 0.0, 112.0, 368.0, 220.0, 500.0)
+			_set_control_layout(panel, 0.5, 0.0, 0.5, 0.0, 157.0, 365.0, 265.0, 497.0)
 
 
 func _set_control_layout(
