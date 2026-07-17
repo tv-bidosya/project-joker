@@ -25,8 +25,8 @@ func _draw() -> void:
 
 	var center := size * 0.5
 	var radius := maxf(8.0, minf(size.x, size.y) * 0.5 - 4.0)
-	var start_angle := -PI * 0.5
-	var end_angle := start_angle + TAU * remaining_ratio
+	var start_angle := -PI * 0.5 + TAU * (1.0 - remaining_ratio)
+	var end_angle := -PI * 0.5 + TAU
 	var progress_color := _get_progress_color()
 
 	draw_arc(center, radius, 0.0, TAU, 64, Color(0.01, 0.03, 0.02, 0.76), 6.0, true)

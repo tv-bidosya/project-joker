@@ -23,6 +23,7 @@ const MAX_MUSIC_TITLE_LENGTH := 26
 const MUSIC_PLAYLIST_PAGE_SIZE := 25
 const PROFILE_PLAYLIST_PREVIEW_COUNT := 20
 const AUTO_TURN_DURATION_SECONDS := 60.0
+const REACTION_DISPLAY_DURATION := 1.25
 const BUILT_IN_AVATAR_COUNT := 4
 const CUSTOM_AVATAR_INDEX := BUILT_IN_AVATAR_COUNT
 const HUMAN_AVATAR_COUNT := BUILT_IN_AVATAR_COUNT + 1
@@ -99,6 +100,11 @@ var avatar_badges: Array[PanelContainer] = []
 var avatar_images: Array[TextureRect] = []
 var avatar_labels: Array[Label] = []
 var turn_timer_indicator: TurnTimerIndicator
+var reaction_toggle_button: Button
+var reaction_picker: PanelContainer
+var reaction_bubble: PanelContainer
+var reaction_bubble_label: Label
+var reaction_bubble_tween: Tween
 var trick_card_views: Array[CardView] = []
 var bot_card_back_holders: Array[Control] = []
 var deck_back_panels: Array[PanelContainer] = []
@@ -228,6 +234,7 @@ func _ready() -> void:
 	_create_bot_card_backs()
 	_create_deck_visual()
 	_create_table_markers()
+	_create_reaction_controls()
 	_create_sound_players()
 	_create_background_music_player()
 	music_player_panel.reparent(self)
@@ -3128,6 +3135,7 @@ func _refresh_ui() -> void:
 	_refresh_music_player()
 	_refresh_tutorial_panel()
 	_refresh_turn_timer_indicator()
+	_refresh_reaction_controls()
 
 
 func _refresh_header() -> void:
@@ -4045,6 +4053,112 @@ func _create_table_markers() -> void:
 	players_container.add_child(lead_marker)
 
 
+func _create_reaction_controls() -> void:
+	reaction_toggle_button = Button.new()
+	reaction_toggle_button.text = "☺"
+	reaction_toggle_button.tooltip_text = "Реакции за столом"
+	reaction_toggle_button.visible = false
+	reaction_toggle_button.z_index = 30
+	reaction_toggle_button.add_theme_font_size_override("font_size", 23)
+	reaction_toggle_button.add_theme_stylebox_override(
+		"normal",
+		_create_flat_style(Color(0.035, 0.12, 0.075, 0.98), Color(0.88, 0.68, 0.24, 1.0), 2, 8, 3)
+	)
+	_set_control_layout(reaction_toggle_button, 0.5, 1.0, 0.5, 1.0, 132.0, -392.0, 182.0, -342.0)
+	reaction_toggle_button.pressed.connect(_on_reaction_toggle_pressed)
+	players_container.add_child(reaction_toggle_button)
+
+	reaction_picker = PanelContainer.new()
+	reaction_picker.visible = false
+	reaction_picker.z_index = 30
+	reaction_picker.mouse_filter = Control.MOUSE_FILTER_STOP
+	reaction_picker.add_theme_stylebox_override(
+		"panel",
+		_create_flat_style(Color(0.012, 0.075, 0.045, 0.96), Color(0.64, 0.47, 0.14, 0.96), 2, 10, 5)
+	)
+	_set_control_layout(reaction_picker, 0.5, 1.0, 0.5, 1.0, 128.0, -456.0, 380.0, -402.0)
+
+	var reaction_row := HBoxContainer.new()
+	reaction_row.add_theme_constant_override("separation", 4)
+	reaction_picker.add_child(reaction_row)
+	for reaction in PackedStringArray(["😄", "👏", "😮", "😢"]):
+		var reaction_button := Button.new()
+		reaction_button.text = reaction
+		reaction_button.tooltip_text = "Отправить реакцию"
+		reaction_button.custom_minimum_size = Vector2(56.0, 42.0)
+		reaction_button.add_theme_font_size_override("font_size", 24)
+		reaction_button.pressed.connect(_on_reaction_selected.bind(reaction))
+		reaction_row.add_child(reaction_button)
+	players_container.add_child(reaction_picker)
+
+	reaction_bubble = PanelContainer.new()
+	reaction_bubble.visible = false
+	reaction_bubble.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	reaction_bubble.z_index = 31
+	reaction_bubble.add_theme_stylebox_override(
+		"panel",
+		_create_flat_style(Color(0.025, 0.11, 0.065, 0.94), Color(0.94, 0.75, 0.28, 1.0), 2, 18, 7)
+	)
+	_set_control_layout(reaction_bubble, 0.5, 1.0, 0.5, 1.0, -48.0, -514.0, 48.0, -418.0)
+
+	reaction_bubble_label = Label.new()
+	reaction_bubble_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	reaction_bubble_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	reaction_bubble_label.add_theme_font_size_override("font_size", 42)
+	reaction_bubble.add_child(reaction_bubble_label)
+	players_container.add_child(reaction_bubble)
+
+
+func _on_reaction_toggle_pressed() -> void:
+	if not _can_show_reaction_controls():
+		return
+
+	reaction_picker.visible = not reaction_picker.visible
+
+
+func _on_reaction_selected(reaction: String) -> void:
+	if not _can_show_reaction_controls():
+		return
+
+	reaction_picker.visible = false
+	reaction_bubble_label.text = reaction
+	reaction_bubble.visible = true
+	reaction_bubble.modulate = Color.WHITE
+	_set_control_layout(reaction_bubble, 0.5, 1.0, 0.5, 1.0, -48.0, -514.0, 48.0, -418.0)
+
+	if is_instance_valid(reaction_bubble_tween):
+		reaction_bubble_tween.kill()
+
+	var start_position: Vector2 = reaction_bubble.position
+	reaction_bubble_tween = create_tween()
+	reaction_bubble_tween.tween_property(reaction_bubble, "position", start_position + Vector2(0.0, -24.0), 0.28)
+	reaction_bubble_tween.parallel().tween_property(reaction_bubble, "modulate:a", 0.0, REACTION_DISPLAY_DURATION)
+	reaction_bubble_tween.tween_callback(_hide_reaction_bubble)
+
+
+func _hide_reaction_bubble() -> void:
+	if is_instance_valid(reaction_bubble):
+		reaction_bubble.visible = false
+
+
+func _can_show_reaction_controls() -> bool:
+	return (
+		game.current_round.state != Round.State.SETUP
+		and (menu_overlay == null or not menu_overlay.visible)
+	)
+
+
+func _refresh_reaction_controls() -> void:
+	if not is_instance_valid(reaction_toggle_button) or not is_instance_valid(reaction_picker):
+		return
+
+	var can_show_controls := _can_show_reaction_controls()
+	reaction_toggle_button.visible = can_show_controls
+	if not can_show_controls:
+		reaction_picker.visible = false
+		_hide_reaction_bubble()
+
+
 func _create_table_marker(label_text: String, tooltip: String, style: StyleBoxFlat, font_size: int) -> PanelContainer:
 	var marker := PanelContainer.new()
 	marker.tooltip_text = tooltip
@@ -4078,7 +4192,7 @@ func _place_table_marker(marker: PanelContainer, player_index: int, is_dealer: b
 	if is_dealer:
 		match player_index:
 			HUMAN_PLAYER_INDEX:
-				_set_control_layout(marker, 0.5, 1.0, 0.5, 1.0, 120.0, -404.0, 168.0, -376.0)
+				_set_control_layout(marker, 0.5, 1.0, 0.5, 1.0, -292.0, -404.0, -244.0, -376.0)
 			1:
 				_set_control_layout(marker, 0.0, 0.0, 0.0, 0.0, 562.0, 342.0, 610.0, 370.0)
 			2:
