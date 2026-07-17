@@ -20,10 +20,14 @@ const MUSIC_TRACK_COUNT := 3
 const MAX_CUSTOM_MUSIC_FILE_SIZE_BYTES := 40 * 1024 * 1024
 const MAX_PLAYER_NAME_LENGTH := 16
 const MAX_MUSIC_TITLE_LENGTH := 26
+const MAX_SOUNDPAD_TITLE_LENGTH := 20
 const MUSIC_PLAYLIST_PAGE_SIZE := 25
 const PROFILE_PLAYLIST_PREVIEW_COUNT := 20
+const MAX_SOUNDPAD_FILE_SIZE_BYTES := 2 * 1024 * 1024
+const MAX_SOUNDPAD_CLIP_DURATION_SECONDS := 25.0
 const AUTO_TURN_DURATION_SECONDS := 60.0
 const REACTION_DISPLAY_DURATION := 1.25
+const SOUNDPAD_BUBBLE_DISPLAY_DURATION := 1.6
 const STICKER_FLY_DURATION := 0.62
 const STICKER_HOLD_DURATION := 6.0
 const SOCIAL_ACTION_USE_LIMIT := 3
@@ -125,6 +129,16 @@ var sticker_flyer: PanelContainer
 var sticker_flyer_label: Label
 var sticker_flyer_image: TextureRect
 var sticker_flyer_tween: Tween
+var soundpad_toggle_button: Button
+var soundpad_picker: PanelContainer
+var soundpad_picker_title: Label
+var soundpad_picker_back_button: Button
+var soundpad_picker_content: VBoxContainer
+var soundpad_sounds: Array[Dictionary] = []
+var soundpad_selected_category_id := ""
+var soundpad_bubble: PanelContainer
+var soundpad_bubble_label: Label
+var soundpad_bubble_tween: Tween
 var trick_card_views: Array[CardView] = []
 var bot_card_back_holders: Array[Control] = []
 var deck_back_panels: Array[PanelContainer] = []
@@ -216,6 +230,8 @@ var last_music_import_status := ""
 var sound_players: Array[AudioStreamPlayer] = []
 var sound_streams: Dictionary = {}
 var next_sound_player_index := 0
+var soundpad_players: Array[AudioStreamPlayer] = []
+var next_soundpad_player_index := 0
 var background_music_player: AudioStreamPlayer
 var background_music_streams: Array[AudioStreamWAV] = []
 var custom_music_paths: Array[String] = []
@@ -266,6 +282,7 @@ func _ready() -> void:
 	_create_table_markers()
 	_create_reaction_controls()
 	_create_sticker_controls()
+	_create_soundpad_controls()
 	_create_sound_players()
 	_create_background_music_player()
 	music_player_panel.reparent(self)
@@ -311,6 +328,11 @@ func _create_table_visual_styles() -> void:
 	avatar_badge_style = _create_flat_style(Color(0.04, 0.1, 0.07, 1.0), Color(0.75, 0.58, 0.2, 1.0), 2, 6, 2)
 	music_player_panel.add_theme_stylebox_override("panel", _create_flat_style(Color(0.012, 0.055, 0.034, 0.94), Color(0.38, 0.255, 0.11, 0.0), 0, 6, 0))
 	round_results_panel.add_theme_stylebox_override("panel", _create_flat_style(Color(0.018, 0.08, 0.052, 0.97), Color(0.38, 0.255, 0.11, 0.78), 1, 10, 3))
+	_apply_table_action_button_style(hand_sort_by_suit_button)
+	_apply_table_action_button_style(hand_sort_trumps_left_button)
+	_apply_table_action_button_style(undo_button)
+	_apply_table_action_button_style(next_round_button)
+	next_round_button.add_theme_font_size_override("font_size", 18)
 
 
 func _create_table_surface() -> void:
@@ -319,20 +341,18 @@ func _create_table_surface() -> void:
 	var outer_table := Panel.new()
 	outer_table.name = "OvalTableOuter"
 	outer_table.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	outer_table.add_theme_stylebox_override(
-		"panel",
-		_create_flat_style(Color(0.115, 0.062, 0.028, 1.0), Color(0.6, 0.39, 0.13, 1.0), 7, 286, 10)
-	)
+	var outer_table_style := _create_flat_style(Color(0.115, 0.062, 0.028, 1.0), Color(0.6, 0.39, 0.13, 1.0), 7, 286, 10)
+	outer_table_style.corner_detail = 64
+	outer_table.add_theme_stylebox_override("panel", outer_table_style)
 	_set_control_layout(outer_table, 0.5, 0.0, 0.5, 0.0, -660.0, 150.0, 660.0, 710.0)
 	players_container.add_child(outer_table)
 
 	var inner_table := Panel.new()
 	inner_table.name = "OvalTableCloth"
 	inner_table.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	inner_table.add_theme_stylebox_override(
-		"panel",
-		_create_flat_style(Color(0.035, 0.255, 0.145, 1.0), Color(0.74, 0.84, 0.66, 0.72), 3, 266, 0)
-	)
+	var inner_table_style := _create_flat_style(Color(0.035, 0.255, 0.145, 1.0), Color(0.74, 0.84, 0.66, 0.72), 3, 266, 0)
+	inner_table_style.corner_detail = 64
+	inner_table.add_theme_stylebox_override("panel", inner_table_style)
 	inner_table.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	inner_table.offset_left = 18.0
 	inner_table.offset_top = 18.0
@@ -392,6 +412,30 @@ func _create_flat_style(
 	style.shadow_size = shadow_size
 	style.shadow_offset = Vector2(0, 2)
 	return style
+
+
+func _apply_table_action_button_style(button: Button) -> void:
+	button.add_theme_font_size_override("font_size", 15)
+	button.add_theme_color_override("font_color", Color(0.96, 0.97, 0.94, 1.0))
+	button.add_theme_color_override("font_hover_color", Color(1.0, 0.94, 0.72, 1.0))
+	button.add_theme_color_override("font_pressed_color", Color(1.0, 0.88, 0.48, 1.0))
+	button.add_theme_color_override("font_disabled_color", Color(0.72, 0.74, 0.68, 0.82))
+	var normal_style := _create_flat_style(Color(0.012, 0.02, 0.016, 0.98), Color(0.48, 0.35, 0.11, 0.96), 2, 6, 3)
+	normal_style.content_margin_left = 10.0
+	normal_style.content_margin_right = 10.0
+	button.add_theme_stylebox_override("normal", normal_style)
+	var hover_style := _create_flat_style(Color(0.09, 0.072, 0.025, 1.0), Color(0.98, 0.77, 0.28, 1.0), 2, 6, 5)
+	hover_style.content_margin_left = 10.0
+	hover_style.content_margin_right = 10.0
+	button.add_theme_stylebox_override("hover", hover_style)
+	var pressed_style := _create_flat_style(Color(0.18, 0.125, 0.028, 1.0), Color(1.0, 0.83, 0.33, 1.0), 2, 6, 2)
+	pressed_style.content_margin_left = 10.0
+	pressed_style.content_margin_right = 10.0
+	button.add_theme_stylebox_override("pressed", pressed_style)
+	var disabled_style := _create_flat_style(Color(0.022, 0.028, 0.022, 0.94), Color(0.36, 0.29, 0.12, 0.7), 1, 6, 0)
+	disabled_style.content_margin_left = 10.0
+	disabled_style.content_margin_right = 10.0
+	button.add_theme_stylebox_override("disabled", disabled_style)
 
 
 func _create_main_menu() -> void:
@@ -1893,6 +1937,13 @@ func _create_sound_players() -> void:
 		add_child(player)
 		sound_players.append(player)
 
+	for player_number in 3:
+		var soundpad_player := AudioStreamPlayer.new()
+		soundpad_player.name = "SoundpadPlayer%d" % player_number
+		soundpad_player.bus = &"Master"
+		add_child(soundpad_player)
+		soundpad_players.append(soundpad_player)
+
 	_apply_sound_volume()
 
 
@@ -1957,10 +2008,38 @@ func _get_available_sound_player() -> AudioStreamPlayer:
 	return player
 
 
+func _play_soundpad_stream(stream: AudioStream) -> void:
+	if stream == null or sound_volume_index == 0:
+		return
+
+	var soundpad_player := _get_available_soundpad_player()
+	if soundpad_player == null:
+		return
+
+	soundpad_player.stream = stream
+	soundpad_player.play()
+
+
+func _get_available_soundpad_player() -> AudioStreamPlayer:
+	for player in soundpad_players:
+		if not player.playing:
+			return player
+
+	if soundpad_players.is_empty():
+		return null
+
+	var player := soundpad_players[next_soundpad_player_index]
+	next_soundpad_player_index = (next_soundpad_player_index + 1) % soundpad_players.size()
+	return player
+
+
 func _apply_sound_volume() -> void:
 	var volume_db := _get_sound_volume_db()
 
 	for player in sound_players:
+		player.volume_db = volume_db
+
+	for player in soundpad_players:
 		player.volume_db = volume_db
 
 
@@ -2678,8 +2757,8 @@ func _advance_automatic_actions() -> void:
 
 		if game.current_round.state == Round.State.PLAYING:
 			if game.is_round_complete():
-				_finish_round()
 				is_processing_automatic_actions = false
+				_finish_round()
 				return
 
 			if _get_current_player_index() == HUMAN_PLAYER_INDEX:
@@ -3168,6 +3247,7 @@ func _refresh_ui() -> void:
 	_refresh_turn_timer_indicator()
 	_refresh_reaction_controls()
 	_refresh_sticker_controls()
+	_refresh_soundpad_controls()
 	_refresh_social_action_buttons()
 
 
@@ -3232,7 +3312,7 @@ func _refresh_player_panels() -> void:
 			]
 		else:
 			player_stats_labels[player_index].text = "Взято: %d" % player.tricks_taken
-		player_score_labels[player_index].text = "Очки: %d" % player.total_score
+		player_score_labels[player_index].text = "Счёт: %d" % player.total_score
 		player_score_labels[player_index].add_theme_color_override(
 			"font_color",
 			Color(0.97, 0.84, 0.38, 1.0) if player.total_score >= 0 else Color(0.96, 0.42, 0.34, 1.0)
@@ -3778,6 +3858,8 @@ func _refresh_bid_controls() -> void:
 	for bid in game.current_round.cards_per_player + 1:
 		var bid_button := Button.new()
 		bid_button.text = "Заказать %d" % bid
+		bid_button.custom_minimum_size = Vector2(104.0, 40.0)
+		_apply_table_action_button_style(bid_button)
 		bid_button.disabled = not game.current_round.can_place_bid(HUMAN_PLAYER_INDEX, bid)
 		bid_button.pressed.connect(_on_bid_pressed.bind(bid))
 		bid_controls.add_child(bid_button)
@@ -4097,7 +4179,7 @@ func _create_reaction_controls() -> void:
 		"normal",
 		_create_flat_style(Color(0.035, 0.12, 0.075, 0.98), Color(0.88, 0.68, 0.24, 1.0), 2, 8, 3)
 	)
-	_set_control_layout(reaction_toggle_button, 0.5, 1.0, 0.5, 1.0, 132.0, -392.0, 188.0, -342.0)
+	_set_control_layout(reaction_toggle_button, 0.5, 1.0, 0.5, 1.0, 132.0, -392.0, 196.0, -342.0)
 	reaction_toggle_button.pressed.connect(_on_reaction_toggle_pressed)
 	players_container.add_child(reaction_toggle_button)
 
@@ -4147,6 +4229,7 @@ func _on_reaction_toggle_pressed() -> void:
 		return
 
 	sticker_picker.visible = false
+	soundpad_picker.visible = false
 	reaction_picker.visible = not reaction_picker.visible
 
 
@@ -4206,7 +4289,7 @@ func _create_sticker_controls() -> void:
 		"normal",
 		_create_flat_style(Color(0.08, 0.085, 0.15, 0.98), Color(0.65, 0.54, 0.92, 1.0), 2, 8, 3)
 	)
-	_set_control_layout(sticker_toggle_button, 0.5, 1.0, 0.5, 1.0, 194.0, -392.0, 258.0, -342.0)
+	_set_control_layout(sticker_toggle_button, 0.5, 1.0, 0.5, 1.0, 202.0, -392.0, 266.0, -342.0)
 	sticker_toggle_button.pressed.connect(_on_sticker_toggle_pressed)
 	players_container.add_child(sticker_toggle_button)
 
@@ -4280,6 +4363,7 @@ func _on_sticker_toggle_pressed() -> void:
 		return
 
 	reaction_picker.visible = false
+	soundpad_picker.visible = false
 	sticker_selected_target_index = -1
 	_build_sticker_target_picker()
 	sticker_picker.visible = not sticker_picker.visible
@@ -4425,6 +4509,389 @@ func _refresh_sticker_controls() -> void:
 		_hide_sticker_flyer()
 
 
+func _create_soundpad_controls() -> void:
+	soundpad_sounds = _load_soundpad_sounds()
+
+	soundpad_toggle_button = Button.new()
+	soundpad_toggle_button.text = "🔊"
+	soundpad_toggle_button.tooltip_text = "Саундпад"
+	soundpad_toggle_button.visible = false
+	soundpad_toggle_button.z_index = 30
+	soundpad_toggle_button.add_theme_font_size_override("font_size", 16)
+	soundpad_toggle_button.add_theme_stylebox_override(
+		"normal",
+		_create_flat_style(Color(0.1, 0.07, 0.12, 0.98), Color(0.89, 0.51, 0.82, 1.0), 2, 8, 3)
+	)
+	_set_control_layout(soundpad_toggle_button, 0.5, 1.0, 0.5, 1.0, 272.0, -392.0, 336.0, -342.0)
+	soundpad_toggle_button.pressed.connect(_on_soundpad_toggle_pressed)
+	players_container.add_child(soundpad_toggle_button)
+
+	soundpad_picker = PanelContainer.new()
+	soundpad_picker.visible = false
+	soundpad_picker.z_index = 31
+	soundpad_picker.mouse_filter = Control.MOUSE_FILTER_STOP
+	soundpad_picker.add_theme_stylebox_override(
+		"panel",
+		_create_flat_style(Color(0.09, 0.035, 0.09, 0.97), Color(0.89, 0.51, 0.82, 0.96), 2, 10, 5)
+	)
+	_set_control_layout(soundpad_picker, 0.5, 1.0, 0.5, 1.0, 104.0, -600.0, 440.0, -408.0)
+
+	var soundpad_layout := VBoxContainer.new()
+	soundpad_layout.add_theme_constant_override("separation", 6)
+	soundpad_picker.add_child(soundpad_layout)
+
+	var soundpad_header := HBoxContainer.new()
+	soundpad_header.add_theme_constant_override("separation", 4)
+	soundpad_layout.add_child(soundpad_header)
+
+	soundpad_picker_back_button = Button.new()
+	soundpad_picker_back_button.text = "←"
+	soundpad_picker_back_button.tooltip_text = "Выбрать другой язык"
+	soundpad_picker_back_button.custom_minimum_size = Vector2(32.0, 26.0)
+	soundpad_picker_back_button.add_theme_font_size_override("font_size", 18)
+	soundpad_picker_back_button.visible = false
+	soundpad_picker_back_button.pressed.connect(_build_soundpad_category_picker)
+	soundpad_header.add_child(soundpad_picker_back_button)
+
+	soundpad_picker_title = Label.new()
+	soundpad_picker_title.text = "Саундпад"
+	soundpad_picker_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	soundpad_picker_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	soundpad_picker_title.add_theme_font_size_override("font_size", 16)
+	soundpad_picker_title.add_theme_color_override("font_color", Color(1.0, 0.89, 0.97, 1.0))
+	soundpad_header.add_child(soundpad_picker_title)
+
+	soundpad_picker_content = VBoxContainer.new()
+	soundpad_picker_content.add_theme_constant_override("separation", 6)
+	soundpad_layout.add_child(soundpad_picker_content)
+	players_container.add_child(soundpad_picker)
+
+	soundpad_bubble = PanelContainer.new()
+	soundpad_bubble.visible = false
+	soundpad_bubble.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	soundpad_bubble.z_index = 32
+	soundpad_bubble.pivot_offset = Vector2(27.0, 27.0)
+	soundpad_bubble.add_theme_stylebox_override(
+		"panel",
+		_create_flat_style(Color(0.12, 0.055, 0.14, 0.96), Color(0.98, 0.63, 0.89, 1.0), 2, 20, 5)
+	)
+	_set_control_layout(soundpad_bubble, 0.5, 1.0, 0.5, 1.0, -190.0, -430.0, -136.0, -376.0)
+
+	soundpad_bubble_label = Label.new()
+	soundpad_bubble_label.text = "🔊"
+	soundpad_bubble_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	soundpad_bubble_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	soundpad_bubble_label.add_theme_font_size_override("font_size", 26)
+	soundpad_bubble.add_child(soundpad_bubble_label)
+	players_container.add_child(soundpad_bubble)
+
+
+func _on_soundpad_toggle_pressed() -> void:
+	if not _can_show_reaction_controls() or not _is_social_action_ready(SocialAction.SOUNDPAD):
+		return
+
+	reaction_picker.visible = false
+	sticker_picker.visible = false
+	soundpad_selected_category_id = ""
+	_build_soundpad_category_picker()
+	soundpad_picker.visible = not soundpad_picker.visible
+
+
+func _build_soundpad_category_picker() -> void:
+	_clear_children(soundpad_picker_content)
+	soundpad_picker_back_button.visible = false
+
+	if soundpad_sounds.is_empty():
+		soundpad_picker_title.text = "Саундпад пока пуст"
+		var empty_label := Label.new()
+		empty_label.text = "Добавь OGG, WAV или MP3 в папку языка внутри Assets/Soundboard и перезапусти игру."
+		empty_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		empty_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		empty_label.add_theme_font_size_override("font_size", 14)
+		soundpad_picker_content.add_child(empty_label)
+		_resize_soundpad_picker(76.0)
+		return
+
+	soundpad_picker_title.text = "Саундпад · выбери язык"
+	var soundpad_grid := GridContainer.new()
+	soundpad_grid.columns = 2
+	soundpad_grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	soundpad_grid.add_theme_constant_override("h_separation", 5)
+	soundpad_grid.add_theme_constant_override("v_separation", 5)
+	soundpad_picker_content.add_child(soundpad_grid)
+	var categories := _get_soundpad_categories()
+	for category in categories:
+		var category_id := str(category.get("id", "root"))
+		var category_button := Button.new()
+		category_button.text = str(category.get("label", "Общее"))
+		category_button.tooltip_text = "%d звуков" % int(category.get("count", 0))
+		category_button.custom_minimum_size = Vector2(148.0, 40.0)
+		category_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		category_button.add_theme_font_size_override("font_size", 14)
+		category_button.pressed.connect(_on_soundpad_category_selected.bind(category_id))
+		soundpad_grid.add_child(category_button)
+
+	var category_rows: int = ceili(float(categories.size()) / 2.0)
+	var content_height: float = float(category_rows * 40 + maxi(0, category_rows - 1) * 5)
+	_resize_soundpad_picker(content_height)
+
+
+func _on_soundpad_category_selected(category_id: String) -> void:
+	soundpad_selected_category_id = category_id
+	_build_soundpad_sound_picker()
+
+
+func _build_soundpad_sound_picker() -> void:
+	_clear_children(soundpad_picker_content)
+	soundpad_picker_back_button.visible = true
+	soundpad_picker_title.text = "Саундпад · %s" % _get_soundpad_category_label(soundpad_selected_category_id)
+
+	var soundpad_scroll := ScrollContainer.new()
+	soundpad_scroll.custom_minimum_size = Vector2(0.0, 134.0)
+	soundpad_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	soundpad_picker_content.add_child(soundpad_scroll)
+
+	var soundpad_grid := GridContainer.new()
+	soundpad_grid.columns = 2
+	soundpad_grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	soundpad_grid.add_theme_constant_override("h_separation", 5)
+	soundpad_grid.add_theme_constant_override("v_separation", 5)
+	soundpad_scroll.add_child(soundpad_grid)
+	for sound_data in soundpad_sounds:
+		if str(sound_data.get("category", "root")) != soundpad_selected_category_id:
+			continue
+
+		var sound_button := Button.new()
+		var sound_title := str(sound_data.get("title", "Звук"))
+		sound_button.text = "🔊 %s" % _shorten_soundpad_title(sound_title)
+		sound_button.tooltip_text = sound_title
+		sound_button.custom_minimum_size = Vector2(148.0, 40.0)
+		sound_button.add_theme_font_size_override("font_size", 14)
+		sound_button.pressed.connect(_on_soundpad_selected.bind(sound_data))
+		soundpad_grid.add_child(sound_button)
+
+	_resize_soundpad_picker(134.0)
+
+
+func _resize_soundpad_picker(content_height: float) -> void:
+	var picker_width := 318.0
+	var picker_height := 32.0 + content_height
+	_set_control_layout(
+		soundpad_picker,
+		0.5,
+		1.0,
+		0.5,
+		1.0,
+		128.0,
+		-408.0 - picker_height,
+		128.0 + picker_width,
+		-408.0
+	)
+
+
+func _load_soundpad_sounds() -> Array[Dictionary]:
+	var sounds: Array[Dictionary] = []
+	var soundpad_directory: DirAccess = DirAccess.open("res://Assets/Soundboard")
+	if soundpad_directory == null:
+		return sounds
+
+	_append_soundpad_sounds_from_directory(sounds, "root", "res://Assets/Soundboard")
+	for directory_name in soundpad_directory.get_directories():
+		_append_soundpad_sounds_from_directory(
+			sounds,
+			directory_name.to_lower(),
+			"res://Assets/Soundboard/%s" % directory_name
+		)
+
+	sounds.sort_custom(func(left: Dictionary, right: Dictionary) -> bool:
+		var left_category := str(left.get("category", "root"))
+		var right_category := str(right.get("category", "root"))
+		var left_category_order := _get_soundpad_category_order(left_category)
+		var right_category_order := _get_soundpad_category_order(right_category)
+		if left_category_order != right_category_order:
+			return left_category_order < right_category_order
+		if left_category != right_category:
+			return left_category.naturalnocasecmp_to(right_category) < 0
+		return str(left.get("title", "")).naturalnocasecmp_to(str(right.get("title", ""))) < 0
+	)
+	return sounds
+
+
+func _append_soundpad_sounds_from_directory(
+	sounds: Array[Dictionary],
+	category_id: String,
+	directory_path: String
+) -> void:
+	var soundpad_directory: DirAccess = DirAccess.open(directory_path)
+	if soundpad_directory == null:
+		return
+
+	for file_name in soundpad_directory.get_files():
+		var file_extension := file_name.get_extension().to_lower()
+		if file_extension not in PackedStringArray(["ogg", "wav", "mp3"]):
+			continue
+
+		var sound_path := "%s/%s" % [directory_path, file_name]
+		if not _is_soundpad_audio_import_valid(sound_path):
+			continue
+		var sound_file: FileAccess = FileAccess.open(sound_path, FileAccess.READ)
+		if sound_file == null:
+			continue
+		var file_size: int = sound_file.get_length()
+		sound_file.close()
+		if file_size > MAX_SOUNDPAD_FILE_SIZE_BYTES:
+			continue
+
+		var sound_stream: AudioStream = ResourceLoader.load(sound_path, "AudioStream") as AudioStream
+		if sound_stream == null or sound_stream.get_length() > MAX_SOUNDPAD_CLIP_DURATION_SECONDS:
+			continue
+
+		sounds.append({
+			"title": file_name.get_basename(),
+			"category": category_id,
+			"stream": sound_stream
+		})
+
+
+func _is_soundpad_audio_import_valid(sound_path: String) -> bool:
+	var import_path := "%s.import" % sound_path
+	if not FileAccess.file_exists(import_path):
+		return true
+
+	var import_config := ConfigFile.new()
+	if import_config.load(import_path) != OK:
+		return true
+
+	return bool(import_config.get_value("remap", "valid", true))
+
+
+func _get_soundpad_categories() -> Array[Dictionary]:
+	var categories: Array[Dictionary] = []
+	var category_counts: Dictionary = {}
+	for sound_data in soundpad_sounds:
+		var category_id := str(sound_data.get("category", "root"))
+		category_counts[category_id] = int(category_counts.get(category_id, 0)) + 1
+
+	for category_id_variant in category_counts:
+		var category_id := str(category_id_variant)
+		categories.append({
+			"id": category_id,
+			"label": _get_soundpad_category_label(category_id),
+			"count": int(category_counts[category_id])
+		})
+
+	categories.sort_custom(func(left: Dictionary, right: Dictionary) -> bool:
+		var left_id := str(left.get("id", "root"))
+		var right_id := str(right.get("id", "root"))
+		var left_order := _get_soundpad_category_order(left_id)
+		var right_order := _get_soundpad_category_order(right_id)
+		if left_order != right_order:
+			return left_order < right_order
+		return str(left.get("label", "")).naturalnocasecmp_to(str(right.get("label", ""))) < 0
+	)
+	return categories
+
+
+func _get_soundpad_category_label(category_id: String) -> String:
+	match category_id:
+		"root":
+			return "Общее"
+		"ua":
+			return "Українська"
+		"pl":
+			return "Polski"
+		"ru":
+			return "Русский"
+		"en":
+			return "English"
+		"kz":
+			return "Қазақша"
+		"by":
+			return "Беларуская"
+		"other":
+			return "Другие"
+
+	return category_id.replace("_", " ").capitalize()
+
+
+func _get_soundpad_category_order(category_id: String) -> int:
+	match category_id:
+		"root":
+			return 0
+		"ua":
+			return 1
+		"pl":
+			return 2
+		"ru":
+			return 3
+		"en":
+			return 4
+		"kz":
+			return 5
+		"by":
+			return 6
+		"other":
+			return 7
+
+	return 8
+
+
+func _shorten_soundpad_title(title: String) -> String:
+	if title.length() <= MAX_SOUNDPAD_TITLE_LENGTH:
+		return title
+
+	return "%s…" % title.left(MAX_SOUNDPAD_TITLE_LENGTH - 1)
+
+
+func _on_soundpad_selected(sound_data: Dictionary) -> void:
+	if not _can_show_reaction_controls():
+		return
+
+	var sound_stream: AudioStream = sound_data.get("stream", null) as AudioStream
+	if sound_stream == null or not _try_consume_social_action(SocialAction.SOUNDPAD):
+		return
+
+	soundpad_picker.visible = false
+	_play_soundpad_stream(sound_stream)
+	_show_soundpad_bubble()
+	_add_history("Ты включил звук «%s»." % str(sound_data.get("title", "Звук")))
+	_refresh_history()
+
+
+func _show_soundpad_bubble() -> void:
+	if not is_instance_valid(soundpad_bubble):
+		return
+
+	if is_instance_valid(soundpad_bubble_tween):
+		soundpad_bubble_tween.kill()
+
+	soundpad_bubble.visible = true
+	soundpad_bubble.modulate = Color.WHITE
+	soundpad_bubble.scale = Vector2(0.82, 0.82)
+	soundpad_bubble_tween = create_tween()
+	soundpad_bubble_tween.tween_property(soundpad_bubble, "scale", Vector2(1.12, 1.12), 0.18).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+	soundpad_bubble_tween.tween_property(soundpad_bubble, "scale", Vector2.ONE, 0.2).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	soundpad_bubble_tween.tween_interval(SOUNDPAD_BUBBLE_DISPLAY_DURATION)
+	soundpad_bubble_tween.tween_property(soundpad_bubble, "modulate:a", 0.0, 0.22)
+	soundpad_bubble_tween.tween_callback(_hide_soundpad_bubble)
+
+
+func _hide_soundpad_bubble() -> void:
+	if is_instance_valid(soundpad_bubble):
+		soundpad_bubble.visible = false
+
+
+func _refresh_soundpad_controls() -> void:
+	if not is_instance_valid(soundpad_toggle_button) or not is_instance_valid(soundpad_picker):
+		return
+
+	var can_show_controls := _can_show_reaction_controls()
+	soundpad_toggle_button.visible = can_show_controls
+	if not can_show_controls:
+		soundpad_picker.visible = false
+		_hide_soundpad_bubble()
+
+
 func _try_consume_social_action(action: SocialAction) -> bool:
 	if not _is_social_action_ready(action):
 		_refresh_social_action_buttons()
@@ -4488,6 +4955,18 @@ func _refresh_social_action_buttons() -> void:
 		if not sticker_ready and is_instance_valid(sticker_picker):
 			sticker_picker.visible = false
 
+	if is_instance_valid(soundpad_toggle_button):
+		var soundpad_ready := _is_social_action_ready(SocialAction.SOUNDPAD)
+		soundpad_toggle_button.disabled = not soundpad_ready
+		soundpad_toggle_button.text = "🔊 %d" % _get_social_action_uses_remaining(SocialAction.SOUNDPAD) if soundpad_ready else "⌛"
+		soundpad_toggle_button.tooltip_text = (
+			"Саундпад: добавь звуки в Assets/Soundboard"
+			if soundpad_sounds.is_empty()
+			else _get_social_action_status_text("Саундпад", SocialAction.SOUNDPAD)
+		)
+		if not soundpad_ready and is_instance_valid(soundpad_picker):
+			soundpad_picker.visible = false
+
 
 func _create_table_marker(label_text: String, tooltip: String, style: StyleBoxFlat, font_size: int) -> PanelContainer:
 	var marker := PanelContainer.new()
@@ -4524,11 +5003,11 @@ func _place_table_marker(marker: PanelContainer, player_index: int, is_dealer: b
 			HUMAN_PLAYER_INDEX:
 				_set_control_layout(marker, 0.5, 1.0, 0.5, 1.0, -292.0, -404.0, -244.0, -376.0)
 			1:
-				_set_control_layout(marker, 0.0, 0.0, 0.0, 0.0, 562.0, 342.0, 610.0, 370.0)
+				_set_control_layout(marker, 0.0, 0.0, 0.0, 0.0, 508.0, 342.0, 556.0, 370.0)
 			2:
-				_set_control_layout(marker, 0.5, 0.0, 0.5, 0.0, 122.0, 402.0, 170.0, 430.0)
+				_set_control_layout(marker, 0.5, 0.0, 0.5, 0.0, -224.0, 178.0, -176.0, 206.0)
 			3:
-				_set_control_layout(marker, 1.0, 0.0, 1.0, 0.0, -610.0, 342.0, -562.0, 370.0)
+				_set_control_layout(marker, 1.0, 0.0, 1.0, 0.0, -548.0, 342.0, -500.0, 370.0)
 		return
 
 	match player_index:
@@ -4547,11 +5026,11 @@ func _place_player_panel(panel: PanelContainer, player_index: int) -> void:
 		HUMAN_PLAYER_INDEX:
 			_set_control_layout(panel, 0.5, 1.0, 0.5, 1.0, -120.0, -396.0, 120.0, -314.0)
 		1:
-			_set_control_layout(panel, 0.0, 0.0, 0.0, 0.0, 300.0, 358.0, 510.0, 440.0)
+			_set_control_layout(panel, 0.0, 0.0, 0.0, 0.0, 300.0, 358.0, 490.0, 440.0)
 		2:
 			_set_control_layout(panel, 0.5, 0.0, 0.5, 0.0, -115.0, 82.0, 115.0, 164.0)
 		3:
-			_set_control_layout(panel, 1.0, 0.0, 1.0, 0.0, -510.0, 358.0, -300.0, 440.0)
+			_set_control_layout(panel, 1.0, 0.0, 1.0, 0.0, -490.0, 358.0, -300.0, 440.0)
 
 
 func _place_trick_slot(panel: Control, player_index: int) -> void:
@@ -4592,6 +5071,7 @@ func _add_joker_suit_button(label: String, suit: int) -> void:
 	suit_button.text = label
 	suit_button.custom_minimum_size = Vector2(0.0, 44.0)
 	suit_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_apply_table_action_button_style(suit_button)
 	suit_button.disabled = false
 	suit_button.mouse_filter = Control.MOUSE_FILTER_STOP
 	suit_button.z_index = 1
@@ -4620,6 +5100,7 @@ func _add_joker_choice_button(
 	choice_button.text = label
 	choice_button.custom_minimum_size = Vector2(0.0, 44.0)
 	choice_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_apply_table_action_button_style(choice_button)
 	choice_button.disabled = false
 	choice_button.mouse_filter = Control.MOUSE_FILTER_STOP
 	choice_button.z_index = 1
