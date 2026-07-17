@@ -9,8 +9,9 @@ const NO_TRUMP_ROUND_COUNT := 4
 const GOLDEN_ROUND_COUNT := 5
 const MISERE_ROUND_COUNT := 5
 const TOTAL_ROUND_COUNT := NORMAL_ROUND_COUNT + DARK_ROUND_COUNT + NO_TRUMP_ROUND_COUNT + GOLDEN_ROUND_COUNT + MISERE_ROUND_COUNT
-const CARD_APPEAR_DURATION := 0.22
+const CARD_FLY_DURATION := 0.32
 const TRICK_WINNER_HOLD_DURATION := 0.7
+const TRICK_COLLECTION_DURATION := 0.3
 const BOT_SPEED_COUNT := 3
 const BOT_DIFFICULTY_COUNT := 3
 const SOUND_VOLUME_COUNT := 4
@@ -119,6 +120,7 @@ var is_trick_presentation_active := false
 var pending_play_presentation := false
 var pending_card_animation_player_index := -1
 var pending_trick_winner_player_index := -1
+var show_last_completed_trick := false
 var test_checkpoints: Array[Dictionary] = []
 var pending_test_checkpoint: Dictionary = {}
 var round_history: Array[Dictionary] = []
@@ -146,6 +148,7 @@ var music_volume_index := 1
 var music_volume_percent := 30
 var music_track_index := 0
 var music_is_paused := false
+var music_player_hidden := false
 var music_playback_position := 0.0
 var music_repeat_enabled := false
 var music_shuffle_enabled := false
@@ -303,6 +306,7 @@ func _create_score_sheet_overlay() -> void:
 	score_sheet_backdrop.z_index = 94
 	score_sheet_backdrop.visible = false
 	score_sheet_backdrop.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	score_sheet_backdrop.gui_input.connect(_on_score_sheet_backdrop_gui_input)
 	add_child(score_sheet_backdrop)
 
 	# Расписка открывается отдельным плотным окном поверх стола,
@@ -1154,6 +1158,7 @@ func _build_pause_menu_content() -> void:
 	_add_menu_title("Пауза", "Текущая локальная партия ждёт твоего решения")
 	_add_menu_spacer(18.0)
 	_add_menu_button("Продолжить", _resume_current_game, true)
+	_add_menu_button("Показать аудиоплеер" if music_player_hidden else "Скрыть аудиоплеер", _on_music_player_visibility_toggle_pressed)
 	_add_menu_button("Обучение", _show_tutorial_menu)
 	_add_menu_button("Профиль", _show_profile_menu)
 	_add_menu_button("Правила", _show_rules_menu)
@@ -1403,6 +1408,7 @@ func _load_persistent_settings() -> void:
 	var saved_music_track: int = int(config.get_value("audio", "music_track", music_track_index))
 	music_track_index = maxi(0, saved_music_track)
 	music_is_paused = bool(config.get_value("audio", "music_paused", false))
+	music_player_hidden = bool(config.get_value("audio", "music_player_hidden", false))
 	music_repeat_enabled = bool(config.get_value("audio", "music_repeat", false))
 	music_shuffle_enabled = bool(config.get_value("audio", "music_shuffle", false))
 	custom_music_paths.clear()
@@ -1441,6 +1447,7 @@ func _save_persistent_settings() -> void:
 	config.set_value("audio", "music_volume_percent", music_volume_percent)
 	config.set_value("audio", "music_track", music_track_index)
 	config.set_value("audio", "music_paused", music_is_paused)
+	config.set_value("audio", "music_player_hidden", music_player_hidden)
 	config.set_value("audio", "music_repeat", music_repeat_enabled)
 	config.set_value("audio", "music_shuffle", music_shuffle_enabled)
 	var saved_custom_music_paths := PackedStringArray()
@@ -2475,7 +2482,7 @@ func _refresh_music_controls_popup() -> void:
 
 func _refresh_music_player() -> void:
 	var is_table_visible := menu_overlay != null and not menu_overlay.visible
-	music_player_panel.visible = is_table_visible
+	music_player_panel.visible = is_table_visible and not music_player_hidden
 
 	music_track_label.text = "♫ %s · %d%%" % [_get_music_track_label(), music_volume_percent]
 	music_track_label.tooltip_text = _get_full_music_track_label_for_index(music_track_index)
@@ -2786,6 +2793,28 @@ func _on_score_sheet_toggle_pressed() -> void:
 	_refresh_ui()
 
 
+func _on_score_sheet_backdrop_gui_input(event: InputEvent) -> void:
+	if is_processing_automatic_actions or not is_score_sheet_visible:
+		return
+
+	var mouse_button_event: InputEventMouseButton = event as InputEventMouseButton
+	if mouse_button_event == null:
+		return
+
+	if mouse_button_event.button_index == MOUSE_BUTTON_LEFT and mouse_button_event.pressed:
+		_on_score_sheet_toggle_pressed()
+
+
+func _on_music_player_visibility_toggle_pressed() -> void:
+	music_player_hidden = not music_player_hidden
+	if music_player_hidden and is_instance_valid(music_controls_popup):
+		music_controls_popup.hide()
+
+	_save_persistent_settings()
+	_refresh_ui()
+	_build_pause_menu_content()
+
+
 func _on_round_history_toggle_pressed() -> void:
 	if is_processing_automatic_actions:
 		return
@@ -2918,6 +2947,7 @@ func _record_play(player_name: String, card: Card, player_index: int) -> void:
 	pending_trick_winner_player_index = -1
 
 	if game.active_trick == null:
+		show_last_completed_trick = true
 		pending_trick_winner_player_index = game.last_trick_winner_index
 		last_trick_text = "%s сыграл %s. Взятку забирает %s." % [
 			player_name,
@@ -2947,24 +2977,82 @@ func _present_pending_play() -> void:
 	action_label.text = action_text
 	await get_tree().create_timer(TRICK_WINNER_HOLD_DURATION).timeout
 	_set_trick_winner_highlight(winner_player_index, false)
+	await _animate_trick_collection(winner_player_index)
+	show_last_completed_trick = false
+	_refresh_table()
 
 
 func _animate_played_card(player_index: int) -> void:
 	if player_index < 0 or player_index >= trick_card_views.size():
 		return
 
-	var card_view := trick_card_views[player_index]
+	var card_view: CardView = trick_card_views[player_index]
 	if not card_view.visible:
 		return
 
+	await get_tree().process_frame
+	var target_position: Vector2 = card_view.global_position
+	var source_position: Vector2 = _get_played_card_source_global_position(player_index, card_view.size)
 	card_view.pivot_offset = card_view.size * 0.5
-	card_view.scale = Vector2(0.76, 0.76)
-	card_view.modulate = Color(1.0, 1.0, 1.0, 0.0)
-	var tween := create_tween()
+	card_view.global_position = source_position
+	card_view.scale = Vector2(0.78, 0.78)
+	card_view.modulate = Color(1.0, 1.0, 1.0, 0.86)
+	var tween: Tween = create_tween()
 	tween.set_parallel(true)
-	tween.tween_property(card_view, "scale", Vector2.ONE, CARD_APPEAR_DURATION).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	tween.tween_property(card_view, "modulate", Color.WHITE, CARD_APPEAR_DURATION)
+	tween.tween_property(card_view, "global_position", target_position, CARD_FLY_DURATION).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tween.tween_property(card_view, "scale", Vector2.ONE, CARD_FLY_DURATION).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tween.tween_property(card_view, "modulate", Color.WHITE, CARD_FLY_DURATION)
 	await tween.finished
+
+
+func _get_played_card_source_global_position(player_index: int, card_size: Vector2) -> Vector2:
+	var source_control: Control = hand_container
+
+	if player_index != HUMAN_PLAYER_INDEX:
+		var bot_holder_index: int = player_index - 1
+		if bot_holder_index >= 0 and bot_holder_index < bot_card_back_holders.size():
+			source_control = bot_card_back_holders[bot_holder_index]
+		elif player_index >= 0 and player_index < avatar_badges.size():
+			source_control = avatar_badges[player_index]
+
+	var source_rect: Rect2 = source_control.get_global_rect()
+	return source_rect.get_center() - card_size * 0.5
+
+
+func _animate_trick_collection(winner_player_index: int) -> void:
+	if winner_player_index < 0 or winner_player_index >= avatar_badges.size():
+		return
+
+	var card_size := Vector2(108.0, 132.0)
+	var destination_position: Vector2 = _get_trick_collection_target_global_position(winner_player_index, card_size)
+	var tween: Tween = create_tween()
+	var has_visible_cards := false
+	tween.set_parallel(true)
+
+	for player_index in trick_card_views.size():
+		var card_view: CardView = trick_card_views[player_index]
+		if not card_view.visible:
+			continue
+
+		has_visible_cards = true
+		card_view.pivot_offset = card_view.size * 0.5
+		var stack_offset := Vector2(float(player_index * 3), float(player_index * 2))
+		tween.tween_property(card_view, "global_position", destination_position + stack_offset, TRICK_COLLECTION_DURATION).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+		tween.tween_property(card_view, "scale", Vector2(0.36, 0.36), TRICK_COLLECTION_DURATION)
+		tween.tween_property(card_view, "modulate", Color(1.0, 1.0, 1.0, 0.0), TRICK_COLLECTION_DURATION)
+
+	if has_visible_cards:
+		await tween.finished
+
+	for card_view in trick_card_views:
+		card_view.visible = false
+		card_view.scale = Vector2.ONE
+		card_view.modulate = Color.WHITE
+
+
+func _get_trick_collection_target_global_position(player_index: int, card_size: Vector2) -> Vector2:
+	var target_rect: Rect2 = avatar_badges[player_index].get_global_rect()
+	return target_rect.get_center() - card_size * 0.5
 
 
 func _set_trick_winner_highlight(player_index: int, highlighted: bool) -> void:
@@ -2979,9 +3067,11 @@ func _reset_trick_presentation() -> void:
 	pending_play_presentation = false
 	pending_card_animation_player_index = -1
 	pending_trick_winner_player_index = -1
+	show_last_completed_trick = false
 
 	for card_view in trick_card_views:
 		card_view.set_winner_highlight(false)
+		card_view.visible = false
 		card_view.scale = Vector2.ONE
 		card_view.modulate = Color.WHITE
 
@@ -3190,7 +3280,7 @@ func _refresh_table() -> void:
 	var table_title := ""
 
 	if game.active_trick == null:
-		table_title = "Последняя взятка" if not game.last_completed_trick_cards.is_empty() else "Взятка ещё не началась"
+		table_title = "Последняя взятка" if show_last_completed_trick else "Следующая взятка"
 	else:
 		table_title = "Текущая взятка"
 		var declaration_text := _get_active_joker_declaration_text()
@@ -3205,10 +3295,10 @@ func _refresh_table() -> void:
 	var played_cards: Array[Card] = []
 	var played_by: Array[int] = []
 
-	if game.active_trick == null:
+	if game.active_trick == null and show_last_completed_trick:
 		played_cards = game.last_completed_trick_cards
 		played_by = game.last_completed_trick_played_by
-	else:
+	elif game.active_trick != null:
 		played_cards = game.active_trick.played_cards
 		played_by = game.active_trick.played_by
 
@@ -3217,7 +3307,8 @@ func _refresh_table() -> void:
 
 	for player_index in game.players.size():
 		var card := cards_by_player[player_index]
-		var card_view := trick_card_views[player_index]
+		var card_view: CardView = trick_card_views[player_index]
+		_place_trick_slot(card_view, player_index)
 		card_view.visible = card != null
 		if card == null:
 			continue
@@ -3871,10 +3962,7 @@ func _create_deck_visual() -> void:
 
 
 func _refresh_deck_visual() -> void:
-	deck_visual.visible = (
-		game.current_round.state != Round.State.SETUP
-		and not (pending_joker_card != null and game.active_trick == null)
-	)
+	deck_visual.visible = game.current_round.state != Round.State.SETUP
 	if not deck_visual.visible:
 		return
 
