@@ -43,10 +43,14 @@ const SOCIAL_ACTION_COOLDOWN_SECONDS := 120.0
 const BUILT_IN_AVATAR_COUNT := 4
 const CUSTOM_AVATAR_INDEX := BUILT_IN_AVATAR_COUNT
 const HUMAN_AVATAR_COUNT := BUILT_IN_AVATAR_COUNT + 1
+const GAME_VERSION := "0.2.0-test"
 const PERSISTENT_SETTINGS_PATH := "user://project_joker_settings.cfg"
 const SESSION_SAVE_PATH := "user://project_joker_session.save"
 const SESSION_SAVE_VERSION := 1
 const CUSTOM_PROFILE_AVATAR_PATH := "user://project_joker_profile_avatar.png"
+const BUG_REPORT_FORMAT_VERSION := 1
+const BUG_REPORT_DIRECTORY_PATH := "user://ProjectJokerReports"
+const BUG_REPORT_FILE_EXTENSION := "pjreport"
 
 
 enum HandSortMode {
@@ -232,6 +236,13 @@ var profile_avatar_preview_placeholder: Label
 var profile_avatar_file_dialog: FileDialog
 var pending_profile_avatar_path := ""
 var is_avatar_file_dialog_for_new_game := false
+var bug_report_file_dialog: FileDialog
+var bug_report_description_input: TextEdit
+var bug_report_status_label: Label
+var is_bug_report_review_mode := false
+var report_restore_player_names: Array[String] = []
+var report_restore_avatar_indices: Array[int] = []
+var report_restore_bot_difficulty: BotDifficulty = BotDifficulty.NORMAL
 var profile_music_status_label: Label
 var profile_music_playlist_container: VBoxContainer
 var profile_music_file_dialog: FileDialog
@@ -316,6 +327,7 @@ func _ready() -> void:
 	_create_music_controls_popup()
 	_create_tutorial_panel()
 	_create_profile_avatar_file_dialog()
+	_create_bug_report_file_dialog()
 	_create_profile_music_file_dialog()
 	joker_controls.reparent(self)
 	_create_main_menu()
@@ -538,7 +550,7 @@ func _hide_main_menu() -> void:
 
 func _build_main_menu_content() -> void:
 	_clear_children(menu_content)
-	_add_menu_title("PROJECT JOKER", "Локальная карточная партия для четырёх игроков")
+	_add_menu_title("PROJECT JOKER", "Локальная карточная партия для четырёх игроков · тестовая версия %s" % GAME_VERSION)
 	_add_menu_spacer(18.0)
 	if _has_saved_session():
 		_add_menu_button("Продолжить партию", _on_continue_saved_game_pressed, true)
@@ -546,6 +558,7 @@ func _build_main_menu_content() -> void:
 	_add_menu_button("Обучение", _show_tutorial_menu)
 	_add_menu_button("Профиль", _show_profile_menu)
 	_add_menu_button("Статистика", _show_statistics_menu)
+	_add_menu_button("Загрузить отчёт", _open_bug_report_file_dialog)
 	_add_menu_button("Правила", _show_rules_menu)
 	_add_menu_button("Настройки", _show_settings_menu)
 	_add_menu_button("Выход", _on_quit_pressed)
@@ -803,6 +816,115 @@ func _create_profile_avatar_file_dialog() -> void:
 	profile_avatar_file_dialog.filters = PackedStringArray(["*.png,*.jpg,*.jpeg,*.webp;Изображения"])
 	profile_avatar_file_dialog.file_selected.connect(_on_profile_avatar_file_selected)
 	add_child(profile_avatar_file_dialog)
+
+
+func _create_bug_report_file_dialog() -> void:
+	bug_report_file_dialog = FileDialog.new()
+	bug_report_file_dialog.name = "BugReportFileDialog"
+	bug_report_file_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+	bug_report_file_dialog.access = FileDialog.ACCESS_FILESYSTEM
+	bug_report_file_dialog.use_native_dialog = true
+	bug_report_file_dialog.filters = PackedStringArray(["*.%s;Отчёт Project Joker" % BUG_REPORT_FILE_EXTENSION])
+	bug_report_file_dialog.file_selected.connect(_on_bug_report_file_selected)
+	add_child(bug_report_file_dialog)
+
+
+func _open_bug_report_file_dialog() -> void:
+	if is_bug_report_review_mode:
+		return
+
+	if bug_report_file_dialog != null:
+		bug_report_file_dialog.popup_centered_ratio(0.75)
+
+
+func _on_bug_report_file_selected(report_path: String) -> void:
+	if _load_bug_report_from_path(report_path):
+		is_pause_menu_open = false
+		_hide_main_menu()
+		_refresh_ui()
+		return
+
+	_build_main_menu_content()
+
+
+func _on_save_bug_report_pressed() -> void:
+	if game.current_round.state == Round.State.SETUP:
+		if is_instance_valid(bug_report_status_label):
+			bug_report_status_label.text = "Сначала начни или продолжи партию."
+		return
+
+	var report_directory := _ensure_bug_report_directory()
+	if report_directory.is_empty():
+		if is_instance_valid(bug_report_status_label):
+			bug_report_status_label.text = "Не удалось создать папку для отчётов."
+		return
+
+	var description := ""
+	if is_instance_valid(bug_report_description_input):
+		description = bug_report_description_input.text.strip_edges()
+
+	var timestamp := Time.get_datetime_string_from_system(false, true).replace(":", "-").replace(" ", "_")
+	var report_file_name := "ProjectJoker_report_%s.%s" % [timestamp, BUG_REPORT_FILE_EXTENSION]
+	var report_path := report_directory.path_join(report_file_name)
+	var report_file := FileAccess.open(report_path, FileAccess.WRITE)
+	if report_file == null:
+		if is_instance_valid(bug_report_status_label):
+			bug_report_status_label.text = "Не удалось сохранить файл отчёта."
+		return
+
+	var report_data := {
+		"format": "project_joker_bug_report",
+		"report_version": BUG_REPORT_FORMAT_VERSION,
+		"game_version": GAME_VERSION,
+		"created_at": Time.get_datetime_string_from_system(false, true),
+		"description": description,
+		"session": _create_session_save_data()
+	}
+	report_file.store_var(report_data, false)
+	_save_bug_report_summary(report_directory, timestamp, description)
+
+	if is_instance_valid(bug_report_status_label):
+		bug_report_status_label.text = "Отчёт сохранён: %s\nОтправь разработчику файл .%s и, если можешь, скриншот." % [report_file_name, BUG_REPORT_FILE_EXTENSION]
+
+
+func _ensure_bug_report_directory() -> String:
+	var report_directory := ProjectSettings.globalize_path(BUG_REPORT_DIRECTORY_PATH)
+	if DirAccess.make_dir_recursive_absolute(report_directory) != OK:
+		return ""
+
+	return report_directory
+
+
+func _open_bug_report_folder() -> void:
+	var report_directory := _ensure_bug_report_directory()
+	if report_directory.is_empty():
+		if is_instance_valid(bug_report_status_label):
+			bug_report_status_label.text = "Не удалось открыть папку отчётов."
+		return
+
+	OS.shell_open(report_directory)
+
+
+func _save_bug_report_summary(report_directory: String, timestamp: String, description: String) -> void:
+	var summary_path := report_directory.path_join("ProjectJoker_report_%s.txt" % timestamp)
+	var summary_file := FileAccess.open(summary_path, FileAccess.WRITE)
+	if summary_file == null:
+		return
+
+	var phase_text := phase_label.text if is_instance_valid(phase_label) else "—"
+	var trump_text := trump_label.text if is_instance_valid(trump_label) else "—"
+	var summary_lines := PackedStringArray([
+		"Project Joker · отчёт об ошибке",
+		"Версия игры: %s" % GAME_VERSION,
+		"Создан: %s" % Time.get_datetime_string_from_system(false, true),
+		"Этап: %s" % phase_text,
+		"Козырь: %s" % trump_text,
+		"Описание: %s" % (description if not description.is_empty() else "не указано"),
+		"",
+		"Последние действия:",
+		"\n".join(recent_actions)
+	])
+	summary_file.store_string("\n".join(summary_lines))
 
 
 func _open_profile_avatar_file_dialog() -> void:
@@ -1401,6 +1523,10 @@ func _on_pause_menu_pressed() -> void:
 
 	is_pause_menu_open = true
 	menu_overlay.visible = true
+	if is_bug_report_review_mode:
+		_build_bug_report_review_menu()
+		return
+
 	_build_pause_menu_content()
 
 
@@ -1415,7 +1541,46 @@ func _build_pause_menu_content() -> void:
 	_add_menu_button("Статистика", _show_statistics_menu)
 	_add_menu_button("Правила", _show_rules_menu)
 	_add_menu_button("Настройки", _show_settings_menu)
+	_add_menu_button("Сообщить об ошибке", _show_bug_report_menu)
 	_add_menu_button("Завершить партию", _show_end_session_confirmation)
+
+
+func _show_bug_report_menu() -> void:
+	_clear_children(menu_content)
+	_add_menu_title("Сообщить об ошибке", "Сохрани текущее состояние партии и отправь файл разработчику")
+	_add_menu_label("В отчёт войдут ход раздачи, карты, заказы, история действий, настройки партии и версия игры. Личная музыка и личная картинка в файл не копируются.", 15, Color(0.72, 0.85, 0.76, 1.0))
+	_add_menu_spacer(6.0)
+
+	var description_label := Label.new()
+	description_label.text = "Что произошло?"
+	description_label.add_theme_font_size_override("font_size", 17)
+	description_label.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
+	menu_content.add_child(description_label)
+
+	bug_report_description_input = TextEdit.new()
+	bug_report_description_input.custom_minimum_size = Vector2(0.0, 118.0)
+	bug_report_description_input.placeholder_text = "Например: в бескозырке Джокер не дал выбрать сброс после хода Олега."
+	bug_report_description_input.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
+	bug_report_description_input.add_theme_font_size_override("font_size", 16)
+	menu_content.add_child(bug_report_description_input)
+
+	bug_report_status_label = Label.new()
+	bug_report_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	bug_report_status_label.add_theme_font_size_override("font_size", 14)
+	bug_report_status_label.add_theme_color_override("font_color", Color(0.72, 0.85, 0.76, 1.0))
+	menu_content.add_child(bug_report_status_label)
+
+	_add_menu_button("Сохранить отчёт", _on_save_bug_report_pressed, true)
+	_add_menu_button("Открыть папку отчётов", _open_bug_report_folder)
+	_add_menu_button("Назад", _build_pause_menu_content)
+
+
+func _build_bug_report_review_menu() -> void:
+	_clear_children(menu_content)
+	_add_menu_title("Просмотр отчёта", "Партия открыта в режиме проверки")
+	_add_menu_label("Ходы, заказы и карты заблокированы, чтобы не изменить присланное состояние. Обычное сохранение твоей партии не затрагивается.", 16, Color(0.72, 0.85, 0.76, 1.0))
+	_add_menu_spacer(12.0)
+	_add_menu_button("Вернуться в главное меню", _close_bug_report_review, true)
 
 
 func _resume_current_game() -> void:
@@ -1763,7 +1928,7 @@ func _has_saved_session() -> bool:
 
 
 func _save_current_session() -> void:
-	if game.current_round.state == Round.State.SETUP or _is_full_game_complete():
+	if is_bug_report_review_mode or game.current_round.state == Round.State.SETUP or _is_full_game_complete():
 		return
 
 	var save_file := FileAccess.open(SESSION_SAVE_PATH, FileAccess.WRITE)
@@ -1799,6 +1964,8 @@ func _create_session_save_data() -> Dictionary:
 		"recent_actions": actions,
 		"last_trick_text": last_trick_text,
 		"action_text": action_text,
+		"pending_joker_card": _serialize_optional_card(pending_joker_card),
+		"pending_joker_suit": pending_joker_suit,
 		"hand_sort_mode": hand_sort_mode,
 		"score_sheet_visible": is_score_sheet_visible,
 		"round_history_visible": is_round_history_visible
@@ -1912,6 +2079,10 @@ func _load_saved_session() -> bool:
 		return false
 
 	var save_data: Dictionary = saved_data
+	return _restore_session_from_data(save_data, true)
+
+
+func _restore_session_from_data(save_data: Dictionary, persist_settings: bool) -> bool:
 	if int(save_data.get("version", 0)) != SESSION_SAVE_VERSION:
 		return false
 
@@ -1963,12 +2134,85 @@ func _load_saved_session() -> bool:
 	is_processing_automatic_actions = false
 	test_checkpoints.clear()
 	pending_test_checkpoint.clear()
+	var pending_joker_data_variant: Variant = save_data.get("pending_joker_card", {})
 	pending_joker_card = null
-	pending_joker_suit = -1
+	if pending_joker_data_variant is Dictionary:
+		pending_joker_card = _deserialize_optional_card(pending_joker_data_variant)
+	pending_joker_suit = clampi(int(save_data.get("pending_joker_suit", -1)), -1, Card.Suit.DIAMONDS)
 	_reset_trick_presentation()
 	_restore_next_round_button()
-	_save_persistent_settings()
+	if persist_settings:
+		_save_persistent_settings()
 	return true
+
+
+func _load_bug_report_from_path(report_path: String) -> bool:
+	var report_file := FileAccess.open(report_path, FileAccess.READ)
+	if report_file == null:
+		return false
+
+	var report_data_variant: Variant = report_file.get_var(false)
+	if not (report_data_variant is Dictionary):
+		return false
+
+	var report_data: Dictionary = report_data_variant
+	if str(report_data.get("format", "")) != "project_joker_bug_report":
+		return false
+	if int(report_data.get("report_version", 0)) != BUG_REPORT_FORMAT_VERSION:
+		return false
+
+	var session_data_variant: Variant = report_data.get("session", {})
+	if not (session_data_variant is Dictionary):
+		return false
+
+	_capture_configuration_before_bug_report_review()
+	var session_data: Dictionary = session_data_variant
+	if not _restore_session_from_data(session_data, false):
+		_restore_configuration_after_bug_report_review()
+		return false
+
+	is_bug_report_review_mode = true
+	if configured_avatar_indices[HUMAN_PLAYER_INDEX] == CUSTOM_AVATAR_INDEX:
+		# Личная картинка автора отчёта не передаётся и не должна подменяться
+		# личной картинкой разработчика при просмотре чужого отчёта.
+		configured_avatar_indices[HUMAN_PLAYER_INDEX] = 0
+	_restore_next_round_button()
+	_stop_human_turn_timer()
+	var report_version := str(report_data.get("game_version", "неизвестна"))
+	var report_description := str(report_data.get("description", "")).strip_edges()
+	action_text = "Просмотр отчёта из версии %s. Действия за столом заблокированы." % report_version
+	if not report_description.is_empty():
+		recent_actions.append("Описание ошибки: %s" % report_description)
+
+	return true
+
+
+func _capture_configuration_before_bug_report_review() -> void:
+	report_restore_player_names = configured_player_names.duplicate()
+	report_restore_avatar_indices = configured_avatar_indices.duplicate()
+	report_restore_bot_difficulty = bot_difficulty
+
+
+func _restore_configuration_after_bug_report_review() -> void:
+	if report_restore_player_names.size() == PLAYER_NAMES.size():
+		configured_player_names = report_restore_player_names.duplicate()
+	if report_restore_avatar_indices.size() == PLAYER_NAMES.size():
+		configured_avatar_indices = report_restore_avatar_indices.duplicate()
+	bot_difficulty = report_restore_bot_difficulty
+	report_restore_player_names.clear()
+	report_restore_avatar_indices.clear()
+
+
+func _close_bug_report_review() -> void:
+	if not is_bug_report_review_mode:
+		return
+
+	is_bug_report_review_mode = false
+	is_pause_menu_open = false
+	_stop_human_turn_timer()
+	_restore_configuration_after_bug_report_review()
+	_reset_game_session()
+	_show_main_menu()
 
 
 func _deserialize_game_state(game_data: Dictionary, player_names: Array[String]) -> Game:
@@ -2081,7 +2325,7 @@ func _deserialize_card(card_data: Dictionary) -> Card:
 func _restore_next_round_button() -> void:
 	var round_is_finished := game.current_round.state == Round.State.FINISHED
 	next_round_button.visible = round_is_finished
-	next_round_button.disabled = false
+	next_round_button.disabled = is_bug_report_review_mode
 
 	if not round_is_finished:
 		return
@@ -2907,7 +3151,7 @@ func _start_round() -> void:
 
 
 func _advance_automatic_actions() -> void:
-	if is_processing_automatic_actions:
+	if is_bug_report_review_mode or is_processing_automatic_actions:
 		return
 
 	is_processing_automatic_actions = true
@@ -3025,6 +3269,9 @@ func _play_automatic_card() -> bool:
 
 
 func _on_bid_pressed(bid: int) -> void:
+	if is_bug_report_review_mode:
+		return
+
 	var cards_were_hidden := _is_dark_round() and not game.cards_are_dealt
 
 	if not game.current_round.can_place_bid(HUMAN_PLAYER_INDEX, bid):
@@ -3048,7 +3295,7 @@ func _on_bid_pressed(bid: int) -> void:
 
 
 func _on_card_pressed(card: Card) -> void:
-	if not _is_human_turn() or not _is_card_available_to_human(card):
+	if is_bug_report_review_mode or not _is_human_turn() or not _is_card_available_to_human(card):
 		return
 
 	if card.is_joker:
@@ -3071,7 +3318,7 @@ func _on_card_pressed(card: Card) -> void:
 
 
 func _on_joker_suit_pressed(suit: int) -> void:
-	if pending_joker_card == null or game.active_trick != null:
+	if is_bug_report_review_mode or pending_joker_card == null or game.active_trick != null:
 		return
 
 	pending_joker_suit = suit
@@ -3084,7 +3331,7 @@ func _on_joker_choice(
 	declared_suit: int = -1,
 	forced_card_rank: Trick.ForcedCardRank = Trick.ForcedCardRank.NONE
 ) -> void:
-	if pending_joker_card == null:
+	if is_bug_report_review_mode or pending_joker_card == null:
 		return
 
 	var is_leading_joker := game.active_trick == null
@@ -3107,7 +3354,7 @@ func _on_joker_choice(
 
 
 func _on_undo_pressed() -> void:
-	if is_processing_automatic_actions or test_checkpoints.is_empty():
+	if is_bug_report_review_mode or is_processing_automatic_actions or test_checkpoints.is_empty():
 		return
 
 	var checkpoint: Dictionary = test_checkpoints.pop_back()
@@ -3165,7 +3412,7 @@ func _on_round_history_toggle_pressed() -> void:
 
 
 func _on_hand_sort_by_suit_pressed() -> void:
-	if is_processing_automatic_actions:
+	if is_bug_report_review_mode or is_processing_automatic_actions:
 		return
 
 	hand_sort_mode = HandSortMode.BY_SUIT
@@ -3174,7 +3421,7 @@ func _on_hand_sort_by_suit_pressed() -> void:
 
 
 func _on_hand_sort_trumps_left_pressed() -> void:
-	if is_processing_automatic_actions:
+	if is_bug_report_review_mode or is_processing_automatic_actions:
 		return
 
 	hand_sort_mode = HandSortMode.TRUMPS_LEFT
@@ -3183,7 +3430,7 @@ func _on_hand_sort_trumps_left_pressed() -> void:
 
 
 func _on_next_round_pressed() -> void:
-	if not _can_start_next_round():
+	if is_bug_report_review_mode or not _can_start_next_round():
 		return
 
 	game.advance_dealer()
@@ -3468,7 +3715,7 @@ func _refresh_header() -> void:
 			game.trump_card.get_card_name(),
 			game.current_round.get_trump_name()
 		]
-	var should_show_action_label := (
+	var should_show_action_label := is_bug_report_review_mode or (
 		game.current_round.state == Round.State.PLAYING
 		and pending_joker_card == null
 		and (
@@ -4223,7 +4470,8 @@ func _refresh_bid_controls() -> void:
 	_clear_children(bid_controls)
 
 	if (
-		is_processing_automatic_actions
+		is_bug_report_review_mode
+		or is_processing_automatic_actions
 		or game.current_round.state != Round.State.BIDDING
 		or game.current_round.current_player_index != HUMAN_PLAYER_INDEX
 	):
@@ -4250,7 +4498,7 @@ func _refresh_joker_controls() -> void:
 		return
 
 	joker_controls.visible = true
-	joker_controls.mouse_filter = Control.MOUSE_FILTER_STOP
+	joker_controls.mouse_filter = Control.MOUSE_FILTER_IGNORE if is_bug_report_review_mode else Control.MOUSE_FILTER_STOP
 	_place_joker_controls()
 
 	if game.active_trick == null:
@@ -4304,15 +4552,15 @@ func _refresh_hand() -> void:
 		card_view.set_card(card)
 		card_view.set_interactive(
 			true,
-			not _is_human_turn() or not _is_card_available_to_human(card) or pending_joker_card != null
+			is_bug_report_review_mode or not _is_human_turn() or not _is_card_available_to_human(card) or pending_joker_card != null
 		)
 		card_view.card_pressed.connect(_on_card_pressed)
 		hand_container.add_child(card_view)
 
 
 func _refresh_hand_sort_controls() -> void:
-	hand_sort_by_suit_button.disabled = is_processing_automatic_actions or hand_sort_mode == HandSortMode.BY_SUIT
-	hand_sort_trumps_left_button.disabled = is_processing_automatic_actions or hand_sort_mode == HandSortMode.TRUMPS_LEFT
+	hand_sort_by_suit_button.disabled = is_bug_report_review_mode or is_processing_automatic_actions or hand_sort_mode == HandSortMode.BY_SUIT
+	hand_sort_trumps_left_button.disabled = is_bug_report_review_mode or is_processing_automatic_actions or hand_sort_mode == HandSortMode.TRUMPS_LEFT
 
 
 func _sort_cards_for_display(
@@ -4360,7 +4608,8 @@ func _get_display_card_group(card: Card, trump: Round.TrumpSuit) -> int:
 
 func _refresh_undo_button() -> void:
 	undo_button.disabled = (
-		is_processing_automatic_actions
+		is_bug_report_review_mode
+		or is_processing_automatic_actions
 		or test_checkpoints.is_empty()
 		or game.current_round.state == Round.State.FINISHED
 	)
@@ -4636,7 +4885,8 @@ func _hide_reaction_bubble() -> void:
 
 func _can_show_reaction_controls() -> bool:
 	return (
-		game.current_round.state != Round.State.SETUP
+		not is_bug_report_review_mode
+		and game.current_round.state != Round.State.SETUP
 		and (menu_overlay == null or not menu_overlay.visible)
 	)
 
@@ -5446,8 +5696,8 @@ func _add_joker_suit_button(label: String, suit: int) -> void:
 	suit_button.custom_minimum_size = Vector2(0.0, 44.0)
 	suit_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_apply_table_action_button_style(suit_button)
-	suit_button.disabled = false
-	suit_button.mouse_filter = Control.MOUSE_FILTER_STOP
+	suit_button.disabled = is_bug_report_review_mode
+	suit_button.mouse_filter = Control.MOUSE_FILTER_IGNORE if is_bug_report_review_mode else Control.MOUSE_FILTER_STOP
 	suit_button.z_index = 1
 
 	if suit < 0:
@@ -5459,6 +5709,9 @@ func _add_joker_suit_button(label: String, suit: int) -> void:
 
 
 func _on_joker_suit_reset() -> void:
+	if is_bug_report_review_mode:
+		return
+
 	pending_joker_suit = -1
 	action_text = "Выбери объявляемую масть для Джокера."
 	_refresh_ui()
@@ -5475,8 +5728,8 @@ func _add_joker_choice_button(
 	choice_button.custom_minimum_size = Vector2(0.0, 44.0)
 	choice_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_apply_table_action_button_style(choice_button)
-	choice_button.disabled = false
-	choice_button.mouse_filter = Control.MOUSE_FILTER_STOP
+	choice_button.disabled = is_bug_report_review_mode
+	choice_button.mouse_filter = Control.MOUSE_FILTER_IGNORE if is_bug_report_review_mode else Control.MOUSE_FILTER_STOP
 	choice_button.z_index = 1
 	choice_button.pressed.connect(_on_joker_choice.bind(mode, declared_suit, forced_card_rank))
 	joker_controls.add_child(choice_button)
@@ -5496,7 +5749,8 @@ func _get_current_player_index() -> int:
 
 func _is_human_turn() -> bool:
 	return (
-		not is_processing_automatic_actions
+		not is_bug_report_review_mode
+		and not is_processing_automatic_actions
 		and game.current_round.state == Round.State.PLAYING
 		and _get_current_player_index() == HUMAN_PLAYER_INDEX
 	)
@@ -5524,7 +5778,8 @@ func _process(delta: float) -> void:
 
 func _is_human_decision_pending() -> bool:
 	return (
-		not is_processing_automatic_actions
+		not is_bug_report_review_mode
+		and not is_processing_automatic_actions
 		and (game.current_round.state == Round.State.BIDDING or game.current_round.state == Round.State.PLAYING)
 		and _get_current_player_index() == HUMAN_PLAYER_INDEX
 	)
