@@ -25,6 +25,8 @@ const MUSIC_PLAYLIST_PAGE_SIZE := 25
 const PROFILE_PLAYLIST_PREVIEW_COUNT := 20
 const MAX_SOUNDPAD_FILE_SIZE_BYTES := 2 * 1024 * 1024
 const MAX_SOUNDPAD_CLIP_DURATION_SECONDS := 25.0
+const SOUNDPAD_MANIFEST_SCRIPT_PATH := "res://Assets/Soundboard/soundpad_manifest.gd"
+const SoundpadManifest = preload("res://Assets/Soundboard/soundpad_manifest.gd")
 const SCORE_SHEET_NUMBER_COLUMN_WIDTH := 46.0
 const SCORE_SHEET_MODE_COLUMN_WIDTH := 132.0
 const SCORE_SHEET_CARDS_COLUMN_WIDTH := 52.0
@@ -5618,6 +5620,9 @@ func _load_soundpad_sounds() -> Array[Dictionary]:
 			return left_category.naturalnocasecmp_to(right_category) < 0
 		return str(left.get("title", "")).naturalnocasecmp_to(str(right.get("title", ""))) < 0
 	)
+	if sounds.is_empty():
+		return _load_soundpad_sounds_from_manifest()
+	_save_soundpad_manifest(sounds)
 	return sounds
 
 
@@ -5636,37 +5641,98 @@ func _append_soundpad_sounds_from_directory(
 			continue
 
 		var sound_path := "%s/%s" % [directory_path, file_name]
-		if not _is_soundpad_audio_import_valid(sound_path):
+		# В экспортированной PCK рядом с исходным файлом может не быть
+		# служебного .import-файла. Ресурс при этом уже упакован Godot,
+		# поэтому проверяем именно возможность загрузить AudioStream.
+		var sound_stream: AudioStream = ResourceLoader.load(sound_path, "AudioStream") as AudioStream
+		if sound_stream == null or sound_stream.get_length() > MAX_SOUNDPAD_CLIP_DURATION_SECONDS:
 			continue
+
+		# В редакторе и локальной версии дополнительно не даём случайно
+		# добавить слишком тяжёлый исходный файл. В PCK эта проверка
+		# необязательна: достаточно успешно загруженного ресурса выше.
 		var sound_file: FileAccess = FileAccess.open(sound_path, FileAccess.READ)
-		if sound_file == null:
-			continue
-		var file_size: int = sound_file.get_length()
-		sound_file.close()
-		if file_size > MAX_SOUNDPAD_FILE_SIZE_BYTES:
+		if sound_file != null:
+			var file_size: int = sound_file.get_length()
+			sound_file.close()
+			if file_size > MAX_SOUNDPAD_FILE_SIZE_BYTES:
+				continue
+
+		sounds.append({
+			"title": file_name.get_basename(),
+			"category": category_id,
+			"path": sound_path,
+			"stream": sound_stream
+		})
+
+
+func _load_soundpad_sounds_from_manifest() -> Array[Dictionary]:
+	var sounds: Array[Dictionary] = []
+	for sound_path in SoundpadManifest.PATHS:
+		if sound_path.is_empty():
 			continue
 
 		var sound_stream: AudioStream = ResourceLoader.load(sound_path, "AudioStream") as AudioStream
 		if sound_stream == null or sound_stream.get_length() > MAX_SOUNDPAD_CLIP_DURATION_SECONDS:
 			continue
 
+		var sound_file: FileAccess = FileAccess.open(sound_path, FileAccess.READ)
+		if sound_file != null:
+			var file_size: int = sound_file.get_length()
+			sound_file.close()
+			if file_size > MAX_SOUNDPAD_FILE_SIZE_BYTES:
+				continue
+
+		var category_id := "root"
+		if sound_path.get_base_dir() != "res://Assets/Soundboard":
+			category_id = sound_path.get_base_dir().get_file().to_lower()
 		sounds.append({
-			"title": file_name.get_basename(),
+			"title": sound_path.get_file().get_basename(),
 			"category": category_id,
+			"path": sound_path,
 			"stream": sound_stream
 		})
 
+	sounds.sort_custom(func(left: Dictionary, right: Dictionary) -> bool:
+		var left_category := str(left.get("category", "root"))
+		var right_category := str(right.get("category", "root"))
+		var left_category_order := _get_soundpad_category_order(left_category)
+		var right_category_order := _get_soundpad_category_order(right_category)
+		if left_category_order != right_category_order:
+			return left_category_order < right_category_order
+		if left_category != right_category:
+			return left_category.naturalnocasecmp_to(right_category) < 0
+		return str(left.get("title", "")).naturalnocasecmp_to(str(right.get("title", ""))) < 0
+	)
+	return sounds
 
-func _is_soundpad_audio_import_valid(sound_path: String) -> bool:
-	var import_path := "%s.import" % sound_path
-	if not FileAccess.file_exists(import_path):
-		return false
 
-	var import_config := ConfigFile.new()
-	if import_config.load(import_path) != OK:
-		return false
+func _save_soundpad_manifest(sounds: Array[Dictionary]) -> void:
+	var paths: PackedStringArray = []
+	for sound_data in sounds:
+		var sound_path := str(sound_data.get("path", ""))
+		if not sound_path.is_empty():
+			paths.append(sound_path)
 
-	return bool(import_config.get_value("remap", "valid", true))
+	if paths.is_empty():
+		return
+
+	var manifest_source := "extends RefCounted\n\nconst PATHS: PackedStringArray = [\n"
+	for sound_path in paths:
+		var escaped_sound_path := sound_path.replace("\\", "\\\\").replace("\"", "\\\"")
+		manifest_source += "\t\"%s\",\n" % escaped_sound_path
+	manifest_source += "]\n"
+
+	var existing_manifest_source := ""
+	if FileAccess.file_exists(SOUNDPAD_MANIFEST_SCRIPT_PATH):
+		existing_manifest_source = FileAccess.get_file_as_string(SOUNDPAD_MANIFEST_SCRIPT_PATH)
+	if existing_manifest_source == manifest_source:
+		return
+
+	var manifest_file := FileAccess.open(SOUNDPAD_MANIFEST_SCRIPT_PATH, FileAccess.WRITE)
+	if manifest_file != null:
+		manifest_file.store_string(manifest_source)
+		manifest_file.close()
 
 
 func _get_soundpad_categories() -> Array[Dictionary]:
