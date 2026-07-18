@@ -25,6 +25,14 @@ const MUSIC_PLAYLIST_PAGE_SIZE := 25
 const PROFILE_PLAYLIST_PREVIEW_COUNT := 20
 const MAX_SOUNDPAD_FILE_SIZE_BYTES := 2 * 1024 * 1024
 const MAX_SOUNDPAD_CLIP_DURATION_SECONDS := 25.0
+const SCORE_SHEET_NUMBER_COLUMN_WIDTH := 46.0
+const SCORE_SHEET_MODE_COLUMN_WIDTH := 132.0
+const SCORE_SHEET_CARDS_COLUMN_WIDTH := 52.0
+const SCORE_SHEET_TRUMP_COLUMN_WIDTH := 96.0
+const SCORE_SHEET_BID_COLUMN_WIDTH := 82.0
+const SCORE_SHEET_TRICKS_COLUMN_WIDTH := 72.0
+const SCORE_SHEET_SCORE_COLUMN_WIDTH := 102.0
+const SCORE_SHEET_PLAYER_GROUP_WIDTH := 264.0
 const AUTO_TURN_DURATION_SECONDS := 60.0
 const REACTION_DISPLAY_DURATION := 1.25
 const SOUNDPAD_BUBBLE_DISPLAY_DURATION := 1.6
@@ -219,6 +227,8 @@ var new_game_bot_difficulty_selector: OptionButton
 var profile_name_input: LineEdit
 var profile_avatar_selector: OptionButton
 var profile_avatar_status_label: Label
+var profile_avatar_preview: TextureRect
+var profile_avatar_preview_placeholder: Label
 var profile_avatar_file_dialog: FileDialog
 var pending_profile_avatar_path := ""
 var is_avatar_file_dialog_for_new_game := false
@@ -257,6 +267,21 @@ var tutorial_panel: PanelContainer
 var tutorial_title_label: Label
 var tutorial_text_label: Label
 var tutorial_disable_button: Button
+var local_statistics: Dictionary = {
+	"completed_games": 0,
+	"wins": 0,
+	"second_places": 0,
+	"third_places": 0,
+	"fourth_places": 0,
+	"best_score": 0,
+	"has_best_score": false,
+	"last_place": 0,
+	"last_score": 0,
+	"last_exact_orders": 0,
+	"last_shared_place": false
+}
+var game_statistics_recorded_for_current_session := false
+var statistics_return_to_final_menu := false
 
 
 func _ready() -> void:
@@ -328,6 +353,9 @@ func _create_table_visual_styles() -> void:
 	avatar_badge_style = _create_flat_style(Color(0.04, 0.1, 0.07, 1.0), Color(0.75, 0.58, 0.2, 1.0), 2, 6, 2)
 	music_player_panel.add_theme_stylebox_override("panel", _create_flat_style(Color(0.012, 0.055, 0.034, 0.94), Color(0.38, 0.255, 0.11, 0.0), 0, 6, 0))
 	round_results_panel.add_theme_stylebox_override("panel", _create_flat_style(Color(0.018, 0.08, 0.052, 0.97), Color(0.38, 0.255, 0.11, 0.78), 1, 10, 3))
+	_apply_table_text_button_style(round_history_toggle_button)
+	_apply_table_text_button_style(score_sheet_toggle_button)
+	_apply_table_text_button_style(pause_menu_button)
 	_apply_table_action_button_style(hand_sort_by_suit_button)
 	_apply_table_action_button_style(hand_sort_trumps_left_button)
 	_apply_table_action_button_style(undo_button)
@@ -386,12 +414,19 @@ func _create_score_sheet_overlay() -> void:
 
 	score_sheet_close_button = Button.new()
 	score_sheet_close_button.name = "ScoreSheetCloseButton"
-	score_sheet_close_button.text = "Закрыть"
-	score_sheet_close_button.custom_minimum_size = Vector2(0.0, 38.0)
-	score_sheet_close_button.add_theme_font_size_override("font_size", 16)
+	score_sheet_close_button.text = "×"
+	score_sheet_close_button.tooltip_text = "Закрыть расписку"
+	score_sheet_close_button.custom_minimum_size = Vector2(44.0, 44.0)
+	score_sheet_close_button.add_theme_font_size_override("font_size", 30)
+	score_sheet_close_button.add_theme_color_override("font_color", Color(0.82, 0.9, 0.82, 1.0))
+	score_sheet_close_button.add_theme_color_override("font_hover_color", Color(1.0, 0.84, 0.38, 1.0))
+	score_sheet_close_button.add_theme_color_override("font_pressed_color", Color(0.98, 0.66, 0.28, 1.0))
+	score_sheet_close_button.add_theme_stylebox_override("normal", StyleBoxEmpty.new())
+	score_sheet_close_button.add_theme_stylebox_override("hover", StyleBoxEmpty.new())
+	score_sheet_close_button.add_theme_stylebox_override("pressed", StyleBoxEmpty.new())
 	score_sheet_close_button.z_index = 96
 	score_sheet_close_button.visible = false
-	_set_control_layout(score_sheet_close_button, 0.5, 0.5, 0.5, 0.5, 584.0, -426.0, 744.0, -382.0)
+	_set_control_layout(score_sheet_close_button, 0.5, 0.5, 0.5, 0.5, 704.0, -438.0, 748.0, -394.0)
 	score_sheet_close_button.pressed.connect(_on_score_sheet_toggle_pressed)
 	add_child(score_sheet_close_button)
 
@@ -436,6 +471,19 @@ func _apply_table_action_button_style(button: Button) -> void:
 	disabled_style.content_margin_left = 10.0
 	disabled_style.content_margin_right = 10.0
 	button.add_theme_stylebox_override("disabled", disabled_style)
+
+
+func _apply_table_text_button_style(button: Button) -> void:
+	button.add_theme_font_size_override("font_size", 16)
+	button.add_theme_color_override("font_color", Color(0.84, 0.91, 0.84, 1.0))
+	button.add_theme_color_override("font_hover_color", Color(1.0, 0.84, 0.38, 1.0))
+	button.add_theme_color_override("font_pressed_color", Color(0.98, 0.66, 0.28, 1.0))
+	button.add_theme_color_override("font_disabled_color", Color(0.5, 0.58, 0.52, 0.75))
+	button.add_theme_stylebox_override("normal", StyleBoxEmpty.new())
+	button.add_theme_stylebox_override("hover", StyleBoxEmpty.new())
+	button.add_theme_stylebox_override("pressed", StyleBoxEmpty.new())
+	button.add_theme_stylebox_override("disabled", StyleBoxEmpty.new())
+	button.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
 
 
 func _create_main_menu() -> void:
@@ -497,6 +545,7 @@ func _build_main_menu_content() -> void:
 	_add_menu_button("Новая партия", _show_new_game_setup, true)
 	_add_menu_button("Обучение", _show_tutorial_menu)
 	_add_menu_button("Профиль", _show_profile_menu)
+	_add_menu_button("Статистика", _show_statistics_menu)
 	_add_menu_button("Правила", _show_rules_menu)
 	_add_menu_button("Настройки", _show_settings_menu)
 	_add_menu_button("Выход", _on_quit_pressed)
@@ -662,14 +711,48 @@ func _show_profile_menu() -> void:
 	avatar_label.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
 	menu_content.add_child(avatar_label)
 
+	var avatar_row := HBoxContainer.new()
+	avatar_row.add_theme_constant_override("separation", 14)
+	menu_content.add_child(avatar_row)
+
 	profile_avatar_selector = OptionButton.new()
 	profile_avatar_selector.custom_minimum_size = Vector2(0.0, 42.0)
+	profile_avatar_selector.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	profile_avatar_selector.add_theme_font_size_override("font_size", 17)
 	for avatar_index in HUMAN_AVATAR_COUNT:
 		profile_avatar_selector.add_item(_get_avatar_option_label(avatar_index))
 	profile_avatar_selector.selected = clampi(configured_avatar_indices[HUMAN_PLAYER_INDEX], 0, CUSTOM_AVATAR_INDEX)
 	profile_avatar_selector.item_selected.connect(_on_profile_avatar_selected)
-	menu_content.add_child(profile_avatar_selector)
+	avatar_row.add_child(profile_avatar_selector)
+
+	var preview_panel := PanelContainer.new()
+	preview_panel.custom_minimum_size = Vector2(96.0, 96.0)
+	preview_panel.add_theme_stylebox_override(
+		"panel",
+		_create_flat_style(Color(0.028, 0.073, 0.052, 1.0), Color(0.75, 0.58, 0.2, 1.0), 2, 8, 2)
+	)
+	avatar_row.add_child(preview_panel)
+
+	var preview_content := Control.new()
+	preview_content.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	preview_panel.add_child(preview_content)
+
+	profile_avatar_preview = TextureRect.new()
+	profile_avatar_preview.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	profile_avatar_preview.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	profile_avatar_preview.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+	profile_avatar_preview.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	preview_content.add_child(profile_avatar_preview)
+
+	profile_avatar_preview_placeholder = Label.new()
+	profile_avatar_preview_placeholder.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	profile_avatar_preview_placeholder.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	profile_avatar_preview_placeholder.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	profile_avatar_preview_placeholder.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	profile_avatar_preview_placeholder.add_theme_font_size_override("font_size", 14)
+	profile_avatar_preview_placeholder.add_theme_color_override("font_color", Color(0.82, 0.9, 0.82, 1.0))
+	profile_avatar_preview_placeholder.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	preview_content.add_child(profile_avatar_preview_placeholder)
 
 	profile_avatar_status_label = Label.new()
 	profile_avatar_status_label.add_theme_font_size_override("font_size", 14)
@@ -677,6 +760,7 @@ func _show_profile_menu() -> void:
 	profile_avatar_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	menu_content.add_child(profile_avatar_status_label)
 	_update_profile_avatar_status()
+	_update_profile_avatar_preview()
 
 	_add_menu_button("Выбрать свою картинку", _open_profile_avatar_file_dialog)
 	_add_menu_button("Вернуть стандартный аватар", _on_reset_profile_avatar_pressed)
@@ -713,6 +797,9 @@ func _create_profile_avatar_file_dialog() -> void:
 	profile_avatar_file_dialog.name = "ProfileAvatarFileDialog"
 	profile_avatar_file_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
 	profile_avatar_file_dialog.access = FileDialog.ACCESS_FILESYSTEM
+	profile_avatar_file_dialog.use_native_dialog = true
+	profile_avatar_file_dialog.display_mode = FileDialog.DISPLAY_THUMBNAILS
+	profile_avatar_file_dialog.add_theme_constant_override("thumbnail_size", 128)
 	profile_avatar_file_dialog.filters = PackedStringArray(["*.png,*.jpg,*.jpeg,*.webp;Изображения"])
 	profile_avatar_file_dialog.file_selected.connect(_on_profile_avatar_file_selected)
 	add_child(profile_avatar_file_dialog)
@@ -765,12 +852,14 @@ func _on_profile_avatar_file_selected(source_path: String) -> void:
 	if is_instance_valid(profile_avatar_selector):
 		profile_avatar_selector.selected = CUSTOM_AVATAR_INDEX
 	_update_profile_avatar_status()
+	_update_profile_avatar_preview()
 
 
 func _on_profile_avatar_selected(selected_index: int) -> void:
 	if selected_index != CUSTOM_AVATAR_INDEX:
 		pending_profile_avatar_path = ""
 	_update_profile_avatar_status()
+	_update_profile_avatar_preview()
 
 
 func _on_reset_profile_avatar_pressed() -> void:
@@ -778,6 +867,7 @@ func _on_reset_profile_avatar_pressed() -> void:
 	if is_instance_valid(profile_avatar_selector):
 		profile_avatar_selector.select(0)
 	_update_profile_avatar_status()
+	_update_profile_avatar_preview()
 
 
 func _update_profile_avatar_status() -> void:
@@ -790,6 +880,25 @@ func _update_profile_avatar_status() -> void:
 		profile_avatar_status_label.text = "Сначала выбери файл PNG, JPG или WebP."
 	else:
 		profile_avatar_status_label.text = "Используется один из встроенных авторских аватаров."
+
+
+func _update_profile_avatar_preview() -> void:
+	if (
+		not is_instance_valid(profile_avatar_preview)
+		or not profile_avatar_preview.is_inside_tree()
+		or not is_instance_valid(profile_avatar_preview_placeholder)
+	):
+		return
+
+	var selected_avatar_index := 0
+	if is_instance_valid(profile_avatar_selector):
+		selected_avatar_index = clampi(profile_avatar_selector.selected, 0, CUSTOM_AVATAR_INDEX)
+
+	var preview_path := _get_avatar_texture_path_for_index(selected_avatar_index, pending_profile_avatar_path)
+	var preview_texture := _load_avatar_texture_from_path(preview_path)
+	profile_avatar_preview.texture = preview_texture
+	profile_avatar_preview_placeholder.visible = preview_texture == null
+	profile_avatar_preview_placeholder.text = "Выбери\nкартинку" if selected_avatar_index == CUSTOM_AVATAR_INDEX else "Аватар\nне найден"
 
 
 func _create_profile_music_file_dialog() -> void:
@@ -1164,10 +1273,56 @@ func _show_final_session_menu() -> void:
 	menu_overlay.visible = true
 	_clear_children(menu_content)
 	_add_menu_title("Партия завершена", "Поздравляем — полный цикл из 32 раздач сыгран")
+	_add_menu_label(_get_human_final_summary_text(), 18, Color(0.97, 0.86, 0.55, 1.0))
 	_add_menu_label(_get_final_results_text(), 16, Color(0.91, 0.96, 0.91, 1.0))
 	_add_menu_spacer(10.0)
+	_add_menu_button("Открыть статистику", Callable(self, "_show_statistics_menu").bind(true))
 	_add_menu_button("Сыграть ещё раз", _on_new_game_pressed, true)
 	_add_menu_button("Вернуться в меню", _on_return_to_menu_pressed)
+
+
+func _show_statistics_menu(return_to_final_menu := false) -> void:
+	statistics_return_to_final_menu = return_to_final_menu
+	_clear_children(menu_content)
+	_add_menu_title("Статистика", "Результаты полностью завершённых локальных партий")
+
+	var completed_games: int = int(local_statistics["completed_games"])
+	if completed_games <= 0:
+		_add_menu_label("Пока нет завершённых партий. Статистика появится после полного цикла из 32 раздач.", 16, Color(0.72, 0.85, 0.76, 1.0))
+	else:
+		var wins: int = int(local_statistics["wins"])
+		var win_rate := int(round(float(wins) * 100.0 / float(completed_games)))
+		_add_menu_label("Сыграно партий: %d" % completed_games, 20, Color(0.97, 0.86, 0.55, 1.0))
+		_add_menu_label("Победы: %d (%d%%)" % [wins, win_rate], 18)
+		_add_menu_label("Места: 2-е — %d · 3-е — %d · 4-е — %d" % [
+			int(local_statistics["second_places"]),
+			int(local_statistics["third_places"]),
+			int(local_statistics["fourth_places"])
+		], 16, Color(0.72, 0.85, 0.76, 1.0))
+
+		if bool(local_statistics["has_best_score"]):
+			_add_menu_label("Лучший счёт: %d" % int(local_statistics["best_score"]), 18, Color(0.97, 0.86, 0.55, 1.0))
+
+		_add_menu_spacer(10.0)
+		_add_menu_label("Последняя партия", 18, Color(0.97, 0.86, 0.55, 1.0))
+		var last_place: int = int(local_statistics["last_place"])
+		var last_place_text := _get_place_text(last_place, bool(local_statistics["last_shared_place"]))
+		_add_menu_label("%s · счёт %d · точных заказов: %d" % [
+			last_place_text,
+			int(local_statistics["last_score"]),
+			int(local_statistics["last_exact_orders"])
+		], 16, Color(0.91, 0.96, 0.91, 1.0))
+
+	_add_menu_spacer(14.0)
+	_add_menu_button("Назад", _return_from_statistics_menu, true)
+
+
+func _return_from_statistics_menu() -> void:
+	if statistics_return_to_final_menu:
+		_show_final_session_menu()
+		return
+
+	_return_from_menu_subpage()
 
 
 func _add_menu_title(title_text: String, subtitle_text: String) -> void:
@@ -1257,6 +1412,7 @@ func _build_pause_menu_content() -> void:
 	_add_menu_button("Показать аудиоплеер" if music_player_hidden else "Скрыть аудиоплеер", _on_music_player_visibility_toggle_pressed)
 	_add_menu_button("Обучение", _show_tutorial_menu)
 	_add_menu_button("Профиль", _show_profile_menu)
+	_add_menu_button("Статистика", _show_statistics_menu)
 	_add_menu_button("Правила", _show_rules_menu)
 	_add_menu_button("Настройки", _show_settings_menu)
 	_add_menu_button("Завершить партию", _show_end_session_confirmation)
@@ -1533,6 +1689,7 @@ func _load_persistent_settings() -> void:
 		if not legacy_custom_music_path.is_empty():
 			custom_music_paths.append(legacy_custom_music_path)
 	_refresh_available_custom_music_paths()
+	_load_local_statistics(config)
 
 	var fullscreen_enabled: bool = bool(config.get_value("display", "fullscreen", false))
 	DisplayServer.window_set_mode(
@@ -1564,12 +1721,41 @@ func _save_persistent_settings() -> void:
 	for custom_music_path in custom_music_paths:
 		saved_custom_music_paths.append(custom_music_path)
 	config.set_value("audio", "custom_music_paths", saved_custom_music_paths)
+	_save_local_statistics(config)
 	config.set_value(
 		"display",
 		"fullscreen",
 		DisplayServer.window_get_mode() == DisplayServer.WINDOW_MODE_FULLSCREEN
 	)
 	config.save(PERSISTENT_SETTINGS_PATH)
+
+
+func _load_local_statistics(config: ConfigFile) -> void:
+	local_statistics["completed_games"] = maxi(0, int(config.get_value("statistics", "completed_games", 0)))
+	local_statistics["wins"] = maxi(0, int(config.get_value("statistics", "wins", 0)))
+	local_statistics["second_places"] = maxi(0, int(config.get_value("statistics", "second_places", 0)))
+	local_statistics["third_places"] = maxi(0, int(config.get_value("statistics", "third_places", 0)))
+	local_statistics["fourth_places"] = maxi(0, int(config.get_value("statistics", "fourth_places", 0)))
+	local_statistics["best_score"] = int(config.get_value("statistics", "best_score", 0))
+	local_statistics["has_best_score"] = bool(config.get_value("statistics", "has_best_score", false))
+	local_statistics["last_place"] = clampi(int(config.get_value("statistics", "last_place", 0)), 0, PLAYER_NAMES.size())
+	local_statistics["last_score"] = int(config.get_value("statistics", "last_score", 0))
+	local_statistics["last_exact_orders"] = maxi(0, int(config.get_value("statistics", "last_exact_orders", 0)))
+	local_statistics["last_shared_place"] = bool(config.get_value("statistics", "last_shared_place", false))
+
+
+func _save_local_statistics(config: ConfigFile) -> void:
+	config.set_value("statistics", "completed_games", int(local_statistics["completed_games"]))
+	config.set_value("statistics", "wins", int(local_statistics["wins"]))
+	config.set_value("statistics", "second_places", int(local_statistics["second_places"]))
+	config.set_value("statistics", "third_places", int(local_statistics["third_places"]))
+	config.set_value("statistics", "fourth_places", int(local_statistics["fourth_places"]))
+	config.set_value("statistics", "best_score", int(local_statistics["best_score"]))
+	config.set_value("statistics", "has_best_score", bool(local_statistics["has_best_score"]))
+	config.set_value("statistics", "last_place", int(local_statistics["last_place"]))
+	config.set_value("statistics", "last_score", int(local_statistics["last_score"]))
+	config.set_value("statistics", "last_exact_orders", int(local_statistics["last_exact_orders"]))
+	config.set_value("statistics", "last_shared_place", bool(local_statistics["last_shared_place"]))
 
 
 func _has_saved_session() -> bool:
@@ -2642,6 +2828,8 @@ func _refresh_music_player() -> void:
 func _reset_game_session() -> void:
 	_stop_human_turn_timer()
 	game = Game.new(configured_player_names)
+	game_statistics_recorded_for_current_session = false
+	statistics_return_to_final_menu = false
 	normal_round_index = 0
 	dark_round_index = -1
 	no_trump_round_index = -1
@@ -3085,6 +3273,7 @@ func _finish_round() -> void:
 	_refresh_ui()
 
 	if _is_full_game_complete():
+		_record_completed_game_statistics()
 		_delete_saved_session()
 		_show_final_session_menu()
 	else:
@@ -3349,8 +3538,13 @@ func _get_player_avatar_symbol(player_index: int) -> String:
 
 func _get_player_avatar_texture_path(player_index: int) -> String:
 	var avatar_index := configured_avatar_indices[player_index] if player_index >= 0 and player_index < configured_avatar_indices.size() else 0
-	if player_index == HUMAN_PLAYER_INDEX and avatar_index == CUSTOM_AVATAR_INDEX:
-		return custom_profile_avatar_path
+	var custom_avatar_path := custom_profile_avatar_path if player_index == HUMAN_PLAYER_INDEX else ""
+	return _get_avatar_texture_path_for_index(avatar_index, custom_avatar_path)
+
+
+func _get_avatar_texture_path_for_index(avatar_index: int, custom_avatar_path: String = "") -> String:
+	if avatar_index == CUSTOM_AVATAR_INDEX:
+		return custom_avatar_path
 
 	match avatar_index:
 		0:
@@ -3367,6 +3561,10 @@ func _get_player_avatar_texture_path(player_index: int) -> String:
 
 func _get_player_avatar_texture(player_index: int) -> Texture2D:
 	var texture_path := _get_player_avatar_texture_path(player_index)
+	return _load_avatar_texture_from_path(texture_path)
+
+
+func _load_avatar_texture_from_path(texture_path: String) -> Texture2D:
 	if texture_path.is_empty():
 		return null
 
@@ -3544,7 +3742,7 @@ func _refresh_score_sheet() -> void:
 	if is_instance_valid(score_sheet_close_button):
 		score_sheet_close_button.visible = is_score_sheet_visible
 		score_sheet_close_button.disabled = is_processing_automatic_actions
-	score_sheet_toggle_button.text = "Скрыть расписку" if is_score_sheet_visible else "📋 Расписка"
+	score_sheet_toggle_button.text = "📋 Расписка"
 	score_sheet_toggle_button.disabled = is_processing_automatic_actions
 	score_sheet_title.text = "Расписка: %d из %d раздач сыграно · полный план партии" % [round_history.size(), TOTAL_ROUND_COUNT]
 	final_results_label.visible = _is_full_game_complete()
@@ -3558,16 +3756,20 @@ func _refresh_score_sheet() -> void:
 		return
 
 	_clear_children(score_sheet_grid)
+	score_sheet_grid.columns = 1
 
 	var completed_rounds: Dictionary = {}
 	for completed_round in round_history:
 		completed_rounds[int(completed_round["round_number"])] = completed_round
 
-	var header_texts := ["№", "Раздача / козырь"]
+	var header_row := _create_score_sheet_row()
+	_add_score_sheet_cell(header_row, "№", true, false, false, SCORE_SHEET_NUMBER_COLUMN_WIDTH)
+	_add_score_sheet_cell(header_row, "Режим", true, false, false, SCORE_SHEET_MODE_COLUMN_WIDTH)
+	_add_score_sheet_cell(header_row, "Карт", true, false, false, SCORE_SHEET_CARDS_COLUMN_WIDTH)
+	_add_score_sheet_cell(header_row, "Козырь", true, false, false, SCORE_SHEET_TRUMP_COLUMN_WIDTH)
 	for player_index in game.players.size():
-		header_texts.append(game.players[player_index].display_name)
-	for header_index in header_texts.size():
-		_add_score_sheet_cell(header_texts[header_index], true, false, false, 220.0 if header_index == 1 else 150.0)
+		_add_score_sheet_player_header(header_row, player_index)
+	score_sheet_grid.add_child(header_row)
 
 	for round_number in range(1, TOTAL_ROUND_COUNT + 1):
 		var round_plan: Dictionary = _get_planned_round(round_number)
@@ -3582,30 +3784,48 @@ func _refresh_score_sheet() -> void:
 		elif is_current_round:
 			trump_name = game.current_round.get_trump_name()
 
-		var round_info := "%s · %d карт\n%s" % [
-			str(round_plan["label"]),
-			int(round_plan["cards_per_player"]),
-			trump_name
-		]
-		_add_score_sheet_cell(str(round_number), false, is_current_round, is_future_round)
-		_add_score_sheet_cell(round_info, false, is_current_round, is_future_round, 220.0)
+		var score_sheet_row := _create_score_sheet_row()
+		_add_score_sheet_cell(score_sheet_row, str(round_number), false, is_current_round, is_future_round, SCORE_SHEET_NUMBER_COLUMN_WIDTH)
+		_add_score_sheet_cell(score_sheet_row, str(round_plan["label"]), false, is_current_round, is_future_round, SCORE_SHEET_MODE_COLUMN_WIDTH)
+		_add_score_sheet_cell(score_sheet_row, str(int(round_plan["cards_per_player"])), false, is_current_round, is_future_round, SCORE_SHEET_CARDS_COLUMN_WIDTH)
+		_add_score_sheet_cell(score_sheet_row, trump_name, false, is_current_round, is_future_round, SCORE_SHEET_TRUMP_COLUMN_WIDTH)
 
 		for player_index in game.players.size():
-			var result_text := "—"
+			var result_cells := PackedStringArray(["—", "—", "—"])
 			if has_completed_round:
 				var result_round_record: Dictionary = completed_rounds[round_number]
 				var player_results: Array = result_round_record["players"]
 				var player_result: Dictionary = player_results[player_index]
 				var bid_text := str(player_result["bid"]) if bool(result_round_record["uses_bids"]) else "—"
-				result_text = "%s / %d / %s" % [
+				result_cells = PackedStringArray([
 					bid_text,
-					player_result["tricks_taken"],
+					str(player_result["tricks_taken"]),
 					_format_score(int(player_result["round_score"]))
-				]
+				])
 			elif is_current_round:
-				result_text = _get_current_score_sheet_result(player_index, bool(round_plan["uses_bids"]))
+				var player := game.players[player_index]
+				var current_bid_text := str(player.bid) if bool(round_plan["uses_bids"]) and player.bid >= 0 else "—"
+				result_cells = PackedStringArray([current_bid_text, str(player.tricks_taken), "…"])
 
-			_add_score_sheet_cell(result_text, false, is_current_round, is_future_round)
+			_add_score_sheet_player_group(score_sheet_row, player_index, result_cells, is_current_round, is_future_round)
+
+		score_sheet_grid.add_child(score_sheet_row)
+
+	var total_row := _create_score_sheet_row()
+	_add_score_sheet_cell(total_row, "Итого", false, false, false, SCORE_SHEET_NUMBER_COLUMN_WIDTH, true)
+	_add_score_sheet_cell(total_row, "", false, false, false, SCORE_SHEET_MODE_COLUMN_WIDTH, true)
+	_add_score_sheet_cell(total_row, "", false, false, false, SCORE_SHEET_CARDS_COLUMN_WIDTH, true)
+	_add_score_sheet_cell(total_row, "", false, false, false, SCORE_SHEET_TRUMP_COLUMN_WIDTH, true)
+	for player_index in game.players.size():
+		_add_score_sheet_player_group(
+			total_row,
+			player_index,
+			PackedStringArray(["", "", "Счёт: %d" % game.players[player_index].total_score]),
+			false,
+			false,
+			true
+		)
+	score_sheet_grid.add_child(total_row)
 
 
 func _get_planned_round(round_number: int) -> Dictionary:
@@ -3673,21 +3893,97 @@ func _get_trump_name_from_suit(trump: Round.TrumpSuit) -> String:
 	return "случайный козырь"
 
 
-func _get_current_score_sheet_result(player_index: int, uses_bids: bool) -> String:
-	var player := game.players[player_index]
-	var bid_text := str(player.bid) if uses_bids and player.bid >= 0 else "—"
-	return "%s / %d / …" % [bid_text, player.tricks_taken]
+func _create_score_sheet_row() -> HBoxContainer:
+	var row := HBoxContainer.new()
+	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_theme_constant_override("separation", 4)
+	return row
+
+
+func _add_score_sheet_player_header(row: HBoxContainer, player_index: int) -> void:
+	var group := PanelContainer.new()
+	group.custom_minimum_size = Vector2(SCORE_SHEET_PLAYER_GROUP_WIDTH, 70.0)
+	group.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	group.add_theme_stylebox_override("panel", _create_score_sheet_player_group_style(player_index, true))
+
+	var group_content := VBoxContainer.new()
+	group_content.add_theme_constant_override("separation", 2)
+	group.add_child(group_content)
+
+	var name_label := Label.new()
+	name_label.text = game.players[player_index].display_name
+	name_label.custom_minimum_size = Vector2(SCORE_SHEET_PLAYER_GROUP_WIDTH, 24.0)
+	name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	name_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	name_label.add_theme_font_size_override("font_size", 16)
+	name_label.add_theme_color_override("font_color", Color(0.98, 0.88, 0.58, 1.0))
+	group_content.add_child(name_label)
+
+	var columns_row := HBoxContainer.new()
+	columns_row.add_theme_constant_override("separation", 4)
+	group_content.add_child(columns_row)
+	_add_score_sheet_cell(columns_row, "Заказ", true, false, false, SCORE_SHEET_BID_COLUMN_WIDTH)
+	_add_score_sheet_cell(columns_row, "Взято", true, false, false, SCORE_SHEET_TRICKS_COLUMN_WIDTH)
+	_add_score_sheet_cell(columns_row, "Δ счёта", true, false, false, SCORE_SHEET_SCORE_COLUMN_WIDTH)
+	row.add_child(group)
+
+
+func _add_score_sheet_player_group(
+	row: HBoxContainer,
+	player_index: int,
+	cell_texts: PackedStringArray,
+	is_current_round: bool,
+	is_future_round: bool,
+	is_total_row := false
+) -> void:
+	var group := PanelContainer.new()
+	group.custom_minimum_size = Vector2(SCORE_SHEET_PLAYER_GROUP_WIDTH, 48.0 if is_total_row else 42.0)
+	group.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	group.add_theme_stylebox_override("panel", _create_score_sheet_player_group_style(player_index, false, is_total_row))
+
+	var group_content := HBoxContainer.new()
+	group_content.add_theme_constant_override("separation", 4)
+	group.add_child(group_content)
+	_add_score_sheet_cell(group_content, cell_texts[0], false, is_current_round, is_future_round, SCORE_SHEET_BID_COLUMN_WIDTH, is_total_row)
+	_add_score_sheet_cell(group_content, cell_texts[1], false, is_current_round, is_future_round, SCORE_SHEET_TRICKS_COLUMN_WIDTH, is_total_row)
+	_add_score_sheet_cell(group_content, cell_texts[2], false, is_current_round, is_future_round, SCORE_SHEET_SCORE_COLUMN_WIDTH, is_total_row)
+	row.add_child(group)
+
+
+func _create_score_sheet_player_group_style(player_index: int, is_header: bool, is_total_row := false) -> StyleBoxFlat:
+	var backgrounds: Array[Color] = [
+		Color(0.024, 0.105, 0.066, 0.78),
+		Color(0.03, 0.072, 0.11, 0.78),
+		Color(0.09, 0.055, 0.095, 0.78),
+		Color(0.09, 0.072, 0.032, 0.78)
+	]
+	var background_color: Color = backgrounds[player_index % backgrounds.size()]
+	if is_header:
+		background_color = background_color.lightened(0.16)
+	elif is_total_row:
+		background_color = background_color.lightened(0.08)
+
+	var border_color := Color(0.78, 0.62, 0.24, 0.88 if is_header or is_total_row else 0.42)
+	var style := _create_flat_style(background_color, border_color, 1, 4, 0)
+	style.content_margin_left = 3.0
+	style.content_margin_top = 2.0
+	style.content_margin_right = 3.0
+	style.content_margin_bottom = 2.0
+	return style
 
 
 func _add_score_sheet_cell(
+	parent: Container,
 	text: String,
 	is_header := false,
 	is_current_round := false,
 	is_future_round := false,
-	minimum_width := 112.0
+	minimum_width := 82.0,
+	is_total_row := false
 ) -> void:
 	var cell := Label.new()
-	cell.custom_minimum_size = Vector2(minimum_width, 42)
+	cell.custom_minimum_size = Vector2(minimum_width, 48.0 if is_header or is_total_row else 42.0)
+	cell.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	cell.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	cell.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	cell.autowrap_mode = 2
@@ -3696,6 +3992,9 @@ func _add_score_sheet_cell(
 
 	if is_header:
 		cell.add_theme_color_override("font_color", Color(0.97, 0.86, 0.55))
+	elif is_total_row:
+		cell.add_theme_font_size_override("font_size", 15)
+		cell.add_theme_color_override("font_color", Color(0.96, 0.42, 0.34) if text.contains("-") else Color(0.97, 0.84, 0.38))
 	elif is_current_round:
 		cell.add_theme_color_override("font_color", Color(1.0, 0.83, 0.34))
 	elif is_future_round:
@@ -3703,7 +4002,7 @@ func _add_score_sheet_cell(
 	else:
 		cell.add_theme_color_override("font_color", Color(0.86, 0.94, 0.87))
 
-	score_sheet_grid.add_child(cell)
+	parent.add_child(cell)
 
 
 func _record_completed_round(round_scores: Array[int]) -> void:
@@ -3743,45 +4042,16 @@ func _get_current_round_label() -> String:
 
 
 func _get_final_results_text() -> String:
-	var standings: Array[Dictionary] = []
-
-	for player in game.players:
-		standings.append({
-			"player_id": player.player_id,
-			"name": player.display_name,
-			"score": player.total_score,
-			"tricks_taken": _get_total_tricks_for_player(player.player_id),
-			"exact_orders": player.exact_orders_completed
-		})
-
-	standings.sort_custom(func(left: Dictionary, right: Dictionary) -> bool:
-		if left["score"] != right["score"]:
-			return left["score"] > right["score"]
-
-		return left["exact_orders"] > right["exact_orders"]
-	)
-
+	var standings := _get_final_standings()
 	var result_lines := PackedStringArray()
 	result_lines.append("Итоги партии")
-	var place := 1
 
 	for standing_index in standings.size():
 		var standing: Dictionary = standings[standing_index]
-
-		if standing_index > 0:
-			var previous_standing: Dictionary = standings[standing_index - 1]
-			if not _are_standings_equal(standing, previous_standing):
-				place = standing_index + 1
-
-		var shares_place := (
-			(standing_index > 0 and _are_standings_equal(standing, standings[standing_index - 1]))
-			or (standing_index < standings.size() - 1 and _are_standings_equal(standing, standings[standing_index + 1]))
-		)
+		var place: int = int(standing["place"])
+		var shares_place: bool = bool(standing["shares_place"])
 		var place_prefix := "🏆" if place == 1 and not shares_place else "🤝" if shares_place else "•"
-		var place_text := "%d-е место" % place
-
-		if shares_place:
-			place_text += " (ничья)"
+		var place_text := _get_place_text(place, shares_place)
 
 		result_lines.append("%s %s: %s — %d очк. · %d вз. · точных заказов: %d" % [
 			place_prefix,
@@ -3793,6 +4063,109 @@ func _get_final_results_text() -> String:
 		])
 
 	return "\n".join(result_lines)
+
+
+func _get_final_standings() -> Array[Dictionary]:
+	var standings: Array[Dictionary] = []
+
+	for player in game.players:
+		standings.append({
+			"player_id": player.player_id,
+			"name": player.display_name,
+			"score": player.total_score,
+			"tricks_taken": _get_total_tricks_for_player(player.player_id),
+			"exact_orders": player.exact_orders_completed,
+			"place": 0,
+			"shares_place": false
+		})
+
+	standings.sort_custom(func(left: Dictionary, right: Dictionary) -> bool:
+		if left["score"] != right["score"]:
+			return left["score"] > right["score"]
+
+		return left["exact_orders"] > right["exact_orders"]
+	)
+
+	var place := 1
+	for standing_index in standings.size():
+		var standing: Dictionary = standings[standing_index]
+		if standing_index > 0:
+			var previous_standing: Dictionary = standings[standing_index - 1]
+			if not _are_standings_equal(standing, previous_standing):
+				place = standing_index + 1
+
+		var shares_place := (
+			(standing_index > 0 and _are_standings_equal(standing, standings[standing_index - 1]))
+			or (standing_index < standings.size() - 1 and _are_standings_equal(standing, standings[standing_index + 1]))
+		)
+		standing["place"] = place
+		standing["shares_place"] = shares_place
+
+	return standings
+
+
+func _get_human_final_standing() -> Dictionary:
+	for standing in _get_final_standings():
+		if int(standing["player_id"]) == HUMAN_PLAYER_INDEX:
+			return standing
+
+	return {}
+
+
+func _get_human_final_summary_text() -> String:
+	var standing := _get_human_final_standing()
+	if standing.is_empty():
+		return "Твой итог: результат пока недоступен."
+
+	return "Твой результат: %s · счёт %d · точных заказов: %d" % [
+		_get_place_text(int(standing["place"]), bool(standing["shares_place"])),
+		int(standing["score"]),
+		int(standing["exact_orders"])
+	]
+
+
+func _record_completed_game_statistics() -> void:
+	if game_statistics_recorded_for_current_session:
+		return
+
+	var standing := _get_human_final_standing()
+	if standing.is_empty():
+		return
+
+	game_statistics_recorded_for_current_session = true
+	var place: int = clampi(int(standing["place"]), 1, PLAYER_NAMES.size())
+	var score: int = int(standing["score"])
+	local_statistics["completed_games"] = int(local_statistics["completed_games"]) + 1
+
+	match place:
+		1:
+			local_statistics["wins"] = int(local_statistics["wins"]) + 1
+		2:
+			local_statistics["second_places"] = int(local_statistics["second_places"]) + 1
+		3:
+			local_statistics["third_places"] = int(local_statistics["third_places"]) + 1
+		_:
+			local_statistics["fourth_places"] = int(local_statistics["fourth_places"]) + 1
+
+	if not bool(local_statistics["has_best_score"]) or score > int(local_statistics["best_score"]):
+		local_statistics["best_score"] = score
+		local_statistics["has_best_score"] = true
+
+	local_statistics["last_place"] = place
+	local_statistics["last_score"] = score
+	local_statistics["last_exact_orders"] = int(standing["exact_orders"])
+	local_statistics["last_shared_place"] = bool(standing["shares_place"])
+	_save_persistent_settings()
+
+
+func _get_place_text(place: int, shares_place := false) -> String:
+	if place <= 0:
+		return "место не определено"
+
+	var place_text := "%d-е место" % place
+	if shares_place:
+		place_text += " (ничья)"
+	return place_text
 
 
 func _are_standings_equal(left: Dictionary, right: Dictionary) -> bool:
@@ -3825,7 +4198,8 @@ func _refresh_history() -> void:
 
 func _refresh_round_history_panel() -> void:
 	round_history_panel.visible = is_round_history_visible
-	round_history_toggle_button.text = "История ▾" if is_round_history_visible else "История ▸"
+	round_history_toggle_button.text = "История"
+	round_history_toggle_button.tooltip_text = "Скрыть историю" if is_round_history_visible else "Показать историю"
 	round_history_toggle_button.disabled = is_processing_automatic_actions
 
 
@@ -4756,11 +5130,11 @@ func _append_soundpad_sounds_from_directory(
 func _is_soundpad_audio_import_valid(sound_path: String) -> bool:
 	var import_path := "%s.import" % sound_path
 	if not FileAccess.file_exists(import_path):
-		return true
+		return false
 
 	var import_config := ConfigFile.new()
 	if import_config.load(import_path) != OK:
-		return true
+		return false
 
 	return bool(import_config.get_value("remap", "valid", true))
 
