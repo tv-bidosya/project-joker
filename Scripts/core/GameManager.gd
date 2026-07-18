@@ -27,6 +27,10 @@ const MAX_SOUNDPAD_FILE_SIZE_BYTES := 2 * 1024 * 1024
 const MAX_SOUNDPAD_CLIP_DURATION_SECONDS := 25.0
 const SOUNDPAD_MANIFEST_SCRIPT_PATH := "res://Assets/Soundboard/soundpad_manifest.gd"
 const SoundpadManifest = preload("res://Assets/Soundboard/soundpad_manifest.gd")
+const NetworkSnapshot = preload("res://Scripts/core/MatchStateSnapshot.gd")
+const NetworkCommand = preload("res://Scripts/core/MatchCommand.gd")
+const NetworkHost = preload("res://Scripts/core/LocalMatchHost.gd")
+const LoopbackNetwork = preload("res://Scripts/core/LoopbackNetworkTest.gd")
 const SCORE_SHEET_NUMBER_COLUMN_WIDTH := 46.0
 const SCORE_SHEET_MODE_COLUMN_WIDTH := 132.0
 const SCORE_SHEET_CARDS_COLUMN_WIDTH := 52.0
@@ -321,6 +325,10 @@ var local_statistics: Dictionary = {
 }
 var game_statistics_recorded_for_current_session := false
 var statistics_return_to_final_menu := false
+var loopback_network_test
+var loopback_network_status_label: Label
+var loopback_network_test_bid_button: Button
+var loopback_network_test_play_controls: VBoxContainer
 
 
 func _ready() -> void:
@@ -334,6 +342,9 @@ func _ready() -> void:
 	_run_hand_sort_checks()
 	_run_round_history_checks()
 	_run_session_save_checks()
+	_run_network_snapshot_checks()
+	_run_local_match_host_checks()
+	_run_network_special_round_checks()
 	_load_persistent_settings()
 	_create_table_visual_styles()
 	_create_score_sheet_overlay()
@@ -359,6 +370,9 @@ func _ready() -> void:
 	_create_profile_music_file_dialog()
 	joker_controls.reparent(self)
 	_create_main_menu()
+	loopback_network_test = LoopbackNetwork.new()
+	loopback_network_test.status_changed.connect(_refresh_loopback_network_status)
+	add_child(loopback_network_test)
 	joker_controls.z_index = 80
 	joker_controls.mouse_filter = Control.MOUSE_FILTER_PASS
 	undo_button.pressed.connect(_on_undo_pressed)
@@ -373,7 +387,11 @@ func _ready() -> void:
 	music_add_button.pressed.connect(_on_music_add_pressed)
 	next_round_button.pressed.connect(_on_next_round_pressed)
 	pause_menu_button.pressed.connect(_on_pause_menu_pressed)
-	_show_main_menu()
+	if _is_loopback_network_client_launch():
+		_show_loopback_network_test_menu()
+		call_deferred("_start_loopback_network_client_from_launch")
+	else:
+		_show_main_menu()
 
 
 func _create_table_visual_styles() -> void:
@@ -619,6 +637,7 @@ func _build_main_menu_content() -> void:
 	_add_menu_button("Статистика", _show_statistics_menu)
 	if _developer_report_tools_enabled():
 		_add_menu_button("Загрузить отчёт", _open_bug_report_file_dialog)
+		_add_menu_button("Локальная сеть (тест)", _show_loopback_network_test_menu)
 	_add_menu_button("Правила", _show_rules_menu)
 	_add_menu_button("Настройки", _show_settings_menu)
 	_add_menu_button("Выход", _on_quit_pressed)
@@ -632,6 +651,139 @@ func _developer_report_tools_enabled() -> bool:
 
 func _get_build_version_text() -> String:
 	return "версия разработчика %s" % GAME_VERSION if _developer_report_tools_enabled() else "версия для игроков %s" % GAME_VERSION
+
+
+func _is_loopback_network_client_launch() -> bool:
+	return OS.get_cmdline_user_args().has("--local-client") or OS.get_cmdline_args().has("--local-client")
+
+
+func _show_loopback_network_test_menu() -> void:
+	is_pause_menu_open = false
+	menu_overlay.visible = true
+	_clear_children(menu_content)
+	loopback_network_test_bid_button = null
+	loopback_network_test_play_controls = null
+	_add_menu_title("Локальная сеть", "Проверка двух окон через ENet без Steam")
+	_add_menu_spacer(8.0)
+
+	loopback_network_status_label = Label.new()
+	loopback_network_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	loopback_network_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	loopback_network_status_label.add_theme_font_size_override("font_size", 16)
+	loopback_network_status_label.add_theme_color_override("font_color", Color(0.72, 0.85, 0.76, 1.0))
+	menu_content.add_child(loopback_network_status_label)
+	_refresh_loopback_network_status()
+	_add_menu_spacer(10.0)
+
+	if not loopback_network_test.is_running():
+		_add_menu_button("Запустить хост", _on_start_loopback_network_host_pressed, true)
+		_add_menu_button("Подключиться как клиент", _on_start_loopback_network_client_pressed)
+	else:
+		if loopback_network_test.is_host():
+			_add_menu_button("Открыть второе окно клиента", _on_open_loopback_network_client_pressed, true)
+			_add_menu_label("Вручную: ProjectJokerDebug.exe -- --local-client", 14, Color(0.72, 0.85, 0.76, 1.0))
+		else:
+			_add_menu_label("Это второе окно-клиент. После подключения оно покажет только свою руку.", 14, Color(0.72, 0.85, 0.76, 1.0))
+			loopback_network_test_bid_button = _add_menu_button("Отправить тестовый заказ: 1", _on_submit_loopback_test_bid_pressed, true)
+			loopback_network_test_bid_button.disabled = not loopback_network_test.can_submit_test_bid()
+			loopback_network_test_play_controls = VBoxContainer.new()
+			loopback_network_test_play_controls.add_theme_constant_override("separation", 6)
+			menu_content.add_child(loopback_network_test_play_controls)
+			_refresh_loopback_network_play_controls()
+		_add_menu_button("Остановить тест", _on_stop_loopback_network_pressed)
+
+	_add_menu_spacer(10.0)
+	_add_menu_button("Назад", _on_close_loopback_network_test_pressed)
+
+
+func _on_start_loopback_network_host_pressed() -> void:
+	loopback_network_test.start_host()
+	_show_loopback_network_test_menu()
+
+
+func _on_start_loopback_network_client_pressed() -> void:
+	loopback_network_test.start_client()
+	_show_loopback_network_test_menu()
+
+
+func _start_loopback_network_client_from_launch() -> void:
+	loopback_network_test.start_client()
+	_refresh_loopback_network_status()
+
+
+func _on_open_loopback_network_client_pressed() -> void:
+	if OS.has_feature("editor"):
+		loopback_network_test.status_text = "В редакторе открой второе окно вручную через экспортированный .exe."
+		_refresh_loopback_network_status()
+		return
+
+	var process_id := OS.create_process(OS.get_executable_path(), PackedStringArray(["--", "--local-client"]))
+	if process_id > 0:
+		loopback_network_test.status_text = "Второе окно клиента открывается…"
+	else:
+		loopback_network_test.status_text = "Не удалось открыть второе окно. Запусти клиент вручную."
+	_refresh_loopback_network_status()
+
+
+func _on_stop_loopback_network_pressed() -> void:
+	loopback_network_test.stop()
+	_show_loopback_network_test_menu()
+
+
+func _on_submit_loopback_test_bid_pressed() -> void:
+	loopback_network_test.submit_test_bid()
+	_refresh_loopback_network_status()
+
+
+func _on_submit_loopback_test_card_pressed(card_key: String) -> void:
+	loopback_network_test.submit_test_card(card_key)
+	_refresh_loopback_network_status()
+
+
+func _on_close_loopback_network_test_pressed() -> void:
+	loopback_network_test.stop()
+	_build_main_menu_content()
+
+
+func _refresh_loopback_network_status() -> void:
+	if is_instance_valid(loopback_network_status_label) and loopback_network_test != null:
+		loopback_network_status_label.text = loopback_network_test.status_text
+	if is_instance_valid(loopback_network_test_bid_button) and loopback_network_test != null:
+		loopback_network_test_bid_button.disabled = not loopback_network_test.can_submit_test_bid()
+	_refresh_loopback_network_play_controls()
+
+
+func _refresh_loopback_network_play_controls() -> void:
+	if not is_instance_valid(loopback_network_test_play_controls) or loopback_network_test == null:
+		return
+
+	_clear_children(loopback_network_test_play_controls)
+	if not loopback_network_test.can_submit_test_card():
+		return
+
+	var instruction := Label.new()
+	instruction.text = "Заказы завершены. Выбери карту для тестового хода:"
+	instruction.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	instruction.add_theme_font_size_override("font_size", 14)
+	instruction.add_theme_color_override("font_color", Color(0.85, 0.91, 0.8, 1.0))
+	loopback_network_test_play_controls.add_child(instruction)
+	for card_data in loopback_network_test.get_test_playable_cards():
+		var card_key := str(card_data.get("card_key", ""))
+		var button := _create_menu_button("Сыграть %s" % _format_loopback_snapshot_card(card_data), _on_submit_loopback_test_card_pressed.bind(card_key), true)
+		loopback_network_test_play_controls.add_child(button)
+
+
+func _format_loopback_snapshot_card(card_data: Dictionary) -> String:
+	if bool(card_data.get("is_joker", false)):
+		return "Джокер"
+
+	var rank_names := ["6", "7", "8", "9", "10", "В", "Д", "К", "Т"]
+	var suit_names := ["♣", "♠", "♥", "♦"]
+	var rank := int(card_data.get("rank", -1))
+	var suit := int(card_data.get("suit", -1))
+	if rank < 0 or rank >= rank_names.size() or suit < 0 or suit >= suit_names.size():
+		return "неизвестную карту"
+	return "%s%s" % [rank_names[rank], suit_names[suit]]
 
 
 func _show_new_game_setup() -> void:
@@ -1560,7 +1712,13 @@ func _add_menu_spacer(height: float) -> void:
 	menu_content.add_child(spacer)
 
 
-func _add_menu_button(label_text: String, callback: Callable, is_primary: bool = false) -> void:
+func _add_menu_button(label_text: String, callback: Callable, is_primary: bool = false) -> Button:
+	var button := _create_menu_button(label_text, callback, is_primary)
+	menu_content.add_child(button)
+	return button
+
+
+func _create_menu_button(label_text: String, callback: Callable, is_primary: bool = false) -> Button:
 	var button := Button.new()
 	button.text = label_text
 	button.custom_minimum_size = Vector2(0.0, 48.0)
@@ -1581,7 +1739,7 @@ func _add_menu_button(label_text: String, callback: Callable, is_primary: bool =
 		_create_flat_style(Color(0.22, 0.3, 0.12, 1.0), Color(1.0, 0.82, 0.34, 1.0), 3, 10, 5)
 	)
 	button.pressed.connect(callback)
-	menu_content.add_child(button)
+	return button
 
 
 func _on_new_game_pressed() -> void:
@@ -7295,6 +7453,273 @@ func _run_bot_rule_checks() -> void:
 
 	game = original_game
 	bot_difficulty = original_bot_difficulty
+
+
+func _run_network_snapshot_checks() -> void:
+	var test_game := Game.new(["Игрок 1", "Игрок 2", "Игрок 3", "Игрок 4"])
+	assert(
+		test_game.start_round(2, Round.RoundType.GOLDEN, Round.TrumpSuit.CLUBS),
+		"Проверка сети: тестовая раздача должна запускаться."
+	)
+
+	var lead_player_index := test_game.current_round.current_player_index
+	var lead_card := test_game.players[lead_player_index].hand[0]
+	assert(
+		test_game.play_card(lead_player_index, lead_card),
+		"Проверка сети: публичная карта должна быть сыграна."
+	)
+
+	var recipient_player_index := (lead_player_index + 1) % test_game.players.size()
+	var player_snapshot: Dictionary = NetworkSnapshot.create_player_snapshot(test_game, recipient_player_index, 7)
+	assert(
+		NetworkSnapshot.is_player_snapshot_safe(player_snapshot, recipient_player_index),
+		"Проверка сети: клиентский снимок не должен содержать закрытые карты соперников."
+	)
+	assert(
+		player_snapshot["private_hand"].size() == test_game.players[recipient_player_index].hand.size(),
+		"Проверка сети: игрок должен получить все карты только своей руки."
+	)
+	assert(
+		player_snapshot["active_trick"]["played_cards"].size() == 1,
+		"Проверка сети: сыгранная карта должна быть видна всем игрокам."
+	)
+
+	for player_data: Dictionary in player_snapshot["players"]:
+		assert(
+			not player_data.has("hand") and not player_data.has("cards"),
+			"Проверка сети: в публичных данных игрока не должно быть его карт."
+		)
+
+	var host_snapshot: Dictionary = NetworkSnapshot.create_host_snapshot(test_game, 7)
+	assert(
+		host_snapshot["deck_cards"].size() == test_game.deck.cards_left(),
+		"Проверка сети: хост должен хранить остаток общей колоды."
+	)
+	assert(
+		host_snapshot["private_hands"].size() == test_game.players.size(),
+		"Проверка сети: хост должен хранить закрытые руки всех игроков."
+	)
+
+
+func _run_local_match_host_checks() -> void:
+	var test_game := Game.new(["Игрок 1", "Игрок 2", "Игрок 3", "Игрок 4"])
+	assert(
+		test_game.start_round(2, Round.RoundType.NORMAL, Round.TrumpSuit.CLUBS),
+		"Проверка хоста: тестовая раздача должна запускаться."
+	)
+
+	var host = NetworkHost.new(test_game)
+	var first_bidder_index := test_game.current_round.current_player_index
+	var first_bid := NetworkCommand.new(
+		NetworkCommand.Type.BID,
+		first_bidder_index,
+		test_game.round_number,
+		host.revision,
+		{"bid": 1}
+	)
+	var first_bid_result: Dictionary = host.apply_command(first_bid)
+	assert(first_bid_result["accepted"], "Проверка хоста: допустимый заказ должен приниматься.")
+	assert(host.revision == 1, "Проверка хоста: после принятой команды должна вырасти ревизия.")
+
+	var stale_bid := NetworkCommand.new(
+		NetworkCommand.Type.BID,
+		test_game.current_round.current_player_index,
+		test_game.round_number,
+		0,
+		{"bid": 0}
+	)
+	var stale_bid_result: Dictionary = host.apply_command(stale_bid)
+	assert(
+		not stale_bid_result["accepted"] and stale_bid_result["reason"] == "outdated_revision",
+		"Проверка хоста: устаревшая команда не должна менять партию."
+	)
+
+	while test_game.current_round.state == Round.State.BIDDING:
+		var bidder_index := test_game.current_round.current_player_index
+		var bid_command := NetworkCommand.new(
+			NetworkCommand.Type.BID,
+			bidder_index,
+			test_game.round_number,
+			host.revision,
+			{"bid": 0}
+		)
+		var bid_result: Dictionary = host.apply_command(bid_command)
+		assert(bid_result["accepted"], "Проверка хоста: очередь допустимых заказов должна приниматься.")
+
+	var lead_player_index := test_game.current_round.current_player_index
+	var lead_card: Card
+	for hand_card in test_game.players[lead_player_index].hand:
+		if not hand_card.is_joker:
+			lead_card = hand_card
+			break
+	assert(lead_card != null, "Проверка хоста: у заходящего должна быть обычная карта.")
+	var play_command := NetworkCommand.new(
+		NetworkCommand.Type.PLAY_CARD,
+		lead_player_index,
+		test_game.round_number,
+		host.revision,
+		{"card_key": "joker" if lead_card.is_joker else "%d_%d" % [lead_card.suit, lead_card.rank]}
+	)
+	var play_result: Dictionary = host.apply_command(play_command)
+	assert(play_result["accepted"], "Проверка хоста: допустимый ход должен приниматься.")
+
+	var rejected_play := NetworkCommand.new(
+		NetworkCommand.Type.PLAY_CARD,
+		lead_player_index,
+		test_game.round_number,
+		host.revision,
+		{"card_key": "joker" if lead_card.is_joker else "%d_%d" % [lead_card.suit, lead_card.rank]}
+	)
+	var rejected_play_result: Dictionary = host.apply_command(rejected_play)
+	assert(
+		not rejected_play_result["accepted"] and rejected_play_result["reason"] == "rule_rejected",
+		"Проверка хоста: игрок не может сходить второй раз вне очереди."
+	)
+
+	var player_snapshots := host.create_all_player_snapshots()
+	assert(player_snapshots.size() == 4, "Проверка хоста: каждый игрок должен получить свой снимок.")
+	for player_index in player_snapshots.size():
+		assert(
+			NetworkSnapshot.is_player_snapshot_safe(player_snapshots[player_index], player_index),
+			"Проверка хоста: каждому игроку отправляется только безопасный снимок."
+		)
+
+
+func _run_network_special_round_checks() -> void:
+	_run_network_joker_command_check()
+	_run_network_dark_round_check()
+	_run_network_no_trump_check()
+
+
+func _run_network_joker_command_check() -> void:
+	var test_game := Game.new(["Игрок 1", "Игрок 2", "Игрок 3", "Игрок 4"])
+	assert(
+		test_game.start_round(2, Round.RoundType.NORMAL, Round.TrumpSuit.CLUBS),
+		"Проверка сети: обычная раздача для Джокера должна запускаться."
+	)
+	var host = NetworkHost.new(test_game)
+	while test_game.current_round.state == Round.State.BIDDING:
+		var bidder_index := test_game.current_round.current_player_index
+		var bid_command := NetworkCommand.new(
+			NetworkCommand.Type.BID,
+			bidder_index,
+			test_game.round_number,
+			host.revision,
+			{"bid": 0}
+		)
+		assert(host.apply_command(bid_command)["accepted"], "Проверка сети: заказ для Джокера должен приниматься.")
+
+	var leader_index := test_game.current_round.current_player_index
+	for player in test_game.players:
+		player.hand.clear()
+	test_game.players[leader_index].receive_card(_create_card(Card.Suit.CLUBS, Card.Rank.SEVEN, true))
+	test_game.players[(leader_index + 1) % 4].receive_card(_create_card(Card.Suit.HEARTS, Card.Rank.SIX))
+	test_game.players[(leader_index + 2) % 4].receive_card(_create_card(Card.Suit.DIAMONDS, Card.Rank.SIX))
+	test_game.players[(leader_index + 3) % 4].receive_card(_create_card(Card.Suit.SPADES, Card.Rank.SIX))
+
+	var joker_command := NetworkCommand.new(
+		NetworkCommand.Type.PLAY_CARD,
+		leader_index,
+		test_game.round_number,
+		host.revision,
+		{
+			"card_key": "joker",
+			"joker_mode": Trick.JokerMode.HIGHEST_DECLARED_CARD_WINS,
+			"declared_suit": Card.Suit.SPADES,
+			"forced_card_rank": Trick.ForcedCardRank.HIGHEST
+		}
+	)
+	assert(
+		host.apply_command(joker_command)["accepted"],
+		"Проверка сети: ведущий должен принять Джокера с объявленной мастью и условием."
+	)
+	assert(
+		test_game.active_trick.joker_mode == Trick.JokerMode.HIGHEST_DECLARED_CARD_WINS,
+		"Проверка сети: условие Джокера должно попасть в состояние ведущего."
+	)
+	assert(
+		test_game.active_trick.declared_suit == Card.Suit.SPADES,
+		"Проверка сети: объявленная масть Джокера должна сохраниться у ведущего."
+	)
+
+
+func _run_network_dark_round_check() -> void:
+	var test_game := Game.new(["Игрок 1", "Игрок 2", "Игрок 3", "Игрок 4"])
+	assert(
+		test_game.start_round(2, Round.RoundType.DARK, Round.TrumpSuit.CLUBS, false),
+		"Проверка сети: тёмная раздача должна запускаться без карт на руках."
+	)
+	var host = NetworkHost.new(test_game)
+	assert(not test_game.cards_are_dealt, "Проверка сети: тёмные карты не должны быть розданы до заказов.")
+
+	while test_game.current_round.state == Round.State.BIDDING:
+		var bidder_index := test_game.current_round.current_player_index
+		var bid_command := NetworkCommand.new(
+			NetworkCommand.Type.BID,
+			bidder_index,
+			test_game.round_number,
+			host.revision,
+			{"bid": 0}
+		)
+		assert(host.apply_command(bid_command)["accepted"], "Проверка сети: тёмный заказ должен приниматься ведущим.")
+
+	assert(test_game.cards_are_dealt, "Проверка сети: после последнего тёмного заказа карты должны раздаваться.")
+	for player_index in test_game.players.size():
+		var player_snapshot := host.create_player_snapshot(player_index)
+		assert(
+			player_snapshot["private_hand"].size() == 2,
+			"Проверка сети: игрок должен получить только свою руку после тёмных заказов."
+		)
+
+
+func _run_network_no_trump_check() -> void:
+	var test_game := Game.new(["Игрок 1", "Игрок 2", "Игрок 3", "Игрок 4"])
+	assert(
+		test_game.start_round(2, Round.RoundType.NO_TRUMP, Round.TrumpSuit.NONE),
+		"Проверка сети: бескозырная раздача должна запускаться."
+	)
+	var host = NetworkHost.new(test_game)
+	while test_game.current_round.state == Round.State.BIDDING:
+		var bidder_index := test_game.current_round.current_player_index
+		var bid_command := NetworkCommand.new(
+			NetworkCommand.Type.BID,
+			bidder_index,
+			test_game.round_number,
+			host.revision,
+			{"bid": 0}
+		)
+		assert(host.apply_command(bid_command)["accepted"], "Проверка сети: бескозырный заказ должен приниматься ведущим.")
+
+	var leader_index := test_game.current_round.current_player_index
+	var joker_player_index := (leader_index + 1) % 4
+	for player in test_game.players:
+		player.hand.clear()
+	test_game.players[leader_index].receive_card(_create_card(Card.Suit.CLUBS, Card.Rank.SIX))
+	test_game.players[joker_player_index].receive_card(_create_card(Card.Suit.CLUBS, Card.Rank.SEVEN, true))
+	test_game.players[joker_player_index].receive_card(_create_card(Card.Suit.CLUBS, Card.Rank.ACE))
+	test_game.players[(leader_index + 2) % 4].receive_card(_create_card(Card.Suit.HEARTS, Card.Rank.SIX))
+	test_game.players[(leader_index + 3) % 4].receive_card(_create_card(Card.Suit.DIAMONDS, Card.Rank.SIX))
+
+	var lead_command := NetworkCommand.new(
+		NetworkCommand.Type.PLAY_CARD,
+		leader_index,
+		test_game.round_number,
+		host.revision,
+		{"card_key": "0_0"}
+	)
+	assert(host.apply_command(lead_command)["accepted"], "Проверка сети: заход в бескозырке должен приниматься ведущим.")
+
+	var joker_command := NetworkCommand.new(
+		NetworkCommand.Type.PLAY_CARD,
+		joker_player_index,
+		test_game.round_number,
+		host.revision,
+		{"card_key": "joker", "joker_mode": Trick.JokerMode.JOKER_WINS}
+	)
+	assert(
+		host.apply_command(joker_command)["accepted"],
+		"Проверка сети: в бескозырке Джокер должен быть допустим даже при наличии масти захода."
+	)
 
 
 func _run_session_save_checks() -> void:
