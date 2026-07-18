@@ -43,7 +43,10 @@ const SOCIAL_ACTION_COOLDOWN_SECONDS := 120.0
 const BUILT_IN_AVATAR_COUNT := 4
 const CUSTOM_AVATAR_INDEX := BUILT_IN_AVATAR_COUNT
 const HUMAN_AVATAR_COUNT := BUILT_IN_AVATAR_COUNT + 1
-const GAME_VERSION := "0.2.1-test"
+const GAME_VERSION := "0.2.1"
+# Перед публичным экспортом поставь false: игрок сможет создать отчёт, но не
+# увидит внутреннюю кнопку его загрузки. После экспорта можно вернуть true.
+const DEVELOPER_REPORT_TOOLS_ENABLED := true
 const PERSISTENT_SETTINGS_PATH := "user://project_joker_settings.cfg"
 const SESSION_SAVE_PATH := "user://project_joker_session.save"
 const SESSION_SAVE_VERSION := 1
@@ -52,6 +55,9 @@ const BUG_REPORT_FORMAT_VERSION := 1
 const BUG_REPORT_DIRECTORY_PATH := "user://ProjectJokerReports"
 const BUG_REPORT_FILE_EXTENSION := "pjreport"
 const BUG_REPORT_TIMELINE_LIMIT := 8
+const UNDO_REQUESTS_PER_DECISION_LIMIT := 2
+const LOCAL_UNDO_VOTE_INTERVAL_SECONDS := 0.28
+const LOCAL_UNDO_VOTE_RESULT_HOLD_SECONDS := 0.45
 
 
 enum HandSortMode {
@@ -78,6 +84,13 @@ enum SocialAction {
 	REACTION,
 	STICKER,
 	SOUNDPAD
+}
+
+
+enum UndoVoteState {
+	NONE,
+	APPROVED,
+	REJECTED
 }
 
 
@@ -160,6 +173,9 @@ var deck_trump_label: Label
 var deck_caption_label: Label
 var dealer_marker: PanelContainer
 var lead_marker: PanelContainer
+var undo_vote_badges: Array[PanelContainer] = []
+var undo_vote_labels: Array[Label] = []
+var undo_vote_states: Array[int] = []
 var pending_joker_card: Card
 var pending_joker_suit := -1
 var last_trick_text := "Взятка ещё не началась"
@@ -178,6 +194,8 @@ var pending_trick_winner_player_index := -1
 var show_last_completed_trick := false
 var test_checkpoints: Array[Dictionary] = []
 var pending_test_checkpoint: Dictionary = {}
+var undo_requests_for_current_decision := 0
+var is_undo_vote_in_progress := false
 var round_history: Array[Dictionary] = []
 var is_score_sheet_visible := false
 var is_round_history_visible := true
@@ -192,7 +210,10 @@ var deck_trump_card_style: StyleBoxFlat
 var dealer_marker_style: StyleBoxFlat
 var lead_marker_style: StyleBoxFlat
 var avatar_badge_style: StyleBoxFlat
+var undo_vote_approved_style: StyleBoxFlat
+var undo_vote_rejected_style: StyleBoxFlat
 var menu_overlay: Control
+var menu_backdrop: ColorRect
 var menu_panel: PanelContainer
 var menu_content: VBoxContainer
 var bot_speed_index := 1
@@ -365,9 +386,11 @@ func _create_table_visual_styles() -> void:
 	active_human_player_panel_style = active_player_panel_style
 	card_back_style = _create_flat_style(Color(0.045, 0.11, 0.22, 1.0), Color(0.8, 0.62, 0.25, 1.0), 2, 6, 2)
 	deck_trump_card_style = _create_flat_style(Color(0.92, 0.9, 0.76, 1.0), Color(0.88, 0.68, 0.24, 1.0), 2, 8, 3)
-	dealer_marker_style = _create_flat_style(Color(0.33, 0.2, 0.07, 1.0), Color(0.96, 0.77, 0.31, 1.0), 2, 12, 3)
+	dealer_marker_style = _create_flat_style(Color(0.33, 0.2, 0.07, 1.0), Color(0.96, 0.77, 0.31, 1.0), 2, 18, 3)
 	lead_marker_style = _create_flat_style(Color(0.055, 0.2, 0.13, 1.0), Color(0.64, 0.86, 0.52, 1.0), 1, 8, 2)
 	avatar_badge_style = _create_flat_style(Color(0.04, 0.1, 0.07, 1.0), Color(0.75, 0.58, 0.2, 1.0), 2, 6, 2)
+	undo_vote_approved_style = _create_flat_style(Color(0.05, 0.34, 0.14, 0.98), Color(0.62, 0.94, 0.46, 1.0), 2, 14, 2)
+	undo_vote_rejected_style = _create_flat_style(Color(0.36, 0.07, 0.06, 0.98), Color(1.0, 0.52, 0.42, 1.0), 2, 14, 2)
 	music_player_panel.add_theme_stylebox_override("panel", _create_flat_style(Color(0.012, 0.055, 0.034, 0.94), Color(0.38, 0.255, 0.11, 0.0), 0, 6, 0))
 	round_results_panel.add_theme_stylebox_override("panel", _create_flat_style(Color(0.018, 0.08, 0.052, 0.97), Color(0.38, 0.255, 0.11, 0.78), 1, 10, 3))
 	_apply_table_text_button_style(round_history_toggle_button)
@@ -511,10 +534,12 @@ func _create_main_menu() -> void:
 	menu_overlay.z_index = 100
 	add_child(menu_overlay)
 
-	var menu_backdrop := ColorRect.new()
+	menu_backdrop = ColorRect.new()
 	menu_backdrop.color = Color(0.006, 0.055, 0.034, 0.98)
 	menu_backdrop.mouse_filter = Control.MOUSE_FILTER_STOP
 	menu_backdrop.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	menu_backdrop.material = _create_menu_backdrop_material()
+	menu_backdrop.gui_input.connect(_on_menu_backdrop_gui_input)
 	menu_overlay.add_child(menu_backdrop)
 
 	menu_panel = PanelContainer.new()
@@ -553,9 +578,36 @@ func _hide_main_menu() -> void:
 	_refresh_music_player()
 
 
+func _create_menu_backdrop_material() -> ShaderMaterial:
+	var shader := Shader.new()
+	shader.code = """
+		shader_type canvas_item;
+
+		uniform sampler2D screen_texture : hint_screen_texture, filter_linear_mipmap;
+
+		void fragment() {
+			vec4 table = textureLod(screen_texture, SCREEN_UV, 3.0);
+			vec3 overlay = vec3(0.006, 0.055, 0.034);
+			COLOR = vec4(mix(table.rgb, overlay, 0.72), 1.0);
+		}
+	"""
+	var material := ShaderMaterial.new()
+	material.shader = shader
+	return material
+
+
+func _on_menu_backdrop_gui_input(event: InputEvent) -> void:
+	if not is_pause_menu_open or is_processing_automatic_actions or is_bug_report_review_mode:
+		return
+
+	var mouse_button_event: InputEventMouseButton = event as InputEventMouseButton
+	if mouse_button_event != null and mouse_button_event.button_index == MOUSE_BUTTON_LEFT and mouse_button_event.pressed:
+		_resume_current_game()
+
+
 func _build_main_menu_content() -> void:
 	_clear_children(menu_content)
-	_add_menu_title("PROJECT JOKER", "Локальная карточная партия для четырёх игроков · тестовая версия %s" % GAME_VERSION)
+	_add_menu_title("PROJECT JOKER", "Локальная карточная партия для четырёх игроков · %s" % _get_build_version_text())
 	_add_menu_spacer(18.0)
 	if _has_saved_session():
 		_add_menu_button("Продолжить партию", _on_continue_saved_game_pressed, true)
@@ -563,12 +615,21 @@ func _build_main_menu_content() -> void:
 	_add_menu_button("Обучение", _show_tutorial_menu)
 	_add_menu_button("Профиль", _show_profile_menu)
 	_add_menu_button("Статистика", _show_statistics_menu)
-	_add_menu_button("Загрузить отчёт", _open_bug_report_file_dialog)
+	if _developer_report_tools_enabled():
+		_add_menu_button("Загрузить отчёт", _open_bug_report_file_dialog)
 	_add_menu_button("Правила", _show_rules_menu)
 	_add_menu_button("Настройки", _show_settings_menu)
 	_add_menu_button("Выход", _on_quit_pressed)
 	_add_menu_spacer(12.0)
 	_add_menu_label("32 раздачи: обычные, тёмные, бескозырные, золотые и мизерные.", 14, Color(0.72, 0.85, 0.76, 1.0))
+
+
+func _developer_report_tools_enabled() -> bool:
+	return DEVELOPER_REPORT_TOOLS_ENABLED
+
+
+func _get_build_version_text() -> String:
+	return "версия разработчика %s" % GAME_VERSION if _developer_report_tools_enabled() else "версия для игроков %s" % GAME_VERSION
 
 
 func _show_new_game_setup() -> void:
@@ -1872,6 +1933,11 @@ func _load_persistent_settings() -> void:
 		if not legacy_custom_music_path.is_empty():
 			custom_music_paths.append(legacy_custom_music_path)
 	_refresh_available_custom_music_paths()
+	# Личные файлы лежат вне сборки и могут быть повреждены, перенесены или
+	# недоступны на другом устройстве. Никогда не открываем такой трек до меню:
+	# при старте используем только одну из трёх встроенных тем.
+	if music_track_index >= MUSIC_TRACK_COUNT:
+		music_track_index = 0
 	_load_local_statistics(config)
 
 	var fullscreen_enabled: bool = bool(config.get_value("display", "fullscreen", false))
@@ -3168,6 +3234,9 @@ func _reset_game_session() -> void:
 	bug_report_timeline.clear()
 	test_checkpoints.clear()
 	pending_test_checkpoint.clear()
+	undo_requests_for_current_decision = 0
+	is_undo_vote_in_progress = false
+	_reset_undo_vote_states()
 	pending_joker_card = null
 	pending_joker_suit = -1
 	_reset_trick_presentation()
@@ -3181,6 +3250,9 @@ func _start_round() -> void:
 	recent_actions.clear()
 	test_checkpoints.clear()
 	pending_test_checkpoint.clear()
+	undo_requests_for_current_decision = 0
+	is_undo_vote_in_progress = false
+	_reset_undo_vote_states()
 
 	var cards_per_player := _get_cards_per_player_for_current_round()
 	var trump := _get_trump_for_current_round()
@@ -3442,9 +3514,23 @@ func _on_joker_choice(
 
 
 func _on_undo_pressed() -> void:
-	if is_bug_report_review_mode or is_processing_automatic_actions or test_checkpoints.is_empty():
+	if not _can_request_undo():
 		return
 
+	undo_requests_for_current_decision += 1
+	is_undo_vote_in_progress = true
+	is_processing_automatic_actions = true
+	_reset_undo_vote_states()
+	action_text = "Запрос на возврат хода: боты голосуют…"
+	_refresh_ui()
+
+	for player_index in range(1, game.players.size()):
+		await get_tree().create_timer(LOCAL_UNDO_VOTE_INTERVAL_SECONDS).timeout
+		undo_vote_states[player_index] = UndoVoteState.APPROVED
+		action_text = "%s согласен вернуть ход." % game.players[player_index].display_name
+		_refresh_ui()
+
+	await get_tree().create_timer(LOCAL_UNDO_VOTE_RESULT_HOLD_SECONDS).timeout
 	var checkpoint: Dictionary = test_checkpoints.pop_back()
 	_stop_human_turn_timer()
 	game.restore_snapshot(checkpoint["game"])
@@ -3452,10 +3538,12 @@ func _on_undo_pressed() -> void:
 	pending_joker_card = null
 	pending_joker_suit = -1
 	last_trick_text = checkpoint["last_trick_text"]
-	action_text = "Тест: возвращено к началу прошлого твоего решения."
+	action_text = "Боты согласились: возвращено к началу прошлого твоего решения."
 	recent_actions = checkpoint["recent_actions"].duplicate()
 	bug_report_timeline.clear()
 	pending_test_checkpoint = _create_test_checkpoint()
+	is_processing_automatic_actions = false
+	is_undo_vote_in_progress = false
 	_save_current_session()
 	_refresh_ui()
 
@@ -3846,6 +3934,7 @@ func _refresh_player_panels() -> void:
 
 	_refresh_bot_card_backs()
 	_refresh_player_avatar_badges()
+	_refresh_undo_vote_badges()
 	_refresh_table_markers()
 
 
@@ -3916,6 +4005,8 @@ func _load_avatar_texture_from_path(texture_path: String) -> Texture2D:
 
 
 func _create_player_avatar_badges() -> void:
+	undo_vote_states.resize(PLAYER_NAMES.size())
+	undo_vote_states.fill(UndoVoteState.NONE)
 	for player_index in PLAYER_NAMES.size():
 		var badge := PanelContainer.new()
 		badge.tooltip_text = "Аватар игрока"
@@ -3942,6 +4033,28 @@ func _create_player_avatar_badges() -> void:
 		avatar_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		avatar_content.add_child(avatar_label)
 
+		var undo_vote_badge := PanelContainer.new()
+		undo_vote_badge.name = "UndoVoteBadge"
+		undo_vote_badge.visible = false
+		undo_vote_badge.z_index = 5
+		undo_vote_badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		undo_vote_badge.anchor_left = 1.0
+		undo_vote_badge.anchor_top = 1.0
+		undo_vote_badge.anchor_right = 1.0
+		undo_vote_badge.anchor_bottom = 1.0
+		undo_vote_badge.offset_left = -30.0
+		undo_vote_badge.offset_top = -30.0
+		undo_vote_badge.offset_right = -2.0
+		undo_vote_badge.offset_bottom = -2.0
+		undo_vote_badge.add_theme_stylebox_override("panel", undo_vote_approved_style)
+		var undo_vote_label := Label.new()
+		undo_vote_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		undo_vote_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		undo_vote_label.add_theme_font_size_override("font_size", 19)
+		undo_vote_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		undo_vote_badge.add_child(undo_vote_label)
+		avatar_content.add_child(undo_vote_badge)
+
 		if player_index == HUMAN_PLAYER_INDEX:
 			turn_timer_indicator = TurnTimerIndicator.new()
 			turn_timer_indicator.visible = false
@@ -3951,6 +4064,8 @@ func _create_player_avatar_badges() -> void:
 		avatar_badges.append(badge)
 		avatar_images.append(avatar_image)
 		avatar_labels.append(avatar_label)
+		undo_vote_badges.append(undo_vote_badge)
+		undo_vote_labels.append(undo_vote_label)
 
 
 func _refresh_player_avatar_badges() -> void:
@@ -3965,13 +4080,13 @@ func _refresh_player_avatar_badges() -> void:
 func _place_player_avatar_badge(badge: PanelContainer, player_index: int) -> void:
 	match player_index:
 		HUMAN_PLAYER_INDEX:
-			_set_control_layout(badge, 0.5, 1.0, 0.5, 1.0, -236.0, -402.0, -132.0, -298.0)
+			_set_control_layout(badge, 0.5, 1.0, 0.5, 1.0, -218.0, -402.0, -114.0, -298.0)
 		1:
-			_set_control_layout(badge, 0.0, 0.0, 0.0, 0.0, 180.0, 348.0, 284.0, 452.0)
+			_set_control_layout(badge, 0.0, 0.0, 0.0, 0.0, 187.0, 348.0, 291.0, 452.0)
 		2:
-			_set_control_layout(badge, 0.5, 0.0, 0.5, 0.0, -235.0, 74.0, -131.0, 178.0)
+			_set_control_layout(badge, 0.5, 0.0, 0.5, 0.0, -217.0, 74.0, -113.0, 178.0)
 		3:
-			_set_control_layout(badge, 1.0, 0.0, 1.0, 0.0, -284.0, 348.0, -180.0, 452.0)
+			_set_control_layout(badge, 1.0, 0.0, 1.0, 0.0, -291.0, 348.0, -187.0, 452.0)
 
 
 func _refresh_table() -> void:
@@ -4737,12 +4852,47 @@ func _get_display_card_group(card: Card, trump: Round.TrumpSuit) -> int:
 
 
 func _refresh_undo_button() -> void:
-	undo_button.disabled = (
-		is_bug_report_review_mode
-		or is_processing_automatic_actions
-		or test_checkpoints.is_empty()
-		or game.current_round.state == Round.State.FINISHED
+	undo_button.disabled = not _can_request_undo()
+	undo_button.tooltip_text = (
+		"За это решение можно запросить ещё %d возврат(а)." % (UNDO_REQUESTS_PER_DECISION_LIMIT - undo_requests_for_current_decision)
+		if not undo_button.disabled
+		else "Возврат сейчас недоступен. На одно твоё решение даётся не больше двух запросов."
 	)
+
+
+func _can_request_undo() -> bool:
+	return (
+		not is_bug_report_review_mode
+		and not is_processing_automatic_actions
+		and not is_undo_vote_in_progress
+		and not test_checkpoints.is_empty()
+		and undo_requests_for_current_decision < UNDO_REQUESTS_PER_DECISION_LIMIT
+		and game.current_round.state != Round.State.FINISHED
+	)
+
+
+func _reset_undo_vote_states() -> void:
+	undo_vote_states.resize(PLAYER_NAMES.size())
+	undo_vote_states.fill(UndoVoteState.NONE)
+	_refresh_undo_vote_badges()
+
+
+func _refresh_undo_vote_badges() -> void:
+	for player_index in undo_vote_badges.size():
+		var vote_state: int = undo_vote_states[player_index] if player_index < undo_vote_states.size() else UndoVoteState.NONE
+		var vote_badge := undo_vote_badges[player_index]
+		vote_badge.visible = player_index != HUMAN_PLAYER_INDEX and vote_state != UndoVoteState.NONE
+		if not vote_badge.visible:
+			continue
+
+		var is_approved := vote_state == UndoVoteState.APPROVED
+		vote_badge.add_theme_stylebox_override("panel", undo_vote_approved_style if is_approved else undo_vote_rejected_style)
+		undo_vote_labels[player_index].text = "✓" if is_approved else "✕"
+		undo_vote_labels[player_index].add_theme_color_override(
+			"font_color",
+			Color(0.9, 1.0, 0.86, 1.0) if is_approved else Color(1.0, 0.9, 0.86, 1.0)
+		)
+		vote_badge.tooltip_text = "Согласен вернуть ход" if is_approved else "Не согласен вернуть ход"
 
 
 func _create_player_panels() -> void:
@@ -4932,7 +5082,7 @@ func _create_reaction_controls() -> void:
 		"normal",
 		_create_flat_style(Color(0.035, 0.12, 0.075, 0.98), Color(0.88, 0.68, 0.24, 1.0), 2, 8, 3)
 	)
-	_set_control_layout(reaction_toggle_button, 0.5, 1.0, 0.5, 1.0, 132.0, -392.0, 196.0, -342.0)
+	_set_control_layout(reaction_toggle_button, 0.5, 1.0, 0.5, 1.0, 112.0, -380.0, 176.0, -330.0)
 	reaction_toggle_button.pressed.connect(_on_reaction_toggle_pressed)
 	players_container.add_child(reaction_toggle_button)
 
@@ -5043,7 +5193,7 @@ func _create_sticker_controls() -> void:
 		"normal",
 		_create_flat_style(Color(0.08, 0.085, 0.15, 0.98), Color(0.65, 0.54, 0.92, 1.0), 2, 8, 3)
 	)
-	_set_control_layout(sticker_toggle_button, 0.5, 1.0, 0.5, 1.0, 202.0, -392.0, 266.0, -342.0)
+	_set_control_layout(sticker_toggle_button, 0.5, 1.0, 0.5, 1.0, 182.0, -380.0, 246.0, -330.0)
 	sticker_toggle_button.pressed.connect(_on_sticker_toggle_pressed)
 	players_container.add_child(sticker_toggle_button)
 
@@ -5276,7 +5426,7 @@ func _create_soundpad_controls() -> void:
 		"normal",
 		_create_flat_style(Color(0.1, 0.07, 0.12, 0.98), Color(0.89, 0.51, 0.82, 1.0), 2, 8, 3)
 	)
-	_set_control_layout(soundpad_toggle_button, 0.5, 1.0, 0.5, 1.0, 272.0, -392.0, 336.0, -342.0)
+	_set_control_layout(soundpad_toggle_button, 0.5, 1.0, 0.5, 1.0, 252.0, -380.0, 316.0, -330.0)
 	soundpad_toggle_button.pressed.connect(_on_soundpad_toggle_pressed)
 	players_container.add_child(soundpad_toggle_button)
 
@@ -5755,13 +5905,13 @@ func _place_table_marker(marker: PanelContainer, player_index: int, is_dealer: b
 	if is_dealer:
 		match player_index:
 			HUMAN_PLAYER_INDEX:
-				_set_control_layout(marker, 0.5, 1.0, 0.5, 1.0, -292.0, -404.0, -244.0, -376.0)
+				_set_control_layout(marker, 0.5, 1.0, 0.5, 1.0, -286.0, -408.0, -250.0, -372.0)
 			1:
-				_set_control_layout(marker, 0.0, 0.0, 0.0, 0.0, 508.0, 342.0, 556.0, 370.0)
+				_set_control_layout(marker, 0.0, 0.0, 0.0, 0.0, 514.0, 338.0, 550.0, 374.0)
 			2:
-				_set_control_layout(marker, 0.5, 0.0, 0.5, 0.0, -224.0, 178.0, -176.0, 206.0)
+				_set_control_layout(marker, 0.5, 0.0, 0.5, 0.0, -218.0, 174.0, -182.0, 210.0)
 			3:
-				_set_control_layout(marker, 1.0, 0.0, 1.0, 0.0, -548.0, 342.0, -500.0, 370.0)
+				_set_control_layout(marker, 1.0, 0.0, 1.0, 0.0, -542.0, 338.0, -506.0, 374.0)
 		return
 
 	match player_index:
@@ -5778,11 +5928,11 @@ func _place_table_marker(marker: PanelContainer, player_index: int, is_dealer: b
 func _place_player_panel(panel: PanelContainer, player_index: int) -> void:
 	match player_index:
 		HUMAN_PLAYER_INDEX:
-			_set_control_layout(panel, 0.5, 1.0, 0.5, 1.0, -120.0, -396.0, 120.0, -314.0)
+			_set_control_layout(panel, 0.5, 1.0, 0.5, 1.0, -105.0, -396.0, 105.0, -314.0)
 		1:
 			_set_control_layout(panel, 0.0, 0.0, 0.0, 0.0, 300.0, 358.0, 490.0, 440.0)
 		2:
-			_set_control_layout(panel, 0.5, 0.0, 0.5, 0.0, -115.0, 82.0, 115.0, 164.0)
+			_set_control_layout(panel, 0.5, 0.0, 0.5, 0.0, -105.0, 82.0, 105.0, 164.0)
 		3:
 			_set_control_layout(panel, 1.0, 0.0, 1.0, 0.0, -490.0, 358.0, -300.0, 440.0)
 
@@ -6621,6 +6771,8 @@ func _announce_dark_cards_dealt(cards_were_hidden: bool) -> void:
 
 func _prepare_test_checkpoint() -> void:
 	pending_test_checkpoint = _create_test_checkpoint()
+	undo_requests_for_current_decision = 0
+	_reset_undo_vote_states()
 
 
 func _commit_test_checkpoint() -> void:
