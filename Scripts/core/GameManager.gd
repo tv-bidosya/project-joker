@@ -43,7 +43,7 @@ const SOCIAL_ACTION_COOLDOWN_SECONDS := 120.0
 const BUILT_IN_AVATAR_COUNT := 4
 const CUSTOM_AVATAR_INDEX := BUILT_IN_AVATAR_COUNT
 const HUMAN_AVATAR_COUNT := BUILT_IN_AVATAR_COUNT + 1
-const GAME_VERSION := "0.2.0-test"
+const GAME_VERSION := "0.2.1-test"
 const PERSISTENT_SETTINGS_PATH := "user://project_joker_settings.cfg"
 const SESSION_SAVE_PATH := "user://project_joker_session.save"
 const SESSION_SAVE_VERSION := 1
@@ -51,6 +51,7 @@ const CUSTOM_PROFILE_AVATAR_PATH := "user://project_joker_profile_avatar.png"
 const BUG_REPORT_FORMAT_VERSION := 1
 const BUG_REPORT_DIRECTORY_PATH := "user://ProjectJokerReports"
 const BUG_REPORT_FILE_EXTENSION := "pjreport"
+const BUG_REPORT_TIMELINE_LIMIT := 8
 
 
 enum HandSortMode {
@@ -240,6 +241,10 @@ var bug_report_file_dialog: FileDialog
 var bug_report_description_input: TextEdit
 var bug_report_status_label: Label
 var is_bug_report_review_mode := false
+var bug_report_timeline: Array[Dictionary] = []
+var bug_report_review_timeline: Array[Dictionary] = []
+var bug_report_review_index := -1
+var bug_report_review_description := ""
 var report_restore_player_names: Array[String] = []
 var report_restore_avatar_indices: Array[int] = []
 var report_restore_bot_difficulty: BotDifficulty = BotDifficulty.NORMAL
@@ -878,6 +883,7 @@ func _on_save_bug_report_pressed() -> void:
 		"game_version": GAME_VERSION,
 		"created_at": Time.get_datetime_string_from_system(false, true),
 		"description": description,
+		"timeline": bug_report_timeline.duplicate(true),
 		"session": _create_session_save_data()
 	}
 	report_file.store_var(report_data, false)
@@ -925,6 +931,18 @@ func _save_bug_report_summary(report_directory: String, timestamp: String, descr
 		"\n".join(recent_actions)
 	])
 	summary_file.store_string("\n".join(summary_lines))
+
+
+func _capture_bug_report_timeline(label: String) -> void:
+	if is_bug_report_review_mode or game.current_round.state == Round.State.SETUP:
+		return
+
+	bug_report_timeline.append({
+		"label": label,
+		"session": _create_session_save_data()
+	})
+	while bug_report_timeline.size() > BUG_REPORT_TIMELINE_LIMIT:
+		bug_report_timeline.remove_at(0)
 
 
 func _open_profile_avatar_file_dialog() -> void:
@@ -1936,7 +1954,9 @@ func _save_current_session() -> void:
 		push_error("Не удалось открыть файл сохранения партии.")
 		return
 
-	save_file.store_var(_create_session_save_data(), false)
+	var save_data := _create_session_save_data()
+	save_data["bug_report_timeline"] = bug_report_timeline.duplicate(true)
+	save_file.store_var(save_data, false)
 
 
 func _delete_saved_session() -> void:
@@ -2079,7 +2099,10 @@ func _load_saved_session() -> bool:
 		return false
 
 	var save_data: Dictionary = saved_data
-	return _restore_session_from_data(save_data, true)
+	var restored := _restore_session_from_data(save_data, true)
+	if restored:
+		bug_report_timeline = _deserialize_bug_report_timeline(save_data.get("bug_report_timeline", []))
+	return restored
 
 
 func _restore_session_from_data(save_data: Dictionary, persist_settings: bool) -> bool:
@@ -2167,24 +2190,78 @@ func _load_bug_report_from_path(report_path: String) -> bool:
 
 	_capture_configuration_before_bug_report_review()
 	var session_data: Dictionary = session_data_variant
-	if not _restore_session_from_data(session_data, false):
+	bug_report_review_timeline = _deserialize_bug_report_timeline(report_data.get("timeline", []))
+	bug_report_review_timeline.append({
+		"label": "Момент создания отчёта",
+		"session": session_data.duplicate(true)
+	})
+	bug_report_review_index = bug_report_review_timeline.size() - 1
+	bug_report_review_description = str(report_data.get("description", "")).strip_edges()
+	is_bug_report_review_mode = true
+	if not _show_bug_report_timeline_state(bug_report_review_index):
+		is_bug_report_review_mode = false
+		bug_report_review_timeline.clear()
+		bug_report_review_index = -1
+		bug_report_review_description = ""
 		_restore_configuration_after_bug_report_review()
 		return false
 
-	is_bug_report_review_mode = true
+	return true
+
+
+func _deserialize_bug_report_timeline(timeline_data: Variant) -> Array[Dictionary]:
+	var timeline: Array[Dictionary] = []
+	if not (timeline_data is Array):
+		return timeline
+
+	for timeline_item_variant in timeline_data:
+		if not (timeline_item_variant is Dictionary):
+			continue
+		var timeline_item: Dictionary = timeline_item_variant
+		var timeline_session_variant: Variant = timeline_item.get("session", {})
+		if not (timeline_session_variant is Dictionary):
+			continue
+		timeline.append({
+			"label": str(timeline_item.get("label", "Предыдущее состояние")),
+			"session": (timeline_session_variant as Dictionary).duplicate(true)
+		})
+
+	return timeline
+
+
+func _show_bug_report_timeline_state(index: int) -> bool:
+	if index < 0 or index >= bug_report_review_timeline.size():
+		return false
+
+	var timeline_item: Dictionary = bug_report_review_timeline[index]
+	var session_data_variant: Variant = timeline_item.get("session", {})
+	if not (session_data_variant is Dictionary):
+		return false
+
+	if not _restore_session_from_data(session_data_variant, false):
+		return false
+
+	bug_report_review_index = index
 	if configured_avatar_indices[HUMAN_PLAYER_INDEX] == CUSTOM_AVATAR_INDEX:
 		# Личная картинка автора отчёта не передаётся и не должна подменяться
 		# личной картинкой разработчика при просмотре чужого отчёта.
 		configured_avatar_indices[HUMAN_PLAYER_INDEX] = 0
 	_restore_next_round_button()
 	_stop_human_turn_timer()
-	var report_version := str(report_data.get("game_version", "неизвестна"))
-	var report_description := str(report_data.get("description", "")).strip_edges()
-	action_text = "Просмотр отчёта из версии %s. Действия за столом заблокированы." % report_version
-	if not report_description.is_empty():
-		recent_actions.append("Описание ошибки: %s" % report_description)
+	if bug_report_review_index == bug_report_review_timeline.size() - 1 and not bug_report_review_description.is_empty():
+		recent_actions.append("Описание ошибки: %s" % bug_report_review_description)
+	action_text = "Отчёт: %d из %d" % [bug_report_review_index + 1, bug_report_review_timeline.size()]
+	_refresh_ui()
 
 	return true
+
+
+func _on_bug_report_timeline_previous_pressed() -> void:
+	_show_bug_report_timeline_state(bug_report_review_index - 1)
+
+
+func _on_bug_report_timeline_next_pressed() -> void:
+	_show_bug_report_timeline_state(bug_report_review_index + 1)
 
 
 func _capture_configuration_before_bug_report_review() -> void:
@@ -2211,6 +2288,9 @@ func _close_bug_report_review() -> void:
 	is_pause_menu_open = false
 	_stop_human_turn_timer()
 	_restore_configuration_after_bug_report_review()
+	bug_report_review_timeline.clear()
+	bug_report_review_index = -1
+	bug_report_review_description = ""
 	_reset_game_session()
 	_show_main_menu()
 
@@ -3085,6 +3165,7 @@ func _reset_game_session() -> void:
 	hand_sort_mode = HandSortMode.BY_SUIT
 	round_history.clear()
 	recent_actions.clear()
+	bug_report_timeline.clear()
 	test_checkpoints.clear()
 	pending_test_checkpoint.clear()
 	pending_joker_card = null
@@ -3220,6 +3301,7 @@ func _play_automatic_bid() -> bool:
 	var bid := _choose_automatic_bid(player_index)
 	var cards_were_hidden := _is_dark_round() and not game.cards_are_dealt
 
+	_capture_bug_report_timeline("Перед заказом %s" % game.players[player_index].display_name)
 	if not game.place_bid(player_index, bid):
 		action_text = "Ошибка автоматического заказа."
 		return false
@@ -3244,6 +3326,7 @@ func _play_automatic_card() -> bool:
 	var is_leading_joker := card.is_joker and game.active_trick == null
 	var joker_mode: Trick.JokerMode = Trick.JokerMode.NONE
 	var declared_suit := -1
+	_capture_bug_report_timeline("Перед ходом %s: %s" % [player.display_name, card.get_card_name()])
 
 	if card.is_joker:
 		joker_mode = _choose_automatic_joker_mode(player)
@@ -3279,6 +3362,7 @@ func _on_bid_pressed(bid: int) -> void:
 		_refresh_ui()
 		return
 
+	_capture_bug_report_timeline("Перед твоим заказом")
 	_commit_test_checkpoint()
 	if not game.place_bid(HUMAN_PLAYER_INDEX, bid):
 		action_text = "Этот заказ сейчас недоступен."
@@ -3299,12 +3383,14 @@ func _on_card_pressed(card: Card) -> void:
 		return
 
 	if card.is_joker:
+		_capture_bug_report_timeline("Перед выбором условия Джокера")
 		pending_joker_card = card
 		pending_joker_suit = -1
 		action_text = "Выбери условие для Джокера."
 		_refresh_ui()
 		return
 
+	_capture_bug_report_timeline("Перед твоим ходом: %s" % card.get_card_name())
 	_commit_test_checkpoint()
 	if not game.play_card(HUMAN_PLAYER_INDEX, card):
 		action_text = "Эту карту сейчас играть нельзя."
@@ -3321,6 +3407,7 @@ func _on_joker_suit_pressed(suit: int) -> void:
 	if is_bug_report_review_mode or pending_joker_card == null or game.active_trick != null:
 		return
 
+	_capture_bug_report_timeline("Перед объявлением масти Джокера")
 	pending_joker_suit = suit
 	action_text = "Выбери условие для %s." % _get_suit_symbol(suit)
 	_refresh_ui()
@@ -3336,6 +3423,7 @@ func _on_joker_choice(
 
 	var is_leading_joker := game.active_trick == null
 
+	_capture_bug_report_timeline("Перед ходом Джокером")
 	_commit_test_checkpoint()
 	if not game.play_card(HUMAN_PLAYER_INDEX, pending_joker_card, mode, declared_suit, forced_card_rank):
 		action_text = "Условие Джокера не удалось применить."
@@ -3366,6 +3454,7 @@ func _on_undo_pressed() -> void:
 	last_trick_text = checkpoint["last_trick_text"]
 	action_text = "Тест: возвращено к началу прошлого твоего решения."
 	recent_actions = checkpoint["recent_actions"].duplicate()
+	bug_report_timeline.clear()
 	pending_test_checkpoint = _create_test_checkpoint()
 	_save_current_session()
 	_refresh_ui()
@@ -3433,6 +3522,7 @@ func _on_next_round_pressed() -> void:
 	if is_bug_report_review_mode or not _can_start_next_round():
 		return
 
+	_capture_bug_report_timeline("Перед началом следующей раздачи")
 	game.advance_dealer()
 
 	if normal_round_index < NORMAL_ROUND_COUNT - 1:
@@ -4469,9 +4559,12 @@ func _scroll_round_history_to_bottom() -> void:
 func _refresh_bid_controls() -> void:
 	_clear_children(bid_controls)
 
+	if is_bug_report_review_mode:
+		_add_bug_report_timeline_controls()
+		return
+
 	if (
-		is_bug_report_review_mode
-		or is_processing_automatic_actions
+		is_processing_automatic_actions
 		or game.current_round.state != Round.State.BIDDING
 		or game.current_round.current_player_index != HUMAN_PLAYER_INDEX
 	):
@@ -4485,6 +4578,43 @@ func _refresh_bid_controls() -> void:
 		bid_button.disabled = not game.current_round.can_place_bid(HUMAN_PLAYER_INDEX, bid)
 		bid_button.pressed.connect(_on_bid_pressed.bind(bid))
 		bid_controls.add_child(bid_button)
+
+
+func _add_bug_report_timeline_controls() -> void:
+	if bug_report_review_timeline.is_empty():
+		return
+
+	var previous_button := Button.new()
+	previous_button.text = "← Предыдущее"
+	previous_button.custom_minimum_size = Vector2(150.0, 40.0)
+	_apply_table_action_button_style(previous_button)
+	previous_button.disabled = bug_report_review_index <= 0
+	previous_button.pressed.connect(_on_bug_report_timeline_previous_pressed)
+	bid_controls.add_child(previous_button)
+
+	var state_label := Label.new()
+	var timeline_item: Dictionary = bug_report_review_timeline[bug_report_review_index]
+	state_label.text = "%d/%d · %s" % [
+		bug_report_review_index + 1,
+		bug_report_review_timeline.size(),
+		str(timeline_item.get("label", "Состояние"))
+	]
+	state_label.custom_minimum_size = Vector2(250.0, 40.0)
+	state_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	state_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	state_label.clip_text = true
+	state_label.tooltip_text = state_label.text
+	state_label.add_theme_font_size_override("font_size", 15)
+	state_label.add_theme_color_override("font_color", Color(0.92, 0.87, 0.66, 1.0))
+	bid_controls.add_child(state_label)
+
+	var next_button := Button.new()
+	next_button.text = "Следующее →"
+	next_button.custom_minimum_size = Vector2(150.0, 40.0)
+	_apply_table_action_button_style(next_button)
+	next_button.disabled = bug_report_review_index >= bug_report_review_timeline.size() - 1
+	next_button.pressed.connect(_on_bug_report_timeline_next_pressed)
+	bid_controls.add_child(next_button)
 
 
 func _refresh_joker_controls() -> void:
@@ -6958,7 +7088,14 @@ func _run_session_save_checks() -> void:
 	game = test_game
 
 	var leader_index := test_game.current_round.current_player_index
-	var leading_card: Card = test_game.players[leader_index].hand[0]
+	var leading_card: Card = null
+	for candidate_card in test_game.players[leader_index].hand:
+		if not candidate_card.is_joker:
+			leading_card = candidate_card
+			break
+	if leading_card == null:
+		leading_card = _create_card(Card.Suit.CLUBS, Card.Rank.SIX)
+		test_game.players[leader_index].receive_card(leading_card)
 	assert(test_game.play_card(leader_index, leading_card), "Проверка сохранения: первая карта должна сыграться.")
 
 	var saved_game_data := _serialize_game_state()
