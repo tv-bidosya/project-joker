@@ -328,8 +328,11 @@ var statistics_return_to_final_menu := false
 var loopback_network_test
 var loopback_network_status_label: Label
 var loopback_network_start_round_button: Button
+var loopback_network_start_joker_round_button: Button
 var loopback_network_private_hand_label: Label
 var loopback_network_action_controls: VBoxContainer
+var loopback_network_joker_selection_open := false
+var loopback_network_pending_joker_suit := -1
 
 
 func _ready() -> void:
@@ -673,6 +676,7 @@ func _show_loopback_network_test_menu() -> void:
 	menu_overlay.visible = true
 	_clear_children(menu_content)
 	loopback_network_start_round_button = null
+	loopback_network_start_joker_round_button = null
 	loopback_network_private_hand_label = null
 	loopback_network_action_controls = null
 	_add_menu_title("Локальная сеть", "Проверка четырёх мест через ENet без Steam")
@@ -708,6 +712,8 @@ func _show_loopback_network_test_menu() -> void:
 			_add_menu_label("Вручную: ProjectJokerDebug.exe -- --local-client --local-seat 1", 14, Color(0.72, 0.85, 0.76, 1.0))
 			loopback_network_start_round_button = _add_menu_button("Начать тестовую раздачу", _on_start_loopback_test_round_pressed, true)
 			loopback_network_start_round_button.disabled = not loopback_network_test.can_start_test_round()
+			loopback_network_start_joker_round_button = _add_menu_button("Начать раздачу с Джокером", _on_start_loopback_test_joker_round_pressed)
+			loopback_network_start_joker_round_button.disabled = not loopback_network_test.can_start_test_round()
 		else:
 			_add_menu_label("Это клиентское место тестового лобби. После старта оно получит только свою руку.", 14, Color(0.72, 0.85, 0.76, 1.0))
 		_add_menu_button("Остановить тест", _on_stop_loopback_network_pressed)
@@ -717,16 +723,19 @@ func _show_loopback_network_test_menu() -> void:
 
 
 func _on_start_loopback_network_host_pressed() -> void:
+	_reset_loopback_network_joker_selection()
 	loopback_network_test.start_host()
 	_show_loopback_network_test_menu()
 
 
 func _on_start_loopback_network_client_pressed() -> void:
+	_reset_loopback_network_joker_selection()
 	loopback_network_test.start_client(1)
 	_show_loopback_network_test_menu()
 
 
 func _start_loopback_network_client_from_launch() -> void:
+	_reset_loopback_network_joker_selection()
 	loopback_network_test.start_client(_get_loopback_client_seat_from_launch())
 	_show_loopback_network_test_menu()
 
@@ -750,12 +759,20 @@ func _on_open_loopback_network_clients_pressed() -> void:
 
 
 func _on_stop_loopback_network_pressed() -> void:
+	_reset_loopback_network_joker_selection()
 	loopback_network_test.stop()
 	_show_loopback_network_test_menu()
 
 
 func _on_start_loopback_test_round_pressed() -> void:
+	_reset_loopback_network_joker_selection()
 	loopback_network_test.start_test_round()
+	_refresh_loopback_network_status()
+
+
+func _on_start_loopback_test_joker_round_pressed() -> void:
+	_reset_loopback_network_joker_selection()
+	loopback_network_test.start_test_round(true)
 	_refresh_loopback_network_status()
 
 
@@ -775,7 +792,41 @@ func _on_submit_loopback_test_card_pressed(card_key: String) -> void:
 	_refresh_loopback_network_status()
 
 
+func _on_open_loopback_test_joker_selection_pressed() -> void:
+	if not _can_submit_loopback_test_joker():
+		return
+	loopback_network_joker_selection_open = true
+	loopback_network_pending_joker_suit = -1
+	_refresh_loopback_network_status()
+
+
+func _on_choose_loopback_test_joker_suit_pressed(suit: int) -> void:
+	if not _is_loopback_test_joker_leading():
+		_reset_loopback_network_joker_selection()
+		_refresh_loopback_network_status()
+		return
+	loopback_network_pending_joker_suit = suit
+	_refresh_loopback_network_status()
+
+
+func _on_submit_loopback_test_joker_pressed(mode: Trick.JokerMode, declared_suit: int = -1, forced_card_rank: Trick.ForcedCardRank = Trick.ForcedCardRank.NONE) -> void:
+	var was_submitted := false
+	if loopback_network_test.is_host():
+		was_submitted = loopback_network_test.submit_host_test_joker_choice(mode, declared_suit, forced_card_rank)
+	else:
+		was_submitted = loopback_network_test.submit_test_joker_choice(mode, declared_suit, forced_card_rank)
+	if was_submitted:
+		_reset_loopback_network_joker_selection()
+	_refresh_loopback_network_status()
+
+
+func _on_cancel_loopback_test_joker_selection_pressed() -> void:
+	_reset_loopback_network_joker_selection()
+	_refresh_loopback_network_status()
+
+
 func _on_close_loopback_network_test_pressed() -> void:
+	_reset_loopback_network_joker_selection()
 	loopback_network_test.stop()
 	_build_main_menu_content()
 
@@ -787,6 +838,8 @@ func _refresh_loopback_network_status() -> void:
 		loopback_network_private_hand_label.text = loopback_network_test.get_client_private_hand_text()
 	if is_instance_valid(loopback_network_start_round_button) and loopback_network_test != null:
 		loopback_network_start_round_button.disabled = not loopback_network_test.can_start_test_round()
+	if is_instance_valid(loopback_network_start_joker_round_button) and loopback_network_test != null:
+		loopback_network_start_joker_round_button.disabled = not loopback_network_test.can_start_test_round()
 	_refresh_loopback_network_action_controls()
 
 
@@ -795,8 +848,13 @@ func _refresh_loopback_network_action_controls() -> void:
 		return
 
 	_clear_children(loopback_network_action_controls)
+	if loopback_network_joker_selection_open:
+		_refresh_loopback_network_joker_selection_controls()
+		return
+
 	var available_bids: Array[int] = []
 	var available_cards: Array[Dictionary] = []
+	var can_submit_joker := false
 	var title_text := ""
 	if loopback_network_test.is_client() and loopback_network_test.can_submit_test_bid():
 		available_bids = loopback_network_test.get_available_test_bids()
@@ -804,13 +862,18 @@ func _refresh_loopback_network_action_controls() -> void:
 	elif loopback_network_test.is_host() and loopback_network_test.can_submit_host_test_bid():
 		available_bids = loopback_network_test.get_available_host_test_bids()
 		title_text = "Заказ хоста (место 1)"
-	elif loopback_network_test.is_client() and loopback_network_test.can_submit_test_card():
-		available_cards = loopback_network_test.get_available_test_cards()
-		title_text = "Твой тестовый ход"
-	elif loopback_network_test.is_host() and loopback_network_test.can_submit_host_test_card():
-		available_cards = loopback_network_test.get_available_host_test_cards()
-		title_text = "Ход хоста (место 1)"
-	if available_bids.is_empty() and available_cards.is_empty():
+	else:
+		if loopback_network_test.is_client():
+			if loopback_network_test.can_submit_test_card():
+				available_cards = loopback_network_test.get_available_test_cards()
+			can_submit_joker = loopback_network_test.can_submit_test_joker()
+			title_text = "Твой тестовый ход"
+		elif loopback_network_test.is_host():
+			if loopback_network_test.can_submit_host_test_card():
+				available_cards = loopback_network_test.get_available_host_test_cards()
+			can_submit_joker = loopback_network_test.can_submit_host_test_joker()
+			title_text = "Ход хоста (место 1)"
+	if available_bids.is_empty() and available_cards.is_empty() and not can_submit_joker:
 		return
 
 	var title := Label.new()
@@ -832,6 +895,118 @@ func _refresh_loopback_network_action_controls() -> void:
 		var card_name := str(card_data.get("label", "карта"))
 		var button := _create_menu_button("Сыграть %s" % card_name, _on_submit_loopback_test_card_pressed.bind(card_key), true)
 		action_row.add_child(button)
+	if can_submit_joker:
+		var joker_button := _create_menu_button("Сыграть Джокером", _on_open_loopback_test_joker_selection_pressed, true)
+		action_row.add_child(joker_button)
+
+
+func _refresh_loopback_network_joker_selection_controls() -> void:
+	if not _can_submit_loopback_test_joker():
+		_reset_loopback_network_joker_selection()
+		return
+
+	var title := Label.new()
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 16)
+	title.add_theme_color_override("font_color", Color(1.0, 0.84, 0.38, 1.0))
+	loopback_network_action_controls.add_child(title)
+
+	if not _is_loopback_test_joker_leading():
+		title.text = "Джокер: выбери вариант"
+		var response_row := HBoxContainer.new()
+		response_row.alignment = BoxContainer.ALIGNMENT_CENTER
+		response_row.add_theme_constant_override("separation", 8)
+		loopback_network_action_controls.add_child(response_row)
+		response_row.add_child(_create_menu_button("Джокер забирает", _on_submit_loopback_test_joker_pressed.bind(Trick.JokerMode.JOKER_WINS), true))
+		response_row.add_child(_create_menu_button("Сбросить Джокер", _on_submit_loopback_test_joker_pressed.bind(Trick.JokerMode.NORMAL_CARD_WINS), true))
+		_add_loopback_test_joker_cancel_button()
+		return
+
+	if loopback_network_pending_joker_suit < Card.Suit.CLUBS:
+		title.text = "Джокер: объяви масть"
+		var suit_row := HBoxContainer.new()
+		suit_row.alignment = BoxContainer.ALIGNMENT_CENTER
+		suit_row.add_theme_constant_override("separation", 8)
+		loopback_network_action_controls.add_child(suit_row)
+		for suit in [Card.Suit.CLUBS, Card.Suit.SPADES, Card.Suit.HEARTS, Card.Suit.DIAMONDS]:
+			suit_row.add_child(_create_menu_button("Объявить %s" % _get_suit_symbol(suit), _on_choose_loopback_test_joker_suit_pressed.bind(suit), true))
+		_add_loopback_test_joker_cancel_button()
+		return
+
+	var suit_symbol := _get_suit_symbol(loopback_network_pending_joker_suit)
+	title.text = "Джокер: выбери условие для %s" % suit_symbol
+	var condition_rows := [
+		[
+			"%s: Джокер забирает" % suit_symbol,
+			Trick.JokerMode.JOKER_WINS,
+			Trick.ForcedCardRank.NONE
+		],
+		[
+			"%s: старшая забирает" % suit_symbol,
+			Trick.JokerMode.HIGHEST_DECLARED_CARD_WINS,
+			Trick.ForcedCardRank.NONE
+		],
+		[
+			"%s: младшая забирает" % suit_symbol,
+			Trick.JokerMode.LOWEST_DECLARED_CARD_WINS,
+			Trick.ForcedCardRank.NONE
+		],
+		[
+			"%s: кладите старшую — Джокер забирает" % suit_symbol,
+			Trick.JokerMode.JOKER_WINS,
+			Trick.ForcedCardRank.HIGHEST
+		],
+		[
+			"%s: кладите младшую — Джокер забирает" % suit_symbol,
+			Trick.JokerMode.JOKER_WINS,
+			Trick.ForcedCardRank.LOWEST
+		],
+		[
+			"%s: кладите старшую — Джокер не забирает" % suit_symbol,
+			Trick.JokerMode.NORMAL_CARD_WINS,
+			Trick.ForcedCardRank.HIGHEST
+		],
+		[
+			"%s: кладите младшую — Джокер не забирает" % suit_symbol,
+			Trick.JokerMode.NORMAL_CARD_WINS,
+			Trick.ForcedCardRank.LOWEST
+		]
+	]
+	for condition_data in condition_rows:
+		var condition_button := _create_menu_button(
+			str(condition_data[0]),
+			_on_submit_loopback_test_joker_pressed.bind(condition_data[1], loopback_network_pending_joker_suit, condition_data[2]),
+			true
+		)
+		loopback_network_action_controls.add_child(condition_button)
+	loopback_network_action_controls.add_child(_create_menu_button("← Выбрать другую масть", _on_clear_loopback_test_joker_suit_pressed, true))
+	_add_loopback_test_joker_cancel_button()
+
+
+func _on_clear_loopback_test_joker_suit_pressed() -> void:
+	loopback_network_pending_joker_suit = -1
+	_refresh_loopback_network_status()
+
+
+func _add_loopback_test_joker_cancel_button() -> void:
+	loopback_network_action_controls.add_child(_create_menu_button("Отменить выбор Джокера", _on_cancel_loopback_test_joker_selection_pressed, true))
+
+
+func _can_submit_loopback_test_joker() -> bool:
+	if loopback_network_test == null:
+		return false
+	return loopback_network_test.can_submit_host_test_joker() if loopback_network_test.is_host() else loopback_network_test.can_submit_test_joker()
+
+
+func _is_loopback_test_joker_leading() -> bool:
+	if loopback_network_test == null:
+		return false
+	return loopback_network_test.is_host_test_joker_leading() if loopback_network_test.is_host() else loopback_network_test.is_client_test_joker_leading()
+
+
+func _reset_loopback_network_joker_selection() -> void:
+	loopback_network_joker_selection_open = false
+	loopback_network_pending_joker_suit = -1
 
 
 func _show_new_game_setup() -> void:

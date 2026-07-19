@@ -143,13 +143,16 @@ func can_start_test_round() -> bool:
 	return is_lobby_full() and not lobby_round_started and match_host != null
 
 
-func start_test_round() -> bool:
+func start_test_round(force_leading_joker: bool = false) -> bool:
 	if not can_start_test_round():
 		_set_status("Тестовую раздачу можно начать только после подключения всех четырёх мест.")
 		return false
 
 	if not match_host.game.start_round(2, Round.RoundType.NORMAL, Round.TrumpSuit.CLUBS):
 		_set_status("Не удалось начать тестовую раздачу.")
+		return false
+	if force_leading_joker and not _ensure_leading_test_player_has_joker():
+		_set_status("Не удалось подготовить тестовую раздачу с Джокером.")
 		return false
 
 	lobby_round_started = true
@@ -359,10 +362,6 @@ func _handle_host_match_command(message: Dictionary, sender_peer_id: int) -> voi
 	if not (payload_data is Dictionary):
 		_send_command_result(sender_peer_id, false, "invalid_payload", match_host.revision)
 		return
-	if requested_type == NetworkCommand.Type.PLAY_CARD and str(payload_data.get("card_key", "")) == "joker":
-		_send_command_result(sender_peer_id, false, "joker_choice_required", match_host.revision)
-		return
-
 	var command := NetworkCommand.new(
 		requested_type,
 		assigned_player_index,
@@ -601,6 +600,49 @@ func submit_test_card(card_key: String) -> bool:
 	return true
 
 
+func can_submit_test_joker() -> bool:
+	if not client_snapshot_is_safe or client_player_index < FIRST_CLIENT_PLAYER_INDEX or client_command_in_flight:
+		return false
+
+	var round_data: Dictionary = _get_client_round_data()
+	return (
+		int(round_data.get("state", Round.State.SETUP)) == Round.State.PLAYING
+		and _get_client_current_playing_player_index() == client_player_index
+		and _is_client_joker_allowed()
+	)
+
+
+func is_client_test_joker_leading() -> bool:
+	return can_submit_test_joker() and _get_client_active_trick_data().is_empty()
+
+
+func submit_test_joker_choice(mode: Trick.JokerMode, declared_suit: int = -1, forced_card_rank: Trick.ForcedCardRank = Trick.ForcedCardRank.NONE) -> bool:
+	if not can_submit_test_joker() or not _is_test_joker_choice_valid(is_client_test_joker_leading(), mode, declared_suit, forced_card_rank):
+		return false
+
+	var command := NetworkCommand.new(
+		NetworkCommand.Type.PLAY_CARD,
+		client_player_index,
+		int(client_snapshot.get("round_number", -1)),
+		int(client_snapshot.get("revision", -1)),
+		_build_joker_payload(mode, declared_suit, forced_card_rank)
+	)
+	var was_sent := _send_message({
+		"type": "match_command",
+		"command": command.to_dictionary()
+	}, 1)
+	if not was_sent:
+		client_last_command_message = "Не удалось отправить ход Джокером хосту."
+		_set_status(_get_client_lobby_status())
+		return false
+
+	client_command_in_flight = true
+	client_expected_revision = -1
+	client_last_command_message = "Отправляю условие Джокера хосту…"
+	_set_status(_get_client_lobby_status())
+	return true
+
+
 func can_submit_host_test_bid() -> bool:
 	if not is_host() or not lobby_round_started or match_host == null:
 		return false
@@ -706,6 +748,46 @@ func submit_host_test_card(card_key: String) -> bool:
 	return true
 
 
+func can_submit_host_test_joker() -> bool:
+	if not is_host() or not lobby_round_started or match_host == null:
+		return false
+
+	var round: Round = match_host.game.current_round
+	if round == null or round.state != Round.State.PLAYING or _get_host_current_playing_player_index() != HOST_PLAYER_INDEX:
+		return false
+
+	var player: Player = match_host.game.players[HOST_PLAYER_INDEX]
+	for card in player.hand:
+		if card.is_joker and (match_host.game.active_trick == null or match_host.game.active_trick.can_play_card(player, card)):
+			return true
+	return false
+
+
+func is_host_test_joker_leading() -> bool:
+	return can_submit_host_test_joker() and match_host.game.active_trick == null
+
+
+func submit_host_test_joker_choice(mode: Trick.JokerMode, declared_suit: int = -1, forced_card_rank: Trick.ForcedCardRank = Trick.ForcedCardRank.NONE) -> bool:
+	if not can_submit_host_test_joker() or not _is_test_joker_choice_valid(is_host_test_joker_leading(), mode, declared_suit, forced_card_rank):
+		return false
+
+	var command := NetworkCommand.new(
+		NetworkCommand.Type.PLAY_CARD,
+		HOST_PLAYER_INDEX,
+		match_host.game.round_number,
+		match_host.revision,
+		_build_joker_payload(mode, declared_suit, forced_card_rank)
+	)
+	var result: Dictionary = match_host.apply_command(command)
+	if not bool(result.get("accepted", false)):
+		_set_status("Хост не смог применить условие Джокера: %s." % str(result.get("reason", "unknown")))
+		return false
+
+	_queue_player_snapshots_for_delivery()
+	_set_status("Хост сыграл Джокером. Ревизия %d отправляется всем клиентам." % match_host.revision)
+	return true
+
+
 func _get_client_current_playing_player_index() -> int:
 	var active_trick_data: Dictionary = _get_client_active_trick_data()
 	if not active_trick_data.is_empty():
@@ -734,20 +816,132 @@ func _is_client_normal_card_allowed(card_data: Dictionary, private_hand: Array) 
 	var active_trick_data: Dictionary = _get_client_active_trick_data()
 	if active_trick_data.is_empty():
 		return true
-	if int(active_trick_data.get("joker_mode", Trick.JokerMode.NONE)) != Trick.JokerMode.NONE:
-		return false
 
 	var lead_suit := int(active_trick_data.get("lead_suit", -1))
 	if lead_suit < 0:
 		return false
 	var card_suit := int(card_data.get("suit", -1))
 	if _serialized_hand_has_suit(private_hand, lead_suit):
-		return card_suit == lead_suit
+		return card_suit == lead_suit and _is_client_forced_card_allowed(card_data, private_hand, lead_suit, int(active_trick_data.get("forced_card_rank", Trick.ForcedCardRank.NONE)))
 
 	var trump := int(active_trick_data.get("trump", Round.TrumpSuit.NONE))
 	if trump != Round.TrumpSuit.NONE and trump != Round.TrumpSuit.RANDOM and _serialized_hand_has_suit(private_hand, trump):
 		return card_suit == trump
 	return true
+
+
+func _is_client_forced_card_allowed(card_data: Dictionary, private_hand: Array, lead_suit: int, forced_card_rank: int) -> bool:
+	if forced_card_rank == Trick.ForcedCardRank.NONE:
+		return true
+
+	var forced_card: Dictionary = {}
+	for hand_card_variant in private_hand:
+		if not (hand_card_variant is Dictionary):
+			continue
+		var hand_card: Dictionary = hand_card_variant
+		if bool(hand_card.get("is_joker", false)) or int(hand_card.get("suit", -1)) != lead_suit:
+			continue
+		if forced_card.is_empty():
+			forced_card = hand_card
+			continue
+		var should_replace := int(hand_card.get("rank", -1)) > int(forced_card.get("rank", -1)) if forced_card_rank == Trick.ForcedCardRank.HIGHEST else int(hand_card.get("rank", -1)) < int(forced_card.get("rank", -1))
+		if should_replace:
+			forced_card = hand_card
+
+	return forced_card.is_empty() or str(card_data.get("card_key", "")) == str(forced_card.get("card_key", ""))
+
+
+func _is_client_joker_allowed() -> bool:
+	var private_hand: Variant = client_snapshot.get("private_hand", [])
+	if not (private_hand is Array):
+		return false
+
+	var has_joker := false
+	for card_variant in private_hand:
+		if card_variant is Dictionary and bool(card_variant.get("is_joker", false)):
+			has_joker = true
+			break
+	if not has_joker:
+		return false
+
+	var active_trick_data: Dictionary = _get_client_active_trick_data()
+	if active_trick_data.is_empty():
+		return true
+
+	var lead_suit := int(active_trick_data.get("lead_suit", -1))
+	var trump := int(active_trick_data.get("trump", Round.TrumpSuit.NONE))
+	if lead_suit >= 0 and _serialized_hand_has_suit(private_hand, lead_suit):
+		return lead_suit == trump
+	return true
+
+
+func _is_test_joker_choice_valid(is_leading: bool, mode: Trick.JokerMode, declared_suit: int, forced_card_rank: Trick.ForcedCardRank) -> bool:
+	if is_leading:
+		return (
+			mode != Trick.JokerMode.NONE
+			and declared_suit >= Card.Suit.CLUBS
+			and declared_suit <= Card.Suit.DIAMONDS
+			and forced_card_rank >= Trick.ForcedCardRank.NONE
+			and forced_card_rank <= Trick.ForcedCardRank.LOWEST
+		)
+	return (
+		(mode == Trick.JokerMode.JOKER_WINS or mode == Trick.JokerMode.NORMAL_CARD_WINS)
+		and declared_suit == -1
+		and forced_card_rank == Trick.ForcedCardRank.NONE
+	)
+
+
+func _build_joker_payload(mode: Trick.JokerMode, declared_suit: int, forced_card_rank: Trick.ForcedCardRank) -> Dictionary:
+	return {
+		"card_key": "joker",
+		"joker_mode": int(mode),
+		"declared_suit": declared_suit,
+		"forced_card_rank": int(forced_card_rank)
+	}
+
+
+func _ensure_leading_test_player_has_joker() -> bool:
+	if match_host == null:
+		return false
+
+	var game: Game = match_host.game
+	var leader_index := game.current_round.lead_player_index
+	if leader_index < 0 or leader_index >= game.players.size():
+		return false
+	var leader: Player = game.players[leader_index]
+	for card in leader.hand:
+		if card.is_joker:
+			return true
+
+	var replacement: Card
+	for card in leader.hand:
+		if not card.is_joker:
+			replacement = card
+			break
+	if replacement == null:
+		return false
+
+	for source_player in game.players:
+		for source_card in source_player.hand:
+			if not source_card.is_joker:
+				continue
+			if not leader.remove_card(replacement) or not source_player.remove_card(source_card):
+				return false
+			leader.receive_card(source_card)
+			source_player.receive_card(replacement)
+			return true
+
+	for deck_card_index in game.deck.cards.size():
+		var deck_card: Card = game.deck.cards[deck_card_index]
+		if not deck_card.is_joker:
+			continue
+		if not leader.remove_card(replacement):
+			return false
+		game.deck.cards.remove_at(deck_card_index)
+		game.deck.cards.append(replacement)
+		leader.receive_card(deck_card)
+		return true
+	return false
 
 
 func _serialized_hand_has_suit(private_hand: Array, suit: int) -> bool:
@@ -1030,7 +1224,7 @@ func _get_client_lobby_status() -> String:
 				if can_submit_test_card():
 					lines.append("Твой тестовый ход: выбери допустимую обычную карту ниже.")
 				else:
-					lines.append("Твой ход Джокером: сетевой выбор его условия будет добавлен следующим шагом.")
+					lines.append("Твой ход Джокером: выбери масть и условие ниже.")
 			else:
 				lines.append("Сейчас ходит место %d." % (current_playing_player_index + 1))
 			var public_trick_text := _get_client_public_trick_text()
