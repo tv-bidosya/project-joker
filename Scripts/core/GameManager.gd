@@ -767,6 +767,14 @@ func _on_submit_loopback_test_bid_pressed(bid: int) -> void:
 	_refresh_loopback_network_status()
 
 
+func _on_submit_loopback_test_card_pressed(card_key: String) -> void:
+	if loopback_network_test.is_host():
+		loopback_network_test.submit_host_test_card(card_key)
+	else:
+		loopback_network_test.submit_test_card(card_key)
+	_refresh_loopback_network_status()
+
+
 func _on_close_loopback_network_test_pressed() -> void:
 	loopback_network_test.stop()
 	_build_main_menu_content()
@@ -788,6 +796,7 @@ func _refresh_loopback_network_action_controls() -> void:
 
 	_clear_children(loopback_network_action_controls)
 	var available_bids: Array[int] = []
+	var available_cards: Array[Dictionary] = []
 	var title_text := ""
 	if loopback_network_test.is_client() and loopback_network_test.can_submit_test_bid():
 		available_bids = loopback_network_test.get_available_test_bids()
@@ -795,7 +804,13 @@ func _refresh_loopback_network_action_controls() -> void:
 	elif loopback_network_test.is_host() and loopback_network_test.can_submit_host_test_bid():
 		available_bids = loopback_network_test.get_available_host_test_bids()
 		title_text = "Заказ хоста (место 1)"
-	if available_bids.is_empty():
+	elif loopback_network_test.is_client() and loopback_network_test.can_submit_test_card():
+		available_cards = loopback_network_test.get_available_test_cards()
+		title_text = "Твой тестовый ход"
+	elif loopback_network_test.is_host() and loopback_network_test.can_submit_host_test_card():
+		available_cards = loopback_network_test.get_available_host_test_cards()
+		title_text = "Ход хоста (место 1)"
+	if available_bids.is_empty() and available_cards.is_empty():
 		return
 
 	var title := Label.new()
@@ -805,13 +820,18 @@ func _refresh_loopback_network_action_controls() -> void:
 	title.add_theme_color_override("font_color", Color(0.85, 0.91, 0.8, 1.0))
 	loopback_network_action_controls.add_child(title)
 
-	var bid_row := HBoxContainer.new()
-	bid_row.alignment = BoxContainer.ALIGNMENT_CENTER
-	bid_row.add_theme_constant_override("separation", 8)
-	loopback_network_action_controls.add_child(bid_row)
+	var action_row := HBoxContainer.new()
+	action_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	action_row.add_theme_constant_override("separation", 8)
+	loopback_network_action_controls.add_child(action_row)
 	for bid in available_bids:
 		var button := _create_menu_button("Заказать %d" % bid, _on_submit_loopback_test_bid_pressed.bind(bid), true)
-		bid_row.add_child(button)
+		action_row.add_child(button)
+	for card_data in available_cards:
+		var card_key := str(card_data.get("card_key", ""))
+		var card_name := str(card_data.get("label", "карта"))
+		var button := _create_menu_button("Сыграть %s" % card_name, _on_submit_loopback_test_card_pressed.bind(card_key), true)
+		action_row.add_child(button)
 
 
 func _show_new_game_setup() -> void:

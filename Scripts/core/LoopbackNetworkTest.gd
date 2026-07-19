@@ -38,6 +38,7 @@ var client_private_hand_size := 0
 var client_player_index := -1
 var client_requested_player_index := FIRST_CLIENT_PLAYER_INDEX
 var client_command_in_flight := false
+var client_expected_revision := -1
 var client_last_command_message := ""
 var active_host_port := HOST_PORT
 var lobby_seats: Array[Dictionary] = []
@@ -104,6 +105,7 @@ func stop() -> void:
 	client_player_index = -1
 	active_host_port = HOST_PORT
 	client_command_in_flight = false
+	client_expected_revision = -1
 	client_last_command_message = ""
 	lobby_seats.clear()
 	lobby_round_started = false
@@ -322,10 +324,13 @@ func _handle_host_snapshot_ack(message: Dictionary, sender_peer_id: int) -> void
 		return
 	if int(message.get("player_index", -1)) != assigned_player_index:
 		return
-	if int(message.get("hand_size", 0)) != 2:
+	if match_host == null or assigned_player_index >= match_host.game.players.size():
+		return
+	var expected_hand_size: int = match_host.game.players[assigned_player_index].hand.size()
+	if int(message.get("hand_size", -1)) != expected_hand_size:
 		_set_status("Клиент места %d подтвердил неверный размер руки." % (assigned_player_index + 1))
 		return
-	if match_host == null or int(message.get("revision", -1)) != match_host.revision:
+	if int(message.get("revision", -1)) != match_host.revision:
 		return
 
 	_snapshot_acknowledged_by_player[assigned_player_index] = true
@@ -346,7 +351,7 @@ func _handle_host_match_command(message: Dictionary, sender_peer_id: int) -> voi
 		return
 
 	var requested_type := int(command_data.get("type", NetworkCommand.Type.INVALID))
-	if requested_type != NetworkCommand.Type.BID:
+	if requested_type != NetworkCommand.Type.BID and requested_type != NetworkCommand.Type.PLAY_CARD:
 		_send_command_result(sender_peer_id, false, "unsupported_command", match_host.revision)
 		return
 
@@ -354,9 +359,12 @@ func _handle_host_match_command(message: Dictionary, sender_peer_id: int) -> voi
 	if not (payload_data is Dictionary):
 		_send_command_result(sender_peer_id, false, "invalid_payload", match_host.revision)
 		return
+	if requested_type == NetworkCommand.Type.PLAY_CARD and str(payload_data.get("card_key", "")) == "joker":
+		_send_command_result(sender_peer_id, false, "joker_choice_required", match_host.revision)
+		return
 
 	var command := NetworkCommand.new(
-		NetworkCommand.Type.BID,
+		requested_type,
 		assigned_player_index,
 		int(command_data.get("round_number", -1)),
 		int(command_data.get("revision", -1)),
@@ -366,11 +374,12 @@ func _handle_host_match_command(message: Dictionary, sender_peer_id: int) -> voi
 	var accepted := bool(result.get("accepted", false))
 	_send_command_result(sender_peer_id, accepted, str(result.get("reason", "unknown")), match_host.revision)
 	if not accepted:
-		_set_status("Хост отклонил заказ места %d: %s." % [assigned_player_index + 1, str(result.get("reason", "unknown"))])
+		_set_status("Хост отклонил действие места %d: %s." % [assigned_player_index + 1, str(result.get("reason", "unknown"))])
 		return
 
 	_queue_player_snapshots_for_delivery()
-	_set_status("Хост принял заказ места %d. Ревизия %d отправляется всем клиентам." % [assigned_player_index + 1, match_host.revision])
+	var action_name := "заказ" if requested_type == NetworkCommand.Type.BID else "ход картой"
+	_set_status("Хост принял %s места %d. Ревизия %d отправляется всем клиентам." % [action_name, assigned_player_index + 1, match_host.revision])
 
 
 func _send_command_result(target_peer_id: int, accepted: bool, reason: String, revision: int) -> void:
@@ -439,17 +448,23 @@ func _handle_client_snapshot(message: Dictionary) -> void:
 		"hand_size": client_private_hand_size
 	}, 1)
 	client_snapshot_acknowledged = ack_was_sent
+	if client_command_in_flight and client_expected_revision >= 0 and int(client_snapshot.get("revision", -1)) >= client_expected_revision:
+		client_command_in_flight = false
+		client_expected_revision = -1
+		client_last_command_message = "Хост принял действие. Стол обновлён."
 	_set_status(_get_client_lobby_status())
 
 
 func _handle_client_command_result(message: Dictionary) -> void:
-	client_command_in_flight = false
 	var accepted := bool(message.get("accepted", false))
 	var reason := str(message.get("reason", "unknown"))
 	if accepted:
-		client_last_command_message = "Хост принял твой заказ. Получаю обновлённый стол…"
+		client_expected_revision = int(message.get("revision", -1))
+		client_last_command_message = "Хост принял действие. Получаю обновлённый стол…"
 	else:
-		client_last_command_message = "Хост отклонил заказ: %s." % reason
+		client_command_in_flight = false
+		client_expected_revision = -1
+		client_last_command_message = "Хост отклонил действие: %s." % reason
 	_set_status(_get_client_lobby_status())
 
 
@@ -513,6 +528,79 @@ func submit_test_bid(bid: int) -> bool:
 	return true
 
 
+func can_submit_test_card() -> bool:
+	if not client_snapshot_is_safe or client_player_index < FIRST_CLIENT_PLAYER_INDEX or client_command_in_flight:
+		return false
+
+	var round_data: Dictionary = _get_client_round_data()
+	return (
+		int(round_data.get("state", Round.State.SETUP)) == Round.State.PLAYING
+		and _get_client_current_playing_player_index() == client_player_index
+		and not get_available_test_cards().is_empty()
+	)
+
+
+func get_available_test_cards() -> Array[Dictionary]:
+	var available_cards: Array[Dictionary] = []
+	if not client_snapshot_is_safe:
+		return available_cards
+
+	var round_data: Dictionary = _get_client_round_data()
+	if int(round_data.get("state", Round.State.SETUP)) != Round.State.PLAYING:
+		return available_cards
+
+	var private_hand: Variant = client_snapshot.get("private_hand", [])
+	if not (private_hand is Array):
+		return available_cards
+
+	for card_variant in private_hand:
+		if not (card_variant is Dictionary):
+			continue
+		var card_data: Dictionary = card_variant
+		if bool(card_data.get("is_joker", false)) or not _is_client_normal_card_allowed(card_data, private_hand):
+			continue
+		available_cards.append({
+			"card_key": str(card_data.get("card_key", "")),
+			"label": _get_serialized_card_name(card_data)
+		})
+	return available_cards
+
+
+func submit_test_card(card_key: String) -> bool:
+	if not can_submit_test_card():
+		return false
+
+	var is_available := false
+	for card_data in get_available_test_cards():
+		if str(card_data.get("card_key", "")) == card_key:
+			is_available = true
+			break
+	if not is_available:
+		return false
+
+	var command := NetworkCommand.new(
+		NetworkCommand.Type.PLAY_CARD,
+		client_player_index,
+		int(client_snapshot.get("round_number", -1)),
+		int(client_snapshot.get("revision", -1)),
+		{"card_key": card_key}
+	)
+	var was_sent := _send_message({
+		"type": "match_command",
+		"command": command.to_dictionary()
+	}, 1)
+	if not was_sent:
+		client_last_command_message = "Не удалось отправить ход хосту."
+		_set_status(_get_client_lobby_status())
+		return false
+
+	client_command_in_flight = true
+	client_expected_revision = -1
+	client_last_command_message = "Отправляю ход %s хосту…" % card_key
+	_set_status(_get_client_lobby_status())
+	return true
+
+
 func can_submit_host_test_bid() -> bool:
 	if not is_host() or not lobby_round_started or match_host == null:
 		return false
@@ -552,6 +640,190 @@ func submit_host_test_bid(bid: int) -> bool:
 	_queue_player_snapshots_for_delivery()
 	_set_status("Хост принял свой заказ %d. Ревизия %d отправляется всем клиентам." % [bid, match_host.revision])
 	return true
+
+
+func can_submit_host_test_card() -> bool:
+	if not is_host() or not lobby_round_started or match_host == null:
+		return false
+
+	var round: Round = match_host.game.current_round
+	return (
+		round != null
+		and round.state == Round.State.PLAYING
+		and _get_host_current_playing_player_index() == HOST_PLAYER_INDEX
+		and not get_available_host_test_cards().is_empty()
+	)
+
+
+func get_available_host_test_cards() -> Array[Dictionary]:
+	var available_cards: Array[Dictionary] = []
+	if not is_host() or match_host == null:
+		return available_cards
+
+	var round: Round = match_host.game.current_round
+	if round == null or round.state != Round.State.PLAYING:
+		return available_cards
+
+	var player: Player = match_host.game.players[HOST_PLAYER_INDEX]
+	for card in player.hand:
+		if card.is_joker:
+			continue
+		if match_host.game.active_trick != null and not match_host.game.active_trick.can_play_card(player, card):
+			continue
+		available_cards.append({
+			"card_key": _get_card_key(card),
+			"label": _get_card_name(card)
+		})
+	return available_cards
+
+
+func submit_host_test_card(card_key: String) -> bool:
+	if not can_submit_host_test_card():
+		return false
+
+	var is_available := false
+	for card_data in get_available_host_test_cards():
+		if str(card_data.get("card_key", "")) == card_key:
+			is_available = true
+			break
+	if not is_available:
+		return false
+
+	var command := NetworkCommand.new(
+		NetworkCommand.Type.PLAY_CARD,
+		HOST_PLAYER_INDEX,
+		match_host.game.round_number,
+		match_host.revision,
+		{"card_key": card_key}
+	)
+	var result: Dictionary = match_host.apply_command(command)
+	if not bool(result.get("accepted", false)):
+		_set_status("Хост не смог принять свой ход: %s." % str(result.get("reason", "unknown")))
+		return false
+
+	_queue_player_snapshots_for_delivery()
+	_set_status("Хост сыграл %s. Ревизия %d отправляется всем клиентам." % [card_key, match_host.revision])
+	return true
+
+
+func _get_client_current_playing_player_index() -> int:
+	var active_trick_data: Dictionary = _get_client_active_trick_data()
+	if not active_trick_data.is_empty():
+		return int(active_trick_data.get("current_player_index", -1))
+
+	var round_data: Dictionary = _get_client_round_data()
+	return int(round_data.get("lead_player_index", round_data.get("current_player_index", -1)))
+
+
+func _get_host_current_playing_player_index() -> int:
+	if match_host == null or match_host.game.current_round == null:
+		return -1
+	if match_host.game.active_trick != null:
+		return match_host.game.active_trick.current_player_index
+	return match_host.game.current_round.lead_player_index
+
+
+func _get_client_active_trick_data() -> Dictionary:
+	var active_trick_data: Variant = client_snapshot.get("active_trick", {})
+	if active_trick_data is Dictionary:
+		return active_trick_data
+	return {}
+
+
+func _is_client_normal_card_allowed(card_data: Dictionary, private_hand: Array) -> bool:
+	var active_trick_data: Dictionary = _get_client_active_trick_data()
+	if active_trick_data.is_empty():
+		return true
+	if int(active_trick_data.get("joker_mode", Trick.JokerMode.NONE)) != Trick.JokerMode.NONE:
+		return false
+
+	var lead_suit := int(active_trick_data.get("lead_suit", -1))
+	if lead_suit < 0:
+		return false
+	var card_suit := int(card_data.get("suit", -1))
+	if _serialized_hand_has_suit(private_hand, lead_suit):
+		return card_suit == lead_suit
+
+	var trump := int(active_trick_data.get("trump", Round.TrumpSuit.NONE))
+	if trump != Round.TrumpSuit.NONE and trump != Round.TrumpSuit.RANDOM and _serialized_hand_has_suit(private_hand, trump):
+		return card_suit == trump
+	return true
+
+
+func _serialized_hand_has_suit(private_hand: Array, suit: int) -> bool:
+	for hand_card_variant in private_hand:
+		if not (hand_card_variant is Dictionary):
+			continue
+		var hand_card: Dictionary = hand_card_variant
+		if not bool(hand_card.get("is_joker", false)) and int(hand_card.get("suit", -1)) == suit:
+			return true
+	return false
+
+
+func _get_card_key(card: Card) -> String:
+	if card.is_joker:
+		return "joker"
+	return "%d_%d" % [card.suit, card.rank]
+
+
+func _get_card_name(card: Card) -> String:
+	return card.get_card_name()
+
+
+func _get_host_public_trick_text() -> String:
+	if match_host == null:
+		return ""
+	if match_host.game.active_trick != null:
+		return _format_public_trick_cards(match_host.game.active_trick.played_cards, match_host.game.active_trick.played_by, "Текущая взятка")
+	if not match_host.game.last_completed_trick_cards.is_empty():
+		return _format_public_trick_cards(match_host.game.last_completed_trick_cards, match_host.game.last_completed_trick_played_by, "Последняя взятка")
+	return ""
+
+
+func _get_client_public_trick_text() -> String:
+	var active_trick_data: Dictionary = _get_client_active_trick_data()
+	if not active_trick_data.is_empty():
+		return _format_serialized_public_trick_cards(
+			active_trick_data.get("played_cards", []),
+			active_trick_data.get("played_by", []),
+			"Текущая взятка"
+		)
+
+	var last_completed_data: Variant = client_snapshot.get("last_completed_trick", {})
+	if last_completed_data is Dictionary:
+		return _format_serialized_public_trick_cards(
+			last_completed_data.get("cards", []),
+			last_completed_data.get("played_by", []),
+			"Последняя взятка"
+		)
+	return ""
+
+
+func _format_public_trick_cards(cards: Array[Card], played_by: Array[int], title: String) -> String:
+	if cards.is_empty():
+		return ""
+	var entries: Array[String] = []
+	for card_index in cards.size():
+		var player_index := played_by[card_index] if card_index < played_by.size() else -1
+		entries.append("место %d — %s" % [player_index + 1, _get_card_name(cards[card_index])])
+	return "%s: %s." % [title, "; ".join(entries)]
+
+
+func _format_serialized_public_trick_cards(cards_data: Variant, played_by_data: Variant, title: String) -> String:
+	if not (cards_data is Array) or cards_data.is_empty():
+		return ""
+	var entries: Array[String] = []
+	for card_index in cards_data.size():
+		var card_variant: Variant = cards_data[card_index]
+		if not (card_variant is Dictionary):
+			continue
+		var player_index := -1
+		if played_by_data is Array and card_index < played_by_data.size():
+			player_index = int(played_by_data[card_index])
+		entries.append("место %d — %s" % [player_index + 1, _get_serialized_card_name(card_variant)])
+	if entries.is_empty():
+		return ""
+	return "%s: %s." % [title, "; ".join(entries)]
 
 
 func _queue_player_snapshots_for_delivery() -> void:
@@ -720,6 +992,9 @@ func _get_host_lobby_status() -> String:
 		lines.append("Место %d — %s: %s" % [int(seat.get("player_index", -1)) + 1, str(seat.get("display_name", "Игрок")), state_text])
 	if lobby_round_started:
 		lines.append("Тестовая раздача начата: руки подтвердили %d из %d клиентов." % [_snapshot_acknowledged_by_player.size(), PLAYER_COUNT - 1])
+		var public_trick_text := _get_host_public_trick_text()
+		if not public_trick_text.is_empty():
+			lines.append(public_trick_text)
 	elif is_lobby_full():
 		lines.append("Все четыре места готовы. Можно начать тестовую раздачу.")
 	else:
@@ -750,7 +1025,17 @@ func _get_client_lobby_status() -> String:
 			else:
 				lines.append("Сейчас заказывает место %d." % (current_player_index + 1))
 		elif round_state == Round.State.PLAYING:
-			lines.append("Заказы завершены. Тест обычных ходов — следующий шаг.")
+			var current_playing_player_index := _get_client_current_playing_player_index()
+			if current_playing_player_index == client_player_index:
+				if can_submit_test_card():
+					lines.append("Твой тестовый ход: выбери допустимую обычную карту ниже.")
+				else:
+					lines.append("Твой ход Джокером: сетевой выбор его условия будет добавлен следующим шагом.")
+			else:
+				lines.append("Сейчас ходит место %d." % (current_playing_player_index + 1))
+			var public_trick_text := _get_client_public_trick_text()
+			if not public_trick_text.is_empty():
+				lines.append(public_trick_text)
 		lines.append("Подтверждение руки хосту: %s." % ("отправлено" if client_snapshot_acknowledged else "не отправилось"))
 		if not client_last_command_message.is_empty():
 			lines.append(client_last_command_message)
