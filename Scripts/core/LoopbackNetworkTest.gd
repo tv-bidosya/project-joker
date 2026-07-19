@@ -25,6 +25,13 @@ enum Mode {
 }
 
 
+enum TestJokerScenario {
+	NONE,
+	LEADING,
+	RESPONSE
+}
+
+
 signal status_changed
 
 
@@ -135,6 +142,20 @@ func is_client() -> bool:
 	return mode == Mode.CLIENT
 
 
+func get_test_table_snapshot() -> Dictionary:
+	if is_host() and match_host != null:
+		return match_host.create_player_snapshot(HOST_PLAYER_INDEX)
+	if is_client():
+		return client_snapshot.duplicate(true)
+	return {}
+
+
+func get_test_table_viewer_index() -> int:
+	if is_host():
+		return HOST_PLAYER_INDEX
+	return client_player_index
+
+
 func is_lobby_full() -> bool:
 	return is_host() and _confirmed_client_peers_by_player.size() == PLAYER_COUNT - 1
 
@@ -144,16 +165,39 @@ func can_start_test_round() -> bool:
 
 
 func start_test_round(force_leading_joker: bool = false) -> bool:
+	var joker_scenario := TestJokerScenario.LEADING if force_leading_joker else TestJokerScenario.NONE
+	return _start_test_round(joker_scenario)
+
+
+func start_test_round_with_response_joker() -> bool:
+	return _start_test_round(TestJokerScenario.RESPONSE)
+
+
+func _start_test_round(joker_scenario: TestJokerScenario) -> bool:
 	if not can_start_test_round():
 		_set_status("Тестовую раздачу можно начать только после подключения всех четырёх мест.")
 		return false
 
-	if not match_host.game.start_round(2, Round.RoundType.NORMAL, Round.TrumpSuit.CLUBS):
+	# Даже короткая сетевая раздача должна проходить через тот же старт,
+	# что и обычная игра: колода, открытая карта и случайный козырь.
+	# Две карты оставляем только для быстрой проверки четырёх окон.
+	if not match_host.game.start_round(2, Round.RoundType.NORMAL, Round.TrumpSuit.RANDOM):
 		_set_status("Не удалось начать тестовую раздачу.")
 		return false
-	if force_leading_joker and not _ensure_leading_test_player_has_joker():
-		_set_status("Не удалось подготовить тестовую раздачу с Джокером.")
-		return false
+	if joker_scenario == TestJokerScenario.LEADING:
+		if not _ensure_test_round_has_non_joker_trump():
+			_set_status("Не удалось подготовить открытый козырь для теста Джокера.")
+			return false
+		if not _ensure_leading_test_player_has_joker():
+			_set_status("Не удалось подготовить тестовую раздачу с Джокером у первого игрока.")
+			return false
+	elif joker_scenario == TestJokerScenario.RESPONSE:
+		if not _ensure_test_round_has_non_joker_trump():
+			_set_status("Не удалось подготовить открытый козырь для теста Джокера.")
+			return false
+		if not _ensure_response_test_player_has_joker():
+			_set_status("Не удалось подготовить тестовую раздачу с Джокером в ответ.")
+			return false
 
 	lobby_round_started = true
 	_rebuild_host_lobby_seats()
@@ -944,6 +988,112 @@ func _ensure_leading_test_player_has_joker() -> bool:
 	return false
 
 
+func _ensure_test_round_has_non_joker_trump() -> bool:
+	if match_host == null:
+		return false
+
+	var game: Game = match_host.game
+	if game.trump_card == null:
+		return false
+	if not game.trump_card.is_joker:
+		return true
+
+	for deck_card_index in game.deck.cards.size():
+		var replacement: Card = game.deck.cards[deck_card_index]
+		if replacement.is_joker:
+			continue
+		game.deck.cards[deck_card_index] = game.trump_card
+		game.trump_card = replacement
+		game.current_round.set_trump(Round.trump_from_card(replacement))
+		return true
+	return false
+
+
+func _ensure_response_test_player_has_joker() -> bool:
+	if match_host == null:
+		return false
+
+	var game: Game = match_host.game
+	var leader_index := game.current_round.lead_player_index
+	if leader_index < 0 or leader_index >= game.players.size():
+		return false
+	var responder_index := (leader_index + 1) % game.players.size()
+	var responder: Player = game.players[responder_index]
+	var responder_has_joker := false
+	for card in responder.hand:
+		if card.is_joker:
+			responder_has_joker = true
+			break
+
+	if not responder_has_joker:
+		var replacement: Card
+		for card in responder.hand:
+			if not card.is_joker:
+				replacement = card
+				break
+		if replacement == null or not _move_joker_to_response_player(responder, replacement):
+			return false
+
+	# После обычного захода ответный Джокер допустим, только если у владельца
+	# Джокера нет обычной карты масти захода. Оставляем у него одну обычную
+	# карту и гарантируем, что у первого игрока не будет этой масти для захода.
+	var responder_normal_card: Card
+	for card in responder.hand:
+		if not card.is_joker:
+			responder_normal_card = card
+			break
+	if responder_normal_card == null:
+		return false
+	if responder_normal_card.suit == game.current_round.trump:
+		return true
+
+	var leader: Player = game.players[leader_index]
+	for leader_card_variant in leader.hand.duplicate():
+		var leader_card: Card = leader_card_variant
+		if leader_card.is_joker or leader_card.suit != responder_normal_card.suit:
+			continue
+		for deck_card_index in game.deck.cards.size():
+			var deck_card: Card = game.deck.cards[deck_card_index]
+			if deck_card.is_joker or deck_card.suit == responder_normal_card.suit:
+				continue
+			if not leader.remove_card(leader_card):
+				return false
+			game.deck.cards.remove_at(deck_card_index)
+			game.deck.cards.append(leader_card)
+			leader.receive_card(deck_card)
+			break
+
+	for leader_card in leader.hand:
+		if not leader_card.is_joker and leader_card.suit == responder_normal_card.suit:
+			return false
+	return true
+
+
+func _move_joker_to_response_player(response_player: Player, replacement: Card) -> bool:
+	var game: Game = match_host.game
+	for source_player in game.players:
+		for source_card in source_player.hand:
+			if not source_card.is_joker:
+				continue
+			if not response_player.remove_card(replacement) or not source_player.remove_card(source_card):
+				return false
+			response_player.receive_card(source_card)
+			source_player.receive_card(replacement)
+			return true
+
+	for deck_card_index in game.deck.cards.size():
+		var deck_card: Card = game.deck.cards[deck_card_index]
+		if not deck_card.is_joker:
+			continue
+		if not response_player.remove_card(replacement):
+			return false
+		game.deck.cards.remove_at(deck_card_index)
+		game.deck.cards.append(replacement)
+		response_player.receive_card(deck_card)
+		return true
+	return false
+
+
 func _serialized_hand_has_suit(private_hand: Array, suit: int) -> bool:
 	for hand_card_variant in private_hand:
 		if not (hand_card_variant is Dictionary):
@@ -1185,10 +1335,14 @@ func _get_host_lobby_status() -> String:
 			state_text = "ждём подтверждение"
 		lines.append("Место %d — %s: %s" % [int(seat.get("player_index", -1)) + 1, str(seat.get("display_name", "Игрок")), state_text])
 	if lobby_round_started:
-		lines.append("Тестовая раздача начата: руки подтвердили %d из %d клиентов." % [_snapshot_acknowledged_by_player.size(), PLAYER_COUNT - 1])
-		var public_trick_text := _get_host_public_trick_text()
-		if not public_trick_text.is_empty():
-			lines.append(public_trick_text)
+		if _is_host_test_round_finished():
+			lines.append("Тестовая раздача завершена.")
+			lines.append_array(_get_host_test_round_result_lines())
+		else:
+			lines.append("Тестовая раздача начата: руки подтвердили %d из %d клиентов." % [_snapshot_acknowledged_by_player.size(), PLAYER_COUNT - 1])
+			var public_trick_text := _get_host_public_trick_text()
+			if not public_trick_text.is_empty():
+				lines.append(public_trick_text)
 	elif is_lobby_full():
 		lines.append("Все четыре места готовы. Можно начать тестовую раздачу.")
 	else:
@@ -1212,13 +1366,17 @@ func _get_client_lobby_status() -> String:
 		var round_data: Dictionary = _get_client_round_data()
 		var round_state := int(round_data.get("state", Round.State.SETUP))
 		var current_player_index := int(round_data.get("current_player_index", -1))
-		lines.append("Тестовая раздача начата. Твоя закрытая рука: %d карт." % client_private_hand_size)
-		if round_state == Round.State.BIDDING:
+		if round_state == Round.State.FINISHED:
+			lines.append("Тестовая раздача завершена. Твоя закрытая рука: %d карт." % client_private_hand_size)
+			lines.append_array(_get_client_test_round_result_lines())
+		elif round_state == Round.State.BIDDING:
+			lines.append("Тестовая раздача начата. Твоя закрытая рука: %d карт." % client_private_hand_size)
 			if current_player_index == client_player_index:
 				lines.append("Твой тестовый заказ: выбери число взяток ниже.")
 			else:
 				lines.append("Сейчас заказывает место %d." % (current_player_index + 1))
 		elif round_state == Round.State.PLAYING:
+			lines.append("Тестовая раздача начата. Твоя закрытая рука: %d карт." % client_private_hand_size)
 			var current_playing_player_index := _get_client_current_playing_player_index()
 			if current_playing_player_index == client_player_index:
 				if can_submit_test_card():
@@ -1236,6 +1394,42 @@ func _get_client_lobby_status() -> String:
 	else:
 		lines.append("Ждём, пока хост соберёт четыре места и начнёт раздачу.")
 	return "\n".join(lines)
+
+
+func _is_host_test_round_finished() -> bool:
+	return (
+		match_host != null
+		and match_host.game.current_round != null
+		and match_host.game.current_round.state == Round.State.FINISHED
+	)
+
+
+func _get_host_test_round_result_lines() -> Array[String]:
+	var result_lines: Array[String] = []
+	if match_host == null:
+		return result_lines
+	for player in match_host.game.players:
+		result_lines.append("%s: заказ %d, взято %d, счёт %d" % [player.display_name, player.bid, player.tricks_taken, player.total_score])
+	return result_lines
+
+
+func _get_client_test_round_result_lines() -> Array[String]:
+	var result_lines: Array[String] = []
+	var public_players_data: Variant = client_snapshot.get("players", [])
+	if not (public_players_data is Array):
+		return result_lines
+	for player_index in public_players_data.size():
+		var player_data_variant = public_players_data[player_index]
+		if not (player_data_variant is Dictionary):
+			continue
+		var player_data: Dictionary = player_data_variant
+		result_lines.append("Место %d: заказ %d, взято %d, счёт %d" % [
+			player_index + 1,
+			int(player_data.get("bid", -1)),
+			int(player_data.get("tricks_taken", 0)),
+			int(player_data.get("total_score", 0))
+		])
+	return result_lines
 
 
 func _send_message(message: Dictionary, target_peer_id: int) -> bool:

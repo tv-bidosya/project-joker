@@ -85,7 +85,11 @@ func _apply_play_card_command(command) -> bool:
 	var joker_mode := int(command.payload.get("joker_mode", Trick.JokerMode.NONE))
 	var declared_suit := int(command.payload.get("declared_suit", -1))
 	var forced_card_rank := int(command.payload.get("forced_card_rank", Trick.ForcedCardRank.NONE))
-	return game.play_card(command.player_index, card, joker_mode, declared_suit, forced_card_rank)
+	if not game.play_card(command.player_index, card, joker_mode, declared_suit, forced_card_rank):
+		return false
+	if game.is_round_complete():
+		game.finish_round()
+	return true
 
 
 func _find_card_by_key(hand: Array[Card], card_key: String) -> Card:

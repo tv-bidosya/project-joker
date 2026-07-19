@@ -329,10 +329,31 @@ var loopback_network_test
 var loopback_network_status_label: Label
 var loopback_network_start_round_button: Button
 var loopback_network_start_joker_round_button: Button
+var loopback_network_start_response_joker_round_button: Button
 var loopback_network_private_hand_label: Label
 var loopback_network_action_controls: VBoxContainer
 var loopback_network_joker_selection_open := false
 var loopback_network_pending_joker_suit := -1
+var loopback_network_is_technical_presentation := true
+var network_table_view: Control
+var network_table_title_label: Label
+var network_table_round_label: Label
+var network_table_info_label: Label
+var network_table_deck_label: Label
+var network_table_trick_label: Label
+var network_table_joker_label: Label
+var network_table_trick_layer: Control
+var network_table_hand_container: HBoxContainer
+var network_table_action_panel: PanelContainer
+var network_table_action_controls: VBoxContainer
+var network_table_close_button: Button
+var network_table_player_panels: Array[PanelContainer] = []
+var network_table_player_name_labels: Array[Label] = []
+var network_table_player_stats_labels: Array[Label] = []
+var network_table_player_score_labels: Array[Label] = []
+var network_table_avatar_panels: Array[PanelContainer] = []
+var network_table_avatar_images: Array[TextureRect] = []
+var network_table_avatar_symbols: Array[Label] = []
 
 
 func _ready() -> void:
@@ -377,6 +398,7 @@ func _ready() -> void:
 	loopback_network_test = LoopbackNetwork.new()
 	loopback_network_test.status_changed.connect(_refresh_loopback_network_status)
 	add_child(loopback_network_test)
+	_create_network_table_view()
 	joker_controls.z_index = 80
 	joker_controls.mouse_filter = Control.MOUSE_FILTER_PASS
 	undo_button.pressed.connect(_on_undo_pressed)
@@ -392,7 +414,10 @@ func _ready() -> void:
 	next_round_button.pressed.connect(_on_next_round_pressed)
 	pause_menu_button.pressed.connect(_on_pause_menu_pressed)
 	if _is_loopback_network_client_launch():
-		_show_loopback_network_test_menu()
+		if _is_loopback_network_party_client_launch():
+			_show_network_party_lobby()
+		else:
+			_show_loopback_network_test_menu()
 		call_deferred("_start_loopback_network_client_from_launch")
 	else:
 		_show_main_menu()
@@ -641,6 +666,7 @@ func _build_main_menu_content() -> void:
 	_add_menu_button("Статистика", _show_statistics_menu)
 	if _developer_report_tools_enabled():
 		_add_menu_button("Загрузить отчёт", _open_bug_report_file_dialog)
+		_add_menu_button("Сетевая партия (локально)", _show_network_party_lobby)
 		_add_menu_button("Локальная сеть (тест)", _show_loopback_network_test_menu)
 	_add_menu_button("Правила", _show_rules_menu)
 	_add_menu_button("Настройки", _show_settings_menu)
@@ -658,7 +684,16 @@ func _get_build_version_text() -> String:
 
 
 func _is_loopback_network_client_launch() -> bool:
-	return OS.get_cmdline_user_args().has("--local-client") or OS.get_cmdline_args().has("--local-client")
+	return (
+		OS.get_cmdline_user_args().has("--local-client")
+		or OS.get_cmdline_args().has("--local-client")
+		or OS.get_cmdline_user_args().has("--local-party-client")
+		or OS.get_cmdline_args().has("--local-party-client")
+	)
+
+
+func _is_loopback_network_party_client_launch() -> bool:
+	return OS.get_cmdline_user_args().has("--local-party-client") or OS.get_cmdline_args().has("--local-party-client")
 
 
 func _get_loopback_client_seat_from_launch() -> int:
@@ -672,14 +707,28 @@ func _get_loopback_client_seat_from_launch() -> int:
 
 
 func _show_loopback_network_test_menu() -> void:
+	loopback_network_is_technical_presentation = true
+	_show_loopback_network_lobby()
+
+
+func _show_network_party_lobby() -> void:
+	loopback_network_is_technical_presentation = false
+	_show_loopback_network_lobby()
+
+
+func _show_loopback_network_lobby() -> void:
 	is_pause_menu_open = false
 	menu_overlay.visible = true
 	_clear_children(menu_content)
 	loopback_network_start_round_button = null
 	loopback_network_start_joker_round_button = null
+	loopback_network_start_response_joker_round_button = null
 	loopback_network_private_hand_label = null
 	loopback_network_action_controls = null
-	_add_menu_title("Локальная сеть", "Проверка четырёх мест через ENet без Steam")
+	if loopback_network_is_technical_presentation:
+		_add_menu_title("Локальная сеть", "Проверка четырёх мест через ENet без Steam")
+	else:
+		_add_menu_title("Сетевая партия", "Комната на четыре места · локальный прототип без Steam")
 	_add_menu_spacer(8.0)
 
 	loopback_network_status_label = Label.new()
@@ -704,19 +753,26 @@ func _show_loopback_network_test_menu() -> void:
 	_add_menu_spacer(10.0)
 
 	if not loopback_network_test.is_running():
-		_add_menu_button("Запустить хост", _on_start_loopback_network_host_pressed, true)
-		_add_menu_button("Подключиться как место 2", _on_start_loopback_network_client_pressed)
+		_add_menu_button("Запустить хост" if loopback_network_is_technical_presentation else "Создать комнату", _on_start_loopback_network_host_pressed, true)
+		_add_menu_button("Подключиться как место 2" if loopback_network_is_technical_presentation else "Подключиться к комнате", _on_start_loopback_network_client_pressed)
 	else:
 		if loopback_network_test.is_host():
-			_add_menu_button("Открыть три окна клиентов", _on_open_loopback_network_clients_pressed, true)
-			_add_menu_label("Вручную: ProjectJokerDebug.exe -- --local-client --local-seat 1", 14, Color(0.72, 0.85, 0.76, 1.0))
-			loopback_network_start_round_button = _add_menu_button("Начать тестовую раздачу", _on_start_loopback_test_round_pressed, true)
+			_add_menu_button("Открыть три окна клиентов" if loopback_network_is_technical_presentation else "Открыть три окна участников", _on_open_loopback_network_clients_pressed, true)
+			if loopback_network_is_technical_presentation:
+				_add_menu_label("Вручную: ProjectJokerDebug.exe -- --local-client --local-seat 1", 14, Color(0.72, 0.85, 0.76, 1.0))
+			else:
+				_add_menu_label("Пока это локальная проверка на одном ПК. Steam-приглашения заменят этот шаг позднее.", 14, Color(0.72, 0.85, 0.76, 1.0))
+			loopback_network_start_round_button = _add_menu_button("Начать тестовую раздачу" if loopback_network_is_technical_presentation else "Начать партию", _on_start_loopback_test_round_pressed, true)
 			loopback_network_start_round_button.disabled = not loopback_network_test.can_start_test_round()
-			loopback_network_start_joker_round_button = _add_menu_button("Начать раздачу с Джокером", _on_start_loopback_test_joker_round_pressed)
-			loopback_network_start_joker_round_button.disabled = not loopback_network_test.can_start_test_round()
+			if loopback_network_is_technical_presentation:
+				loopback_network_start_joker_round_button = _add_menu_button("Начать раздачу с Джокером", _on_start_loopback_test_joker_round_pressed)
+				loopback_network_start_joker_round_button.disabled = not loopback_network_test.can_start_test_round()
+				loopback_network_start_response_joker_round_button = _add_menu_button("Начать раздачу с Джокером в ответ", _on_start_loopback_test_response_joker_round_pressed)
+				loopback_network_start_response_joker_round_button.disabled = not loopback_network_test.can_start_test_round()
 		else:
-			_add_menu_label("Это клиентское место тестового лобби. После старта оно получит только свою руку.", 14, Color(0.72, 0.85, 0.76, 1.0))
-		_add_menu_button("Остановить тест", _on_stop_loopback_network_pressed)
+			_add_menu_label("Это клиентское место тестового лобби. После старта оно получит только свою руку." if loopback_network_is_technical_presentation else "Ты подключён к комнате. После старта партии увидишь только свою руку.", 14, Color(0.72, 0.85, 0.76, 1.0))
+		_add_menu_button("Открыть сетевой стол" if loopback_network_is_technical_presentation else "Открыть стол", _on_open_network_table_pressed, true)
+		_add_menu_button("Остановить тест" if loopback_network_is_technical_presentation else "Закрыть комнату", _on_stop_loopback_network_pressed)
 
 	_add_menu_spacer(10.0)
 	_add_menu_button("Назад", _on_close_loopback_network_test_pressed)
@@ -725,19 +781,19 @@ func _show_loopback_network_test_menu() -> void:
 func _on_start_loopback_network_host_pressed() -> void:
 	_reset_loopback_network_joker_selection()
 	loopback_network_test.start_host()
-	_show_loopback_network_test_menu()
+	_show_loopback_network_lobby()
 
 
 func _on_start_loopback_network_client_pressed() -> void:
 	_reset_loopback_network_joker_selection()
 	loopback_network_test.start_client(1)
-	_show_loopback_network_test_menu()
+	_show_loopback_network_lobby()
 
 
 func _start_loopback_network_client_from_launch() -> void:
 	_reset_loopback_network_joker_selection()
 	loopback_network_test.start_client(_get_loopback_client_seat_from_launch())
-	_show_loopback_network_test_menu()
+	_show_loopback_network_lobby()
 
 
 func _on_open_loopback_network_clients_pressed() -> void:
@@ -747,10 +803,11 @@ func _on_open_loopback_network_clients_pressed() -> void:
 		return
 
 	var opened_window_count := 0
+	var launch_mode := "--local-client" if loopback_network_is_technical_presentation else "--local-party-client"
 	for player_index in range(1, 4):
 		var process_id := OS.create_process(
 			OS.get_executable_path(),
-			PackedStringArray(["--", "--local-client", "--local-seat", str(player_index)])
+			PackedStringArray(["--", launch_mode, "--local-seat", str(player_index)])
 		)
 		if process_id > 0:
 			opened_window_count += 1
@@ -760,19 +817,29 @@ func _on_open_loopback_network_clients_pressed() -> void:
 
 func _on_stop_loopback_network_pressed() -> void:
 	_reset_loopback_network_joker_selection()
+	if is_instance_valid(network_table_view):
+		network_table_view.visible = false
 	loopback_network_test.stop()
-	_show_loopback_network_test_menu()
+	_show_loopback_network_lobby()
 
 
 func _on_start_loopback_test_round_pressed() -> void:
 	_reset_loopback_network_joker_selection()
 	loopback_network_test.start_test_round()
 	_refresh_loopback_network_status()
+	if not loopback_network_is_technical_presentation:
+		_on_open_network_table_pressed()
 
 
 func _on_start_loopback_test_joker_round_pressed() -> void:
 	_reset_loopback_network_joker_selection()
 	loopback_network_test.start_test_round(true)
+	_refresh_loopback_network_status()
+
+
+func _on_start_loopback_test_response_joker_round_pressed() -> void:
+	_reset_loopback_network_joker_selection()
+	loopback_network_test.start_test_round_with_response_joker()
 	_refresh_loopback_network_status()
 
 
@@ -827,6 +894,8 @@ func _on_cancel_loopback_test_joker_selection_pressed() -> void:
 
 func _on_close_loopback_network_test_pressed() -> void:
 	_reset_loopback_network_joker_selection()
+	if is_instance_valid(network_table_view):
+		network_table_view.visible = false
 	loopback_network_test.stop()
 	_build_main_menu_content()
 
@@ -840,7 +909,582 @@ func _refresh_loopback_network_status() -> void:
 		loopback_network_start_round_button.disabled = not loopback_network_test.can_start_test_round()
 	if is_instance_valid(loopback_network_start_joker_round_button) and loopback_network_test != null:
 		loopback_network_start_joker_round_button.disabled = not loopback_network_test.can_start_test_round()
+	if is_instance_valid(loopback_network_start_response_joker_round_button) and loopback_network_test != null:
+		loopback_network_start_response_joker_round_button.disabled = not loopback_network_test.can_start_test_round()
 	_refresh_loopback_network_action_controls()
+	if not loopback_network_is_technical_presentation and _should_open_network_table_automatically():
+		if is_instance_valid(network_table_view) and not network_table_view.visible:
+			menu_overlay.visible = false
+			network_table_view.visible = true
+	if is_instance_valid(network_table_view) and network_table_view.visible:
+		_refresh_network_table_view()
+
+
+func _should_open_network_table_automatically() -> bool:
+	if loopback_network_test == null or not loopback_network_test.is_running():
+		return false
+	var snapshot: Dictionary = loopback_network_test.get_test_table_snapshot()
+	if snapshot.is_empty():
+		return false
+	var round_data: Dictionary = snapshot.get("round", {})
+	return int(round_data.get("state", Round.State.SETUP)) != Round.State.SETUP
+
+
+func _on_open_network_table_pressed() -> void:
+	if loopback_network_test == null or not loopback_network_test.is_running():
+		return
+	_reset_loopback_network_joker_selection()
+	menu_overlay.visible = false
+	network_table_view.visible = true
+	_refresh_network_table_view()
+
+
+func _on_close_network_table_pressed() -> void:
+	_reset_loopback_network_joker_selection()
+	network_table_view.visible = false
+	_show_loopback_network_lobby()
+
+
+func _create_network_table_view() -> void:
+	network_table_view = Control.new()
+	network_table_view.name = "LoopbackNetworkTableView"
+	network_table_view.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	network_table_view.mouse_filter = Control.MOUSE_FILTER_STOP
+	network_table_view.z_index = 95
+	network_table_view.visible = false
+	add_child(network_table_view)
+
+	var backdrop := ColorRect.new()
+	backdrop.color = Color(0.008, 0.05, 0.032, 1.0)
+	backdrop.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	backdrop.mouse_filter = Control.MOUSE_FILTER_STOP
+	network_table_view.add_child(backdrop)
+
+	var table_surface := Panel.new()
+	table_surface.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	table_surface.add_theme_stylebox_override(
+		"panel",
+		_create_flat_style(Color(0.025, 0.19, 0.095, 1.0), Color(0.66, 0.38, 0.1, 1.0), 8, 250, 10)
+	)
+	_set_control_layout(table_surface, 0.5, 0.5, 0.5, 0.5, -690.0, -355.0, 690.0, 350.0)
+	network_table_view.add_child(table_surface)
+
+	network_table_title_label = Label.new()
+	network_table_title_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	network_table_title_label.add_theme_font_size_override("font_size", 24)
+	network_table_title_label.add_theme_color_override("font_color", Color(1.0, 0.84, 0.38, 1.0))
+	_set_control_layout(network_table_title_label, 0.5, 0.0, 0.5, 0.0, -330.0, 20.0, 330.0, 54.0)
+	network_table_view.add_child(network_table_title_label)
+
+	network_table_round_label = Label.new()
+	network_table_round_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	network_table_round_label.add_theme_font_size_override("font_size", 17)
+	network_table_round_label.add_theme_color_override("font_color", Color(0.76, 0.9, 0.78, 1.0))
+	_set_control_layout(network_table_round_label, 0.5, 0.0, 0.5, 0.0, -420.0, 58.0, 420.0, 84.0)
+	network_table_view.add_child(network_table_round_label)
+
+	network_table_info_label = Label.new()
+	network_table_info_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	network_table_info_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	network_table_info_label.add_theme_font_size_override("font_size", 16)
+	network_table_info_label.add_theme_color_override("font_color", Color(0.78, 0.86, 0.78, 1.0))
+	_set_control_layout(network_table_info_label, 0.5, 0.0, 0.5, 0.0, -430.0, 86.0, 430.0, 132.0)
+	network_table_view.add_child(network_table_info_label)
+
+	network_table_deck_label = Label.new()
+	network_table_deck_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	network_table_deck_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	network_table_deck_label.add_theme_font_size_override("font_size", 15)
+	network_table_deck_label.add_theme_color_override("font_color", Color(0.88, 0.9, 0.8, 1.0))
+	_set_control_layout(network_table_deck_label, 1.0, 0.0, 1.0, 0.0, -440.0, 145.0, -46.0, 198.0)
+	network_table_view.add_child(network_table_deck_label)
+
+	network_table_close_button = Button.new()
+	network_table_close_button.custom_minimum_size = Vector2(185.0, 38.0)
+	_apply_table_action_button_style(network_table_close_button)
+	network_table_close_button.pressed.connect(_on_close_network_table_pressed)
+	_set_control_layout(network_table_close_button, 1.0, 0.0, 1.0, 0.0, -230.0, 25.0, -34.0, 63.0)
+	network_table_view.add_child(network_table_close_button)
+
+	network_table_trick_label = Label.new()
+	network_table_trick_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	network_table_trick_label.add_theme_font_size_override("font_size", 18)
+	network_table_trick_label.add_theme_color_override("font_color", Color(0.85, 0.92, 0.84, 1.0))
+	_set_control_layout(network_table_trick_label, 0.5, 0.5, 0.5, 0.5, -260.0, -168.0, 260.0, -140.0)
+	network_table_view.add_child(network_table_trick_label)
+
+	network_table_joker_label = Label.new()
+	network_table_joker_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	network_table_joker_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	network_table_joker_label.add_theme_font_size_override("font_size", 15)
+	network_table_joker_label.add_theme_color_override("font_color", Color(1.0, 0.84, 0.38, 1.0))
+	_set_control_layout(network_table_joker_label, 0.5, 0.5, 0.5, 0.5, -330.0, -138.0, 330.0, -104.0)
+	network_table_view.add_child(network_table_joker_label)
+
+	network_table_trick_layer = Control.new()
+	network_table_trick_layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	network_table_trick_layer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	network_table_view.add_child(network_table_trick_layer)
+
+	_create_network_table_player_widgets()
+
+	network_table_action_panel = PanelContainer.new()
+	network_table_action_panel.add_theme_stylebox_override("panel", _create_flat_style(Color(0.008, 0.035, 0.018, 0.92), Color(0.56, 0.39, 0.1, 0.82), 1, 8, 3))
+	network_table_action_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	network_table_view.add_child(network_table_action_panel)
+
+	network_table_action_controls = VBoxContainer.new()
+	network_table_action_controls.add_theme_constant_override("separation", 6)
+	network_table_action_panel.add_child(network_table_action_controls)
+
+	network_table_hand_container = HBoxContainer.new()
+	network_table_hand_container.alignment = BoxContainer.ALIGNMENT_CENTER
+	network_table_hand_container.add_theme_constant_override("separation", 12)
+	_set_control_layout(network_table_hand_container, 0.5, 1.0, 0.5, 1.0, -500.0, -165.0, 500.0, -28.0)
+	network_table_view.add_child(network_table_hand_container)
+
+
+func _create_network_table_player_widgets() -> void:
+	for player_index in PLAYER_NAMES.size():
+		var panel := PanelContainer.new()
+		panel.add_theme_stylebox_override("panel", player_panel_style)
+		panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		network_table_view.add_child(panel)
+		network_table_player_panels.append(panel)
+
+		var content := VBoxContainer.new()
+		content.alignment = BoxContainer.ALIGNMENT_CENTER
+		content.add_theme_constant_override("separation", 1)
+		panel.add_child(content)
+
+		var name_label := Label.new()
+		name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		name_label.add_theme_font_size_override("font_size", 19)
+		content.add_child(name_label)
+		network_table_player_name_labels.append(name_label)
+
+		var stats_label := Label.new()
+		stats_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		stats_label.add_theme_font_size_override("font_size", 15)
+		stats_label.add_theme_color_override("font_color", Color(0.83, 0.89, 0.82, 1.0))
+		content.add_child(stats_label)
+		network_table_player_stats_labels.append(stats_label)
+
+		var score_label := Label.new()
+		score_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		score_label.add_theme_font_size_override("font_size", 18)
+		content.add_child(score_label)
+		network_table_player_score_labels.append(score_label)
+
+		var avatar_panel := PanelContainer.new()
+		avatar_panel.add_theme_stylebox_override("panel", avatar_badge_style)
+		avatar_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		network_table_view.add_child(avatar_panel)
+		network_table_avatar_panels.append(avatar_panel)
+
+		var avatar_image := TextureRect.new()
+		avatar_image.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		avatar_image.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+		avatar_image.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		avatar_image.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		avatar_panel.add_child(avatar_image)
+		network_table_avatar_images.append(avatar_image)
+
+		var avatar_symbol := Label.new()
+		avatar_symbol.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		avatar_symbol.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		avatar_symbol.add_theme_font_size_override("font_size", 30)
+		avatar_symbol.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		avatar_symbol.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		avatar_panel.add_child(avatar_symbol)
+		network_table_avatar_symbols.append(avatar_symbol)
+
+
+func _place_network_table_player_widgets(player_index: int, relative_slot: int) -> void:
+	var panel: PanelContainer = network_table_player_panels[player_index]
+	var avatar: PanelContainer = network_table_avatar_panels[player_index]
+	match relative_slot:
+		0:
+			_set_control_layout(panel, 0.5, 0.5, 0.5, 0.5, -150.0, 248.0, 150.0, 332.0)
+			_set_control_layout(avatar, 0.5, 0.5, 0.5, 0.5, -260.0, 238.0, -170.0, 328.0)
+		1:
+			_set_control_layout(panel, 0.5, 0.5, 0.5, 0.5, -640.0, -38.0, -340.0, 46.0)
+			_set_control_layout(avatar, 0.5, 0.5, 0.5, 0.5, -750.0, -48.0, -660.0, 42.0)
+		2:
+			_set_control_layout(panel, 0.5, 0.5, 0.5, 0.5, -150.0, -338.0, 150.0, -254.0)
+			_set_control_layout(avatar, 0.5, 0.5, 0.5, 0.5, -260.0, -348.0, -170.0, -258.0)
+		3:
+			_set_control_layout(panel, 0.5, 0.5, 0.5, 0.5, 340.0, -38.0, 640.0, 46.0)
+			_set_control_layout(avatar, 0.5, 0.5, 0.5, 0.5, 660.0, -48.0, 750.0, 42.0)
+
+
+func _refresh_network_table_view() -> void:
+	if not is_instance_valid(network_table_view) or loopback_network_test == null:
+		return
+
+	network_table_title_label.text = "Сетевой стол · локальный ENet-тест" if loopback_network_is_technical_presentation else "Сетевая партия"
+	network_table_close_button.text = "Вернуться к тесту" if loopback_network_is_technical_presentation else "Вернуться в комнату"
+	network_table_close_button.tooltip_text = "Вернуться к техническому окну локальной сети" if loopback_network_is_technical_presentation else "Вернуться в комнату"
+	var snapshot: Dictionary = loopback_network_test.get_test_table_snapshot()
+	if snapshot.is_empty():
+		network_table_round_label.text = "Ожидание безопасного снимка стола"
+		network_table_info_label.text = "Подключение к хосту… после запуска раздачи здесь появятся публичный стол и только твоя рука."
+		network_table_deck_label.text = ""
+		network_table_trick_label.text = "Стол ещё не создан"
+		network_table_joker_label.text = ""
+		_clear_network_table_trick_cards()
+		_refresh_network_table_hand([])
+		_refresh_network_table_action_controls({})
+		return
+
+	var round_data: Dictionary = snapshot.get("round", {})
+	var active_trick: Dictionary = snapshot.get("active_trick", {})
+	var viewer_index: int = loopback_network_test.get_test_table_viewer_index()
+	var active_player_index := _get_network_table_active_player_index(round_data, active_trick)
+	_refresh_network_table_header(snapshot, round_data, active_trick, active_player_index)
+	_refresh_network_table_players(snapshot, viewer_index, active_player_index)
+	_refresh_network_table_trick(snapshot, viewer_index, active_trick)
+	var private_hand: Array = snapshot.get("private_hand", [])
+	_refresh_network_table_hand(private_hand)
+	_refresh_network_table_action_controls(snapshot)
+
+
+func _refresh_network_table_header(snapshot: Dictionary, round_data: Dictionary, active_trick: Dictionary, active_player_index: int) -> void:
+	var round_number: int = int(round_data.get("number", 0))
+	var cards_per_player: int = int(round_data.get("cards_per_player", 0))
+	var state: int = int(round_data.get("state", -1))
+	var phase_text := "Ожидание"
+	if state == Round.State.BIDDING:
+		phase_text = "заказ взяток"
+	elif state == Round.State.PLAYING:
+		phase_text = "розыгрыш взяток"
+	elif state == Round.State.FINISHED:
+		phase_text = "раздача завершена"
+	network_table_round_label.text = "%s раздача %d · %d карт · %s" % ["Тестовая" if loopback_network_is_technical_presentation else "", round_number, cards_per_player, phase_text]
+	network_table_round_label.text = network_table_round_label.text.strip_edges()
+
+	var trump_data: Dictionary = snapshot.get("trump_card", {})
+	var trump_card: Card = _create_network_table_card(trump_data)
+	if trump_card == null:
+		network_table_deck_label.text = "Колода ещё не открыта"
+	elif trump_card.is_joker:
+		network_table_deck_label.text = "Открытый Джокер · без козыря\nВ колоде: %d" % int(snapshot.get("cards_left_in_deck", 0))
+	else:
+		network_table_deck_label.text = "Открытый козырь: %s\nВ колоде: %d" % [trump_card.get_card_name(), int(snapshot.get("cards_left_in_deck", 0))]
+
+	if state == Round.State.FINISHED:
+		network_table_info_label.text = _get_network_table_result_text(snapshot)
+	elif active_player_index >= 0:
+		network_table_info_label.text = "Сейчас действует место %d." % [active_player_index + 1]
+	else:
+		network_table_info_label.text = "Ожидание следующего действия хоста."
+
+	var joker_text := _get_network_table_joker_text(active_trick)
+	network_table_joker_label.text = joker_text
+
+
+func _refresh_network_table_players(snapshot: Dictionary, viewer_index: int, active_player_index: int) -> void:
+	var players_data: Array = snapshot.get("players", [])
+	var players_by_index: Dictionary = {}
+	for player_data_variant in players_data:
+		if not (player_data_variant is Dictionary):
+			continue
+		var player_data: Dictionary = player_data_variant
+		players_by_index[int(player_data.get("player_index", -1))] = player_data
+
+	for player_index in PLAYER_NAMES.size():
+		var player_data: Dictionary = players_by_index.get(player_index, {})
+		var relative_slot: int = (player_index - viewer_index + PLAYER_NAMES.size()) % PLAYER_NAMES.size()
+		_place_network_table_player_widgets(player_index, relative_slot)
+		var is_current := player_index == active_player_index
+		network_table_player_panels[player_index].add_theme_stylebox_override("panel", active_player_panel_style if is_current else player_panel_style)
+		network_table_player_name_labels[player_index].text = str(player_data.get("display_name", "Игрок %d" % (player_index + 1)))
+		var bid_value: int = int(player_data.get("bid", -1))
+		var bid_text := "—" if bid_value < 0 else str(bid_value)
+		network_table_player_stats_labels[player_index].text = "Заказ: %s · Взято: %d" % [bid_text, int(player_data.get("tricks_taken", 0))]
+		var score: int = int(player_data.get("total_score", 0))
+		network_table_player_score_labels[player_index].text = "Счёт: %d" % score
+		network_table_player_score_labels[player_index].add_theme_color_override("font_color", Color(0.97, 0.84, 0.38, 1.0) if score >= 0 else Color(0.96, 0.42, 0.34, 1.0))
+
+		var avatar_texture: Texture2D = _get_player_avatar_texture(player_index)
+		network_table_avatar_images[player_index].texture = avatar_texture
+		network_table_avatar_images[player_index].visible = avatar_texture != null
+		network_table_avatar_symbols[player_index].text = _get_player_avatar_symbol(player_index)
+		network_table_avatar_symbols[player_index].visible = avatar_texture == null
+
+
+func _refresh_network_table_trick(snapshot: Dictionary, viewer_index: int, active_trick: Dictionary) -> void:
+	_clear_network_table_trick_cards()
+	var trick_data: Dictionary = active_trick
+	var is_active := not trick_data.is_empty() and not (trick_data.get("played_cards", []) as Array).is_empty()
+	if not is_active:
+		trick_data = snapshot.get("last_completed_trick", {})
+	var played_cards: Array = trick_data.get("played_cards", trick_data.get("cards", []))
+	if played_cards.is_empty():
+		network_table_trick_label.text = "Взятка ещё не началась"
+		return
+
+	network_table_trick_label.text = "Текущая взятка" if is_active else "Последняя взятка"
+	var played_by: Array = trick_data.get("played_by", [])
+	var winner_index: int = -1 if is_active else int(snapshot.get("last_trick_winner_index", -1))
+	for card_index in played_cards.size():
+		if card_index >= played_by.size() or not (played_cards[card_index] is Dictionary):
+			continue
+		var card_data: Dictionary = played_cards[card_index]
+		var card: Card = _create_network_table_card(card_data)
+		if card == null:
+			continue
+		var player_index: int = int(played_by[card_index])
+		var relative_slot: int = (player_index - viewer_index + PLAYER_NAMES.size()) % PLAYER_NAMES.size()
+		var card_view := CardView.new()
+		card_view.set_card(card)
+		card_view.set_card_size(Vector2(82.0, 118.0))
+		card_view.set_winner_highlight(player_index == winner_index)
+		_place_network_table_trick_card(card_view, relative_slot)
+		network_table_trick_layer.add_child(card_view)
+
+
+func _place_network_table_trick_card(card_view: CardView, relative_slot: int) -> void:
+	match relative_slot:
+		0:
+			_set_control_layout(card_view, 0.5, 0.5, 0.5, 0.5, -42.0, 86.0, 40.0, 204.0)
+		1:
+			_set_control_layout(card_view, 0.5, 0.5, 0.5, 0.5, -250.0, -6.0, -168.0, 112.0)
+		2:
+			_set_control_layout(card_view, 0.5, 0.5, 0.5, 0.5, -42.0, -128.0, 40.0, -10.0)
+		3:
+			_set_control_layout(card_view, 0.5, 0.5, 0.5, 0.5, 168.0, -6.0, 250.0, 112.0)
+
+
+func _refresh_network_table_hand(private_hand: Array) -> void:
+	if not is_instance_valid(network_table_hand_container):
+		return
+	_clear_children(network_table_hand_container)
+	for card_data_variant in private_hand:
+		if not (card_data_variant is Dictionary):
+			continue
+		var card_data: Dictionary = card_data_variant
+		var card: Card = _create_network_table_card(card_data)
+		if card == null:
+			continue
+		var card_view := CardView.new()
+		card_view.set_card(card)
+		card_view.set_card_size(Vector2(86.0, 124.0))
+		var card_key: String = str(card_data.get("card_key", ""))
+		var card_is_available := _is_network_table_card_available(card_key)
+		var joker_is_available := card.is_joker and _can_submit_loopback_test_joker()
+		var interactive := joker_is_available if card.is_joker else card_is_available
+		card_view.set_interactive(interactive, not interactive)
+		if interactive:
+			if card.is_joker:
+				card_view.card_pressed.connect(_on_open_loopback_test_joker_selection_pressed)
+			else:
+				card_view.card_pressed.connect(_on_network_table_card_pressed.bind(card_key))
+		network_table_hand_container.add_child(card_view)
+
+
+func _on_network_table_card_pressed(_card: Card, card_key: String) -> void:
+	_on_submit_loopback_test_card_pressed(card_key)
+
+
+func _is_network_table_card_available(card_key: String) -> bool:
+	if loopback_network_test == null or card_key.is_empty():
+		return false
+	var available_cards: Array[Dictionary] = []
+	if loopback_network_test.is_host() and loopback_network_test.can_submit_host_test_card():
+		available_cards = loopback_network_test.get_available_host_test_cards()
+	elif loopback_network_test.is_client() and loopback_network_test.can_submit_test_card():
+		available_cards = loopback_network_test.get_available_test_cards()
+	for card_data in available_cards:
+		if str(card_data.get("card_key", "")) == card_key:
+			return true
+	return false
+
+
+func _refresh_network_table_action_controls(snapshot: Dictionary) -> void:
+	if not is_instance_valid(network_table_action_controls):
+		return
+	_clear_children(network_table_action_controls)
+	if snapshot.is_empty():
+		network_table_action_panel.visible = false
+		return
+	network_table_action_panel.visible = true
+	if loopback_network_joker_selection_open:
+		_place_network_table_action_panel(true)
+		_create_network_table_joker_choice_controls()
+		return
+
+	_place_network_table_action_panel(false)
+	var available_bids: Array[int] = []
+	if loopback_network_test.is_host() and loopback_network_test.can_submit_host_test_bid():
+		available_bids = loopback_network_test.get_available_host_test_bids()
+	elif loopback_network_test.is_client() and loopback_network_test.can_submit_test_bid():
+		available_bids = loopback_network_test.get_available_test_bids()
+
+	var title := Label.new()
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 16)
+	title.add_theme_color_override("font_color", Color(0.9, 0.94, 0.85, 1.0))
+	network_table_action_controls.add_child(title)
+	if not available_bids.is_empty():
+		title.text = "Твой заказ"
+		var bid_row := HBoxContainer.new()
+		bid_row.alignment = BoxContainer.ALIGNMENT_CENTER
+		bid_row.add_theme_constant_override("separation", 8)
+		network_table_action_controls.add_child(bid_row)
+		for bid in available_bids:
+			var bid_button := _create_network_table_action_button("Заказать %d" % bid, _on_submit_loopback_test_bid_pressed.bind(bid), true)
+			bid_row.add_child(bid_button)
+		return
+
+	if _is_network_table_card_available_in_any_hand(snapshot) or _can_submit_loopback_test_joker():
+		title.text = "Твой ход · выбери подсвеченную карту в руке"
+	else:
+		title.text = "Ожидание хода другого игрока"
+
+
+func _place_network_table_action_panel(is_joker_selection: bool) -> void:
+	if is_joker_selection:
+		_set_control_layout(network_table_action_panel, 0.0, 0.5, 0.0, 0.5, 24.0, -155.0, 398.0, 210.0)
+	else:
+		_set_control_layout(network_table_action_panel, 0.5, 1.0, 0.5, 1.0, -360.0, -262.0, 360.0, -202.0)
+
+
+func _create_network_table_joker_choice_controls() -> void:
+	if not _can_submit_loopback_test_joker():
+		_reset_loopback_network_joker_selection()
+		return
+	var title := Label.new()
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	title.add_theme_font_size_override("font_size", 16)
+	title.add_theme_color_override("font_color", Color(1.0, 0.84, 0.38, 1.0))
+	network_table_action_controls.add_child(title)
+
+	if not _is_loopback_test_joker_leading():
+		title.text = "Джокер: выбери вариант"
+		var response_row := HBoxContainer.new()
+		response_row.alignment = BoxContainer.ALIGNMENT_CENTER
+		response_row.add_theme_constant_override("separation", 8)
+		network_table_action_controls.add_child(response_row)
+		response_row.add_child(_create_network_table_action_button("Джокер забирает", _on_submit_loopback_test_joker_pressed.bind(Trick.JokerMode.JOKER_WINS), true))
+		response_row.add_child(_create_network_table_action_button("Сбросить Джокер", _on_submit_loopback_test_joker_pressed.bind(Trick.JokerMode.NORMAL_CARD_WINS)))
+		network_table_action_controls.add_child(_create_network_table_action_button("Отменить выбор", _on_cancel_loopback_test_joker_selection_pressed))
+		return
+
+	if loopback_network_pending_joker_suit < Card.Suit.CLUBS:
+		title.text = "Джокер: объяви масть"
+		var suit_grid := GridContainer.new()
+		suit_grid.columns = 2
+		suit_grid.add_theme_constant_override("h_separation", 8)
+		suit_grid.add_theme_constant_override("v_separation", 6)
+		network_table_action_controls.add_child(suit_grid)
+		for suit in [Card.Suit.CLUBS, Card.Suit.SPADES, Card.Suit.HEARTS, Card.Suit.DIAMONDS]:
+			suit_grid.add_child(_create_network_table_action_button("Объявить %s" % _get_suit_symbol(suit), _on_choose_loopback_test_joker_suit_pressed.bind(suit), true))
+		network_table_action_controls.add_child(_create_network_table_action_button("Отменить выбор", _on_cancel_loopback_test_joker_selection_pressed))
+		return
+
+	var suit_symbol := _get_suit_symbol(loopback_network_pending_joker_suit)
+	title.text = "Джокер: условие для %s" % suit_symbol
+	var conditions := [
+		["%s: Джокер забирает" % suit_symbol, Trick.JokerMode.JOKER_WINS, Trick.ForcedCardRank.NONE],
+		["%s: старшая забирает" % suit_symbol, Trick.JokerMode.HIGHEST_DECLARED_CARD_WINS, Trick.ForcedCardRank.NONE],
+		["%s: младшая забирает" % suit_symbol, Trick.JokerMode.LOWEST_DECLARED_CARD_WINS, Trick.ForcedCardRank.NONE],
+		["%s: кладите старшую — Джокер забирает" % suit_symbol, Trick.JokerMode.JOKER_WINS, Trick.ForcedCardRank.HIGHEST],
+		["%s: кладите младшую — Джокер забирает" % suit_symbol, Trick.JokerMode.JOKER_WINS, Trick.ForcedCardRank.LOWEST],
+		["%s: кладите старшую — Джокер не забирает" % suit_symbol, Trick.JokerMode.NORMAL_CARD_WINS, Trick.ForcedCardRank.HIGHEST],
+		["%s: кладите младшую — Джокер не забирает" % suit_symbol, Trick.JokerMode.NORMAL_CARD_WINS, Trick.ForcedCardRank.LOWEST]
+	]
+	for condition_data in conditions:
+		var mode: Trick.JokerMode = condition_data[1]
+		var forced_rank: Trick.ForcedCardRank = condition_data[2]
+		network_table_action_controls.add_child(_create_network_table_action_button(str(condition_data[0]), _on_submit_loopback_test_joker_pressed.bind(mode, loopback_network_pending_joker_suit, forced_rank)))
+	network_table_action_controls.add_child(_create_network_table_action_button("Выбрать другую масть", _on_clear_loopback_test_joker_suit_pressed))
+	network_table_action_controls.add_child(_create_network_table_action_button("Отменить выбор", _on_cancel_loopback_test_joker_selection_pressed))
+
+
+func _create_network_table_action_button(label_text: String, callback: Callable, is_primary: bool = false) -> Button:
+	var button := Button.new()
+	button.text = label_text
+	button.custom_minimum_size = Vector2(0.0, 32.0)
+	button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_apply_table_action_button_style(button)
+	if is_primary:
+		button.add_theme_stylebox_override("normal", _create_flat_style(Color(0.16, 0.22, 0.1, 1.0), Color(0.95, 0.75, 0.28, 1.0), 2, 6, 3))
+	button.pressed.connect(callback)
+	return button
+
+
+func _is_network_table_card_available_in_any_hand(snapshot: Dictionary) -> bool:
+	var private_hand: Array = snapshot.get("private_hand", [])
+	for card_data_variant in private_hand:
+		if card_data_variant is Dictionary:
+			var card_data: Dictionary = card_data_variant
+			if _is_network_table_card_available(str(card_data.get("card_key", ""))):
+				return true
+	return false
+
+
+func _get_network_table_active_player_index(round_data: Dictionary, active_trick: Dictionary) -> int:
+	var state: int = int(round_data.get("state", -1))
+	if state == Round.State.BIDDING:
+		return int(round_data.get("current_player_index", -1))
+	if state == Round.State.PLAYING:
+		if not active_trick.is_empty():
+			return int(active_trick.get("current_player_index", -1))
+		return int(round_data.get("lead_player_index", -1))
+	return -1
+
+
+func _get_network_table_joker_text(trick_data: Dictionary) -> String:
+	var played_cards: Array = trick_data.get("played_cards", [])
+	if played_cards.is_empty() or not (played_cards[0] is Dictionary):
+		return ""
+	var first_card_data: Dictionary = played_cards[0]
+	if not bool(first_card_data.get("is_joker", false)):
+		return ""
+	var joker_mode: Trick.JokerMode = int(trick_data.get("joker_mode", Trick.JokerMode.NORMAL_CARD_WINS))
+	var forced_card_rank: Trick.ForcedCardRank = int(trick_data.get("forced_card_rank", Trick.ForcedCardRank.NONE))
+	return _get_joker_declaration_text(
+		joker_mode,
+		int(trick_data.get("declared_suit", -1)),
+		forced_card_rank
+	)
+
+
+func _get_network_table_result_text(snapshot: Dictionary) -> String:
+	var result_lines: PackedStringArray = ["Раздача завершена"]
+	var players_data: Array = snapshot.get("players", [])
+	for player_data_variant in players_data:
+		if not (player_data_variant is Dictionary):
+			continue
+		var player_data: Dictionary = player_data_variant
+		var bid: int = int(player_data.get("bid", -1))
+		var bid_text := "—" if bid < 0 else str(bid)
+		result_lines.append("%s: заказ %s · взято %d · счёт %d" % [
+			str(player_data.get("display_name", "Игрок")),
+			bid_text,
+			int(player_data.get("tricks_taken", 0)),
+			int(player_data.get("total_score", 0))
+		])
+	return "\n".join(result_lines)
+
+
+func _create_network_table_card(card_data: Dictionary) -> Card:
+	if card_data.is_empty():
+		return null
+	var card := Card.new()
+	card.suit = int(card_data.get("suit", Card.Suit.CLUBS))
+	card.rank = int(card_data.get("rank", Card.Rank.SIX))
+	card.is_joker = bool(card_data.get("is_joker", false))
+	return card
+
+
+func _clear_network_table_trick_cards() -> void:
+	if not is_instance_valid(network_table_trick_layer):
+		return
+	for child in network_table_trick_layer.get_children():
+		child.queue_free()
 
 
 func _refresh_loopback_network_action_controls() -> void:
