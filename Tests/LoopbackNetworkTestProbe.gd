@@ -2,7 +2,7 @@ extends SceneTree
 
 
 const LoopbackNetwork = preload("res://Scripts/core/LoopbackNetworkTest.gd")
-const TEST_TIMEOUT_SECONDS := 4.0
+const TEST_TIMEOUT_SECONDS := 8.0
 const TEST_PORT := 24568
 
 
@@ -40,13 +40,28 @@ func _process(delta: float) -> bool:
 			assert(client.client_player_index == client_index + 1, "Проверка ENet-лобби: клиент получил неверное место.")
 			assert(client.client_snapshot.get("players", []).size() == 4, "Проверка ENet-лобби: клиент должен видеть четыре публичных места.")
 
-		if all_clients_ready and host._snapshot_acknowledged_by_player.size() == 3:
-			print("Four-seat loopback ENet lobby test passed.")
-			quit(0)
-			return true
+		if all_clients_ready:
+			for client in clients:
+				if client.can_submit_test_bid():
+					var available_bids: Array[int] = client.get_available_test_bids()
+					assert(not available_bids.is_empty(), "Проверка ENet-лобби: у активного клиента должен быть допустимый заказ.")
+					assert(client.submit_test_bid(available_bids[0]), "Проверка ENet-лобби: клиент не смог отправить заказ хосту.")
+
+			if host.can_submit_host_test_bid():
+				var host_available_bids: Array[int] = host.get_available_host_test_bids()
+				assert(not host_available_bids.is_empty(), "Проверка ENet-лобби: у хоста должен быть допустимый финальный заказ.")
+				assert(host.submit_host_test_bid(host_available_bids[0]), "Проверка ENet-лобби: хост не смог подтвердить свой заказ.")
+
+			if host.match_host.revision == 4 and host.match_host.game.current_round.state == Round.State.PLAYING and host._snapshot_acknowledged_by_player.size() == 3:
+				for client in clients:
+					assert(int(client.client_snapshot.get("revision", -1)) == 4, "Проверка ENet-лобби: клиент должен получить обновление после всех заказов.")
+					assert(int(client.client_snapshot.get("round", {}).get("state", -1)) == Round.State.PLAYING, "Проверка ENet-лобби: после четырёх заказов должен начаться розыгрыш.")
+				print("Four-seat loopback ENet lobby bid test passed.")
+				quit(0)
+				return true
 
 	if elapsed_seconds >= TEST_TIMEOUT_SECONDS:
-		push_error("Проверка ENet-лобби: четыре места не подключились или не получили личные руки за отведённое время.")
+		push_error("Проверка ENet-лобби: места не подключились, не получили руки или не завершили сетевые заказы за отведённое время.")
 		quit(1)
 		return true
 

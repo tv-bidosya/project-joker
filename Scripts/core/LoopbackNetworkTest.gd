@@ -15,6 +15,7 @@ const SNAPSHOT_DELIVERY_INTERVAL_SECONDS := 0.15
 const SNAPSHOT_RETRY_INTERVAL_SECONDS := 1.0
 const NetworkHost = preload("res://Scripts/core/LocalMatchHost.gd")
 const NetworkSnapshot = preload("res://Scripts/core/MatchStateSnapshot.gd")
+const NetworkCommand = preload("res://Scripts/core/MatchCommand.gd")
 
 
 enum Mode {
@@ -36,6 +37,8 @@ var client_snapshot_is_safe := false
 var client_private_hand_size := 0
 var client_player_index := -1
 var client_requested_player_index := FIRST_CLIENT_PLAYER_INDEX
+var client_command_in_flight := false
+var client_last_command_message := ""
 var active_host_port := HOST_PORT
 var lobby_seats: Array[Dictionary] = []
 var lobby_round_started := false
@@ -100,6 +103,8 @@ func stop() -> void:
 	client_private_hand_size = 0
 	client_player_index = -1
 	active_host_port = HOST_PORT
+	client_command_in_flight = false
+	client_last_command_message = ""
 	lobby_seats.clear()
 	lobby_round_started = false
 	client_seat_confirmed = false
@@ -212,6 +217,9 @@ func _handle_message(message: Dictionary, sender_peer_id: int) -> void:
 	if mode == Mode.HOST and message_type == "snapshot_ack":
 		_handle_host_snapshot_ack(message, sender_peer_id)
 		return
+	if mode == Mode.HOST and message_type == "match_command":
+		_handle_host_match_command(message, sender_peer_id)
+		return
 	if mode == Mode.CLIENT and message_type == "seat_assigned":
 		_handle_client_seat_assigned(message)
 		return
@@ -226,6 +234,9 @@ func _handle_message(message: Dictionary, sender_peer_id: int) -> void:
 		return
 	if mode == Mode.CLIENT and message_type == "player_snapshot":
 		_handle_client_snapshot(message)
+		return
+	if mode == Mode.CLIENT and message_type == "command_result":
+		_handle_client_command_result(message)
 		return
 	if mode == Mode.CLIENT and message_type == "lobby_rejected":
 		_set_status("Хост отклонил место %d: %s." % [
@@ -314,9 +325,61 @@ func _handle_host_snapshot_ack(message: Dictionary, sender_peer_id: int) -> void
 	if int(message.get("hand_size", 0)) != 2:
 		_set_status("Клиент места %d подтвердил неверный размер руки." % (assigned_player_index + 1))
 		return
+	if match_host == null or int(message.get("revision", -1)) != match_host.revision:
+		return
 
 	_snapshot_acknowledged_by_player[assigned_player_index] = true
 	_set_status(_get_host_lobby_status())
+
+
+func _handle_host_match_command(message: Dictionary, sender_peer_id: int) -> void:
+	if match_host == null:
+		return
+
+	var assigned_player_index := int(_connected_player_by_peer.get(sender_peer_id, -1))
+	if assigned_player_index < FIRST_CLIENT_PLAYER_INDEX or not _confirmed_client_peers_by_player.has(assigned_player_index):
+		return
+
+	var command_data: Variant = message.get("command", {})
+	if not (command_data is Dictionary):
+		_send_command_result(sender_peer_id, false, "invalid_command", match_host.revision)
+		return
+
+	var requested_type := int(command_data.get("type", NetworkCommand.Type.INVALID))
+	if requested_type != NetworkCommand.Type.BID:
+		_send_command_result(sender_peer_id, false, "unsupported_command", match_host.revision)
+		return
+
+	var payload_data: Variant = command_data.get("payload", {})
+	if not (payload_data is Dictionary):
+		_send_command_result(sender_peer_id, false, "invalid_payload", match_host.revision)
+		return
+
+	var command := NetworkCommand.new(
+		NetworkCommand.Type.BID,
+		assigned_player_index,
+		int(command_data.get("round_number", -1)),
+		int(command_data.get("revision", -1)),
+		payload_data
+	)
+	var result: Dictionary = match_host.apply_command(command)
+	var accepted := bool(result.get("accepted", false))
+	_send_command_result(sender_peer_id, accepted, str(result.get("reason", "unknown")), match_host.revision)
+	if not accepted:
+		_set_status("Хост отклонил заказ места %d: %s." % [assigned_player_index + 1, str(result.get("reason", "unknown"))])
+		return
+
+	_queue_player_snapshots_for_delivery()
+	_set_status("Хост принял заказ места %d. Ревизия %d отправляется всем клиентам." % [assigned_player_index + 1, match_host.revision])
+
+
+func _send_command_result(target_peer_id: int, accepted: bool, reason: String, revision: int) -> void:
+	_send_message({
+		"type": "command_result",
+		"accepted": accepted,
+		"reason": reason,
+		"revision": revision
+	}, target_peer_id)
 
 
 func _handle_client_seat_assigned(message: Dictionary) -> void:
@@ -377,6 +440,118 @@ func _handle_client_snapshot(message: Dictionary) -> void:
 	}, 1)
 	client_snapshot_acknowledged = ack_was_sent
 	_set_status(_get_client_lobby_status())
+
+
+func _handle_client_command_result(message: Dictionary) -> void:
+	client_command_in_flight = false
+	var accepted := bool(message.get("accepted", false))
+	var reason := str(message.get("reason", "unknown"))
+	if accepted:
+		client_last_command_message = "Хост принял твой заказ. Получаю обновлённый стол…"
+	else:
+		client_last_command_message = "Хост отклонил заказ: %s." % reason
+	_set_status(_get_client_lobby_status())
+
+
+func can_submit_test_bid() -> bool:
+	if not client_snapshot_is_safe or client_player_index < FIRST_CLIENT_PLAYER_INDEX or client_command_in_flight:
+		return false
+
+	var round_data: Dictionary = _get_client_round_data()
+	return (
+		int(round_data.get("state", Round.State.SETUP)) == Round.State.BIDDING
+		and int(round_data.get("current_player_index", -1)) == client_player_index
+	)
+
+
+func get_available_test_bids() -> Array[int]:
+	var available_bids: Array[int] = []
+	if not can_submit_test_bid():
+		return available_bids
+
+	var round_data: Dictionary = _get_client_round_data()
+	var cards_per_player := int(round_data.get("cards_per_player", 0))
+	var bids_made := int(round_data.get("bids_made", 0))
+	var total_previous_bids := 0
+	var bids_data: Variant = round_data.get("bids", [])
+	if bids_data is Array:
+		for bid_variant in bids_data:
+			var bid := int(bid_variant)
+			if bid >= 0:
+				total_previous_bids += bid
+
+	for bid in range(cards_per_player + 1):
+		if bids_made == PLAYER_COUNT - 1 and total_previous_bids + bid == cards_per_player:
+			continue
+		available_bids.append(bid)
+	return available_bids
+
+
+func submit_test_bid(bid: int) -> bool:
+	if not can_submit_test_bid() or not get_available_test_bids().has(bid):
+		return false
+
+	var command := NetworkCommand.new(
+		NetworkCommand.Type.BID,
+		client_player_index,
+		int(client_snapshot.get("round_number", -1)),
+		int(client_snapshot.get("revision", -1)),
+		{"bid": bid}
+	)
+	var was_sent := _send_message({
+		"type": "match_command",
+		"command": command.to_dictionary()
+	}, 1)
+	if not was_sent:
+		client_last_command_message = "Не удалось отправить заказ хосту."
+		_set_status(_get_client_lobby_status())
+		return false
+
+	client_command_in_flight = true
+	client_last_command_message = "Отправляю заказ %d хосту…" % bid
+	_set_status(_get_client_lobby_status())
+	return true
+
+
+func can_submit_host_test_bid() -> bool:
+	if not is_host() or not lobby_round_started or match_host == null:
+		return false
+
+	var round: Round = match_host.game.current_round
+	return round != null and round.state == Round.State.BIDDING and round.current_player_index == HOST_PLAYER_INDEX
+
+
+func get_available_host_test_bids() -> Array[int]:
+	var available_bids: Array[int] = []
+	if not can_submit_host_test_bid():
+		return available_bids
+
+	var round: Round = match_host.game.current_round
+	for bid in range(round.cards_per_player + 1):
+		if round.can_place_bid(HOST_PLAYER_INDEX, bid):
+			available_bids.append(bid)
+	return available_bids
+
+
+func submit_host_test_bid(bid: int) -> bool:
+	if not can_submit_host_test_bid() or not get_available_host_test_bids().has(bid):
+		return false
+
+	var command := NetworkCommand.new(
+		NetworkCommand.Type.BID,
+		HOST_PLAYER_INDEX,
+		match_host.game.round_number,
+		match_host.revision,
+		{"bid": bid}
+	)
+	var result: Dictionary = match_host.apply_command(command)
+	if not bool(result.get("accepted", false)):
+		_set_status("Хост не смог подтвердить свой заказ: %s." % str(result.get("reason", "unknown")))
+		return false
+
+	_queue_player_snapshots_for_delivery()
+	_set_status("Хост принял свой заказ %d. Ревизия %d отправляется всем клиентам." % [bid, match_host.revision])
+	return true
 
 
 func _queue_player_snapshots_for_delivery() -> void:
@@ -490,6 +665,13 @@ func _store_client_snapshot(snapshot_data: Variant) -> bool:
 	return true
 
 
+func _get_client_round_data() -> Dictionary:
+	var round_data: Variant = client_snapshot.get("round", {})
+	if round_data is Dictionary:
+		return round_data
+	return {}
+
+
 func _update_client_confirmation_from_seats() -> void:
 	for seat in lobby_seats:
 		if int(seat.get("player_index", -1)) == client_player_index:
@@ -558,8 +740,20 @@ func _get_client_lobby_status() -> String:
 	if not client_seat_confirmed:
 		lines.append("Ждём, пока хост подтвердит твоё место.")
 	elif lobby_round_started and client_snapshot_is_safe:
+		var round_data: Dictionary = _get_client_round_data()
+		var round_state := int(round_data.get("state", Round.State.SETUP))
+		var current_player_index := int(round_data.get("current_player_index", -1))
 		lines.append("Тестовая раздача начата. Твоя закрытая рука: %d карт." % client_private_hand_size)
+		if round_state == Round.State.BIDDING:
+			if current_player_index == client_player_index:
+				lines.append("Твой тестовый заказ: выбери число взяток ниже.")
+			else:
+				lines.append("Сейчас заказывает место %d." % (current_player_index + 1))
+		elif round_state == Round.State.PLAYING:
+			lines.append("Заказы завершены. Тест обычных ходов — следующий шаг.")
 		lines.append("Подтверждение руки хосту: %s." % ("отправлено" if client_snapshot_acknowledged else "не отправилось"))
+		if not client_last_command_message.is_empty():
+			lines.append(client_last_command_message)
 	else:
 		lines.append("Ждём, пока хост соберёт четыре места и начнёт раздачу.")
 	return "\n".join(lines)

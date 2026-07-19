@@ -329,6 +329,7 @@ var loopback_network_test
 var loopback_network_status_label: Label
 var loopback_network_start_round_button: Button
 var loopback_network_private_hand_label: Label
+var loopback_network_action_controls: VBoxContainer
 
 
 func _ready() -> void:
@@ -673,6 +674,7 @@ func _show_loopback_network_test_menu() -> void:
 	_clear_children(menu_content)
 	loopback_network_start_round_button = null
 	loopback_network_private_hand_label = null
+	loopback_network_action_controls = null
 	_add_menu_title("Локальная сеть", "Проверка четырёх мест через ENet без Steam")
 	_add_menu_spacer(8.0)
 
@@ -683,13 +685,17 @@ func _show_loopback_network_test_menu() -> void:
 	loopback_network_status_label.add_theme_color_override("font_color", Color(0.72, 0.85, 0.76, 1.0))
 	menu_content.add_child(loopback_network_status_label)
 	_refresh_loopback_network_status()
-	if loopback_network_test.is_client():
+	if loopback_network_test.is_client() or loopback_network_test.is_host():
 		loopback_network_private_hand_label = Label.new()
 		loopback_network_private_hand_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		loopback_network_private_hand_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		loopback_network_private_hand_label.add_theme_font_size_override("font_size", 18)
 		loopback_network_private_hand_label.add_theme_color_override("font_color", Color(1.0, 0.84, 0.38, 1.0))
+		loopback_network_private_hand_label.visible = loopback_network_test.is_client()
 		menu_content.add_child(loopback_network_private_hand_label)
+		loopback_network_action_controls = VBoxContainer.new()
+		loopback_network_action_controls.add_theme_constant_override("separation", 8)
+		menu_content.add_child(loopback_network_action_controls)
 		_refresh_loopback_network_status()
 	_add_menu_spacer(10.0)
 
@@ -722,7 +728,7 @@ func _on_start_loopback_network_client_pressed() -> void:
 
 func _start_loopback_network_client_from_launch() -> void:
 	loopback_network_test.start_client(_get_loopback_client_seat_from_launch())
-	_refresh_loopback_network_status()
+	_show_loopback_network_test_menu()
 
 
 func _on_open_loopback_network_clients_pressed() -> void:
@@ -753,6 +759,14 @@ func _on_start_loopback_test_round_pressed() -> void:
 	_refresh_loopback_network_status()
 
 
+func _on_submit_loopback_test_bid_pressed(bid: int) -> void:
+	if loopback_network_test.is_host():
+		loopback_network_test.submit_host_test_bid(bid)
+	else:
+		loopback_network_test.submit_test_bid(bid)
+	_refresh_loopback_network_status()
+
+
 func _on_close_loopback_network_test_pressed() -> void:
 	loopback_network_test.stop()
 	_build_main_menu_content()
@@ -765,6 +779,39 @@ func _refresh_loopback_network_status() -> void:
 		loopback_network_private_hand_label.text = loopback_network_test.get_client_private_hand_text()
 	if is_instance_valid(loopback_network_start_round_button) and loopback_network_test != null:
 		loopback_network_start_round_button.disabled = not loopback_network_test.can_start_test_round()
+	_refresh_loopback_network_action_controls()
+
+
+func _refresh_loopback_network_action_controls() -> void:
+	if not is_instance_valid(loopback_network_action_controls) or loopback_network_test == null:
+		return
+
+	_clear_children(loopback_network_action_controls)
+	var available_bids: Array[int] = []
+	var title_text := ""
+	if loopback_network_test.is_client() and loopback_network_test.can_submit_test_bid():
+		available_bids = loopback_network_test.get_available_test_bids()
+		title_text = "Твой тестовый заказ"
+	elif loopback_network_test.is_host() and loopback_network_test.can_submit_host_test_bid():
+		available_bids = loopback_network_test.get_available_host_test_bids()
+		title_text = "Заказ хоста (место 1)"
+	if available_bids.is_empty():
+		return
+
+	var title := Label.new()
+	title.text = title_text
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 16)
+	title.add_theme_color_override("font_color", Color(0.85, 0.91, 0.8, 1.0))
+	loopback_network_action_controls.add_child(title)
+
+	var bid_row := HBoxContainer.new()
+	bid_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	bid_row.add_theme_constant_override("separation", 8)
+	loopback_network_action_controls.add_child(bid_row)
+	for bid in available_bids:
+		var button := _create_menu_button("Заказать %d" % bid, _on_submit_loopback_test_bid_pressed.bind(bid), true)
+		bid_row.add_child(button)
 
 
 func _show_new_game_setup() -> void:
@@ -7444,9 +7491,15 @@ func _run_network_snapshot_checks() -> void:
 	)
 
 	var lead_player_index := test_game.current_round.current_player_index
-	var lead_card := test_game.players[lead_player_index].hand[0]
+	var lead_card: Card = _select_non_joker_card_by_strength(test_game.players[lead_player_index].hand, false)
+	var lead_played := false
+	if lead_card == null:
+		lead_card = test_game.players[lead_player_index].hand[0]
+		lead_played = test_game.play_card(lead_player_index, lead_card, Trick.JokerMode.JOKER_WINS)
+	else:
+		lead_played = test_game.play_card(lead_player_index, lead_card)
 	assert(
-		test_game.play_card(lead_player_index, lead_card),
+		lead_played,
 		"Проверка сети: публичная карта должна быть сыграна."
 	)
 
