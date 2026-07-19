@@ -327,8 +327,8 @@ var game_statistics_recorded_for_current_session := false
 var statistics_return_to_final_menu := false
 var loopback_network_test
 var loopback_network_status_label: Label
-var loopback_network_test_bid_button: Button
-var loopback_network_test_play_controls: VBoxContainer
+var loopback_network_start_round_button: Button
+var loopback_network_private_hand_label: Label
 
 
 func _ready() -> void:
@@ -657,13 +657,23 @@ func _is_loopback_network_client_launch() -> bool:
 	return OS.get_cmdline_user_args().has("--local-client") or OS.get_cmdline_args().has("--local-client")
 
 
+func _get_loopback_client_seat_from_launch() -> int:
+	var argument_lists := [OS.get_cmdline_user_args(), OS.get_cmdline_args()]
+	for argument_list_variant in argument_lists:
+		var argument_list: PackedStringArray = argument_list_variant
+		var seat_argument_index := argument_list.find("--local-seat")
+		if seat_argument_index >= 0 and seat_argument_index + 1 < argument_list.size():
+			return clampi(int(argument_list[seat_argument_index + 1]), 1, 3)
+	return 1
+
+
 func _show_loopback_network_test_menu() -> void:
 	is_pause_menu_open = false
 	menu_overlay.visible = true
 	_clear_children(menu_content)
-	loopback_network_test_bid_button = null
-	loopback_network_test_play_controls = null
-	_add_menu_title("Локальная сеть", "Проверка двух окон через ENet без Steam")
+	loopback_network_start_round_button = null
+	loopback_network_private_hand_label = null
+	_add_menu_title("Локальная сеть", "Проверка четырёх мест через ENet без Steam")
 	_add_menu_spacer(8.0)
 
 	loopback_network_status_label = Label.new()
@@ -673,23 +683,27 @@ func _show_loopback_network_test_menu() -> void:
 	loopback_network_status_label.add_theme_color_override("font_color", Color(0.72, 0.85, 0.76, 1.0))
 	menu_content.add_child(loopback_network_status_label)
 	_refresh_loopback_network_status()
+	if loopback_network_test.is_client():
+		loopback_network_private_hand_label = Label.new()
+		loopback_network_private_hand_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		loopback_network_private_hand_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		loopback_network_private_hand_label.add_theme_font_size_override("font_size", 18)
+		loopback_network_private_hand_label.add_theme_color_override("font_color", Color(1.0, 0.84, 0.38, 1.0))
+		menu_content.add_child(loopback_network_private_hand_label)
+		_refresh_loopback_network_status()
 	_add_menu_spacer(10.0)
 
 	if not loopback_network_test.is_running():
 		_add_menu_button("Запустить хост", _on_start_loopback_network_host_pressed, true)
-		_add_menu_button("Подключиться как клиент", _on_start_loopback_network_client_pressed)
+		_add_menu_button("Подключиться как место 2", _on_start_loopback_network_client_pressed)
 	else:
 		if loopback_network_test.is_host():
-			_add_menu_button("Открыть второе окно клиента", _on_open_loopback_network_client_pressed, true)
-			_add_menu_label("Вручную: ProjectJokerDebug.exe -- --local-client", 14, Color(0.72, 0.85, 0.76, 1.0))
+			_add_menu_button("Открыть три окна клиентов", _on_open_loopback_network_clients_pressed, true)
+			_add_menu_label("Вручную: ProjectJokerDebug.exe -- --local-client --local-seat 1", 14, Color(0.72, 0.85, 0.76, 1.0))
+			loopback_network_start_round_button = _add_menu_button("Начать тестовую раздачу", _on_start_loopback_test_round_pressed, true)
+			loopback_network_start_round_button.disabled = not loopback_network_test.can_start_test_round()
 		else:
-			_add_menu_label("Это второе окно-клиент. После подключения оно покажет только свою руку.", 14, Color(0.72, 0.85, 0.76, 1.0))
-			loopback_network_test_bid_button = _add_menu_button("Отправить тестовый заказ: 1", _on_submit_loopback_test_bid_pressed, true)
-			loopback_network_test_bid_button.disabled = not loopback_network_test.can_submit_test_bid()
-			loopback_network_test_play_controls = VBoxContainer.new()
-			loopback_network_test_play_controls.add_theme_constant_override("separation", 6)
-			menu_content.add_child(loopback_network_test_play_controls)
-			_refresh_loopback_network_play_controls()
+			_add_menu_label("Это клиентское место тестового лобби. После старта оно получит только свою руку.", 14, Color(0.72, 0.85, 0.76, 1.0))
 		_add_menu_button("Остановить тест", _on_stop_loopback_network_pressed)
 
 	_add_menu_spacer(10.0)
@@ -702,26 +716,30 @@ func _on_start_loopback_network_host_pressed() -> void:
 
 
 func _on_start_loopback_network_client_pressed() -> void:
-	loopback_network_test.start_client()
+	loopback_network_test.start_client(1)
 	_show_loopback_network_test_menu()
 
 
 func _start_loopback_network_client_from_launch() -> void:
-	loopback_network_test.start_client()
+	loopback_network_test.start_client(_get_loopback_client_seat_from_launch())
 	_refresh_loopback_network_status()
 
 
-func _on_open_loopback_network_client_pressed() -> void:
+func _on_open_loopback_network_clients_pressed() -> void:
 	if OS.has_feature("editor"):
-		loopback_network_test.status_text = "В редакторе открой второе окно вручную через экспортированный .exe."
+		loopback_network_test.status_text = "В редакторе открой три клиентских окна вручную через экспортированный .exe."
 		_refresh_loopback_network_status()
 		return
 
-	var process_id := OS.create_process(OS.get_executable_path(), PackedStringArray(["--", "--local-client"]))
-	if process_id > 0:
-		loopback_network_test.status_text = "Второе окно клиента открывается…"
-	else:
-		loopback_network_test.status_text = "Не удалось открыть второе окно. Запусти клиент вручную."
+	var opened_window_count := 0
+	for player_index in range(1, 4):
+		var process_id := OS.create_process(
+			OS.get_executable_path(),
+			PackedStringArray(["--", "--local-client", "--local-seat", str(player_index)])
+		)
+		if process_id > 0:
+			opened_window_count += 1
+	loopback_network_test.status_text = "Открывается клиентских окон: %d из 3." % opened_window_count
 	_refresh_loopback_network_status()
 
 
@@ -730,13 +748,8 @@ func _on_stop_loopback_network_pressed() -> void:
 	_show_loopback_network_test_menu()
 
 
-func _on_submit_loopback_test_bid_pressed() -> void:
-	loopback_network_test.submit_test_bid()
-	_refresh_loopback_network_status()
-
-
-func _on_submit_loopback_test_card_pressed(card_key: String) -> void:
-	loopback_network_test.submit_test_card(card_key)
+func _on_start_loopback_test_round_pressed() -> void:
+	loopback_network_test.start_test_round()
 	_refresh_loopback_network_status()
 
 
@@ -748,42 +761,10 @@ func _on_close_loopback_network_test_pressed() -> void:
 func _refresh_loopback_network_status() -> void:
 	if is_instance_valid(loopback_network_status_label) and loopback_network_test != null:
 		loopback_network_status_label.text = loopback_network_test.status_text
-	if is_instance_valid(loopback_network_test_bid_button) and loopback_network_test != null:
-		loopback_network_test_bid_button.disabled = not loopback_network_test.can_submit_test_bid()
-	_refresh_loopback_network_play_controls()
-
-
-func _refresh_loopback_network_play_controls() -> void:
-	if not is_instance_valid(loopback_network_test_play_controls) or loopback_network_test == null:
-		return
-
-	_clear_children(loopback_network_test_play_controls)
-	if not loopback_network_test.can_submit_test_card():
-		return
-
-	var instruction := Label.new()
-	instruction.text = "Заказы завершены. Выбери карту для тестового хода:"
-	instruction.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	instruction.add_theme_font_size_override("font_size", 14)
-	instruction.add_theme_color_override("font_color", Color(0.85, 0.91, 0.8, 1.0))
-	loopback_network_test_play_controls.add_child(instruction)
-	for card_data in loopback_network_test.get_test_playable_cards():
-		var card_key := str(card_data.get("card_key", ""))
-		var button := _create_menu_button("Сыграть %s" % _format_loopback_snapshot_card(card_data), _on_submit_loopback_test_card_pressed.bind(card_key), true)
-		loopback_network_test_play_controls.add_child(button)
-
-
-func _format_loopback_snapshot_card(card_data: Dictionary) -> String:
-	if bool(card_data.get("is_joker", false)):
-		return "Джокер"
-
-	var rank_names := ["6", "7", "8", "9", "10", "В", "Д", "К", "Т"]
-	var suit_names := ["♣", "♠", "♥", "♦"]
-	var rank := int(card_data.get("rank", -1))
-	var suit := int(card_data.get("suit", -1))
-	if rank < 0 or rank >= rank_names.size() or suit < 0 or suit >= suit_names.size():
-		return "неизвестную карту"
-	return "%s%s" % [rank_names[rank], suit_names[suit]]
+	if is_instance_valid(loopback_network_private_hand_label) and loopback_network_test != null:
+		loopback_network_private_hand_label.text = loopback_network_test.get_client_private_hand_text()
+	if is_instance_valid(loopback_network_start_round_button) and loopback_network_test != null:
+		loopback_network_start_round_button.disabled = not loopback_network_test.can_start_test_round()
 
 
 func _show_new_game_setup() -> void:
