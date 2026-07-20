@@ -140,6 +140,10 @@ enum UndoVoteState {
 
 var game := Game.new(PLAYER_NAMES)
 var steam_bridge: RefCounted = SteamBridge.new()
+var steam_lobby_status_label: Label
+var steam_lobby_details_label: Label
+var steam_lobby_create_button: Button
+var steam_lobby_leave_button: Button
 var player_labels: Array[Label] = []
 var player_stats_labels: Array[Label] = []
 var player_score_labels: Array[Label] = []
@@ -360,6 +364,7 @@ var network_table_avatar_symbols: Array[Label] = []
 
 func _ready() -> void:
 	bot_random.randomize()
+	steam_bridge.lobby_status_changed.connect(_refresh_steam_lobby_status)
 	_run_joker_rule_checks()
 	_run_score_rule_checks()
 	_run_dark_round_checks()
@@ -691,6 +696,7 @@ func _show_developer_tools_menu() -> void:
 	_add_menu_button("Сетевая партия (локально)", _show_network_party_lobby, true)
 	_add_menu_button("Локальная сеть (тест)", _show_loopback_network_test_menu)
 	_add_menu_button("Steam · диагностика", _show_steam_diagnostics_menu)
+	_add_menu_button("Steam-комната (тест)", _show_steam_lobby_menu)
 	_add_menu_spacer(10.0)
 	_add_menu_button("Назад", _build_main_menu_content)
 
@@ -740,6 +746,71 @@ func _show_steam_diagnostics_menu() -> void:
 func _on_initialize_steam_diagnostics_pressed() -> void:
 	steam_bridge.initialize_for_diagnostics()
 	_show_steam_diagnostics_menu()
+
+
+func _show_steam_lobby_menu() -> void:
+	_clear_children(menu_content)
+	_add_menu_title("Steam-комната (тест)", "Закрытая комната на четыре места · без карточной партии, P2P и приглашений")
+	_add_menu_spacer(12.0)
+
+	steam_lobby_status_label = Label.new()
+	steam_lobby_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	steam_lobby_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	steam_lobby_status_label.add_theme_font_size_override("font_size", 18)
+	steam_lobby_status_label.add_theme_color_override("font_color", Color(0.72, 0.9, 0.62, 1.0))
+	menu_content.add_child(steam_lobby_status_label)
+
+	steam_lobby_details_label = Label.new()
+	steam_lobby_details_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	steam_lobby_details_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	steam_lobby_details_label.add_theme_font_size_override("font_size", 15)
+	steam_lobby_details_label.add_theme_color_override("font_color", Color(0.72, 0.85, 0.76, 1.0))
+	menu_content.add_child(steam_lobby_details_label)
+
+	_add_menu_spacer(14.0)
+	steam_lobby_create_button = _add_menu_button("Создать закрытую комнату", _on_create_steam_lobby_pressed, true)
+	steam_lobby_leave_button = _add_menu_button("Выйти из комнаты", _on_leave_steam_lobby_pressed)
+	_add_menu_spacer(10.0)
+	_add_menu_label("Эта проверка создаёт только комнату Steam с лимитом четыре игрока и метаданными Project Joker. Игровые карты, правила и закрытые руки пока через неё не передаются.", 14, Color(0.72, 0.85, 0.76, 1.0))
+	_add_menu_spacer(14.0)
+	_add_menu_button("Назад", _show_developer_tools_menu)
+	_refresh_steam_lobby_status()
+
+
+func _on_create_steam_lobby_pressed() -> void:
+	var lobby_state: Dictionary = steam_bridge.get_lobby_state()
+	if not bool(lobby_state.get("initialized", false)):
+		steam_bridge.initialize_for_diagnostics()
+	steam_bridge.create_friends_lobby()
+	_refresh_steam_lobby_status()
+
+
+func _on_leave_steam_lobby_pressed() -> void:
+	steam_bridge.leave_lobby()
+	_refresh_steam_lobby_status()
+
+
+func _refresh_steam_lobby_status() -> void:
+	if not is_instance_valid(steam_lobby_status_label) or not is_instance_valid(steam_lobby_details_label):
+		return
+
+	var lobby_state: Dictionary = steam_bridge.get_lobby_state()
+	var initialized := bool(lobby_state.get("initialized", false))
+	var lobby_id := int(lobby_state.get("lobby_id", 0))
+	var member_count := int(lobby_state.get("member_count", 0))
+	var member_limit := int(lobby_state.get("member_limit", 4))
+	var lobby_status := str(lobby_state.get("status", "Статус Steam-комнаты не получен."))
+
+	steam_lobby_status_label.text = lobby_status
+	if lobby_id > 0:
+		steam_lobby_details_label.text = "Комната: %d\nУчастники: %d из %d\nТип: закрытая для друзей · Project Joker · протокол 1" % [lobby_id, member_count, member_limit]
+	else:
+		steam_lobby_details_label.text = "Steam: %s\nПосле создания появятся ID комнаты и число участников." % ("подключён" if initialized else "ещё не подключён")
+
+	if is_instance_valid(steam_lobby_create_button):
+		steam_lobby_create_button.disabled = not initialized or lobby_id > 0
+	if is_instance_valid(steam_lobby_leave_button):
+		steam_lobby_leave_button.disabled = lobby_id <= 0
 
 
 func _is_loopback_network_client_launch() -> bool:
@@ -7187,6 +7258,7 @@ func _is_human_turn() -> bool:
 
 
 func _process(delta: float) -> void:
+	steam_bridge.process_callbacks()
 	_refresh_social_action_buttons()
 
 	if not turn_timer_active or not auto_turn_enabled:
