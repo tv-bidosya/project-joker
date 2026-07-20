@@ -31,6 +31,7 @@ const NetworkSnapshot = preload("res://Scripts/core/MatchStateSnapshot.gd")
 const NetworkCommand = preload("res://Scripts/core/MatchCommand.gd")
 const NetworkHost = preload("res://Scripts/core/LocalMatchHost.gd")
 const LoopbackNetwork = preload("res://Scripts/core/LoopbackNetworkTest.gd")
+const SteamBridge = preload("res://Scripts/core/SteamBridge.gd")
 const SCORE_SHEET_NUMBER_COLUMN_WIDTH := 46.0
 const SCORE_SHEET_MODE_COLUMN_WIDTH := 132.0
 const SCORE_SHEET_CARDS_COLUMN_WIDTH := 52.0
@@ -138,6 +139,7 @@ enum UndoVoteState {
 
 
 var game := Game.new(PLAYER_NAMES)
+var steam_bridge: RefCounted = SteamBridge.new()
 var player_labels: Array[Label] = []
 var player_stats_labels: Array[Label] = []
 var player_score_labels: Array[Label] = []
@@ -665,9 +667,7 @@ func _build_main_menu_content() -> void:
 	_add_menu_button("Профиль", _show_profile_menu)
 	_add_menu_button("Статистика", _show_statistics_menu)
 	if _developer_report_tools_enabled():
-		_add_menu_button("Загрузить отчёт", _open_bug_report_file_dialog)
-		_add_menu_button("Сетевая партия (локально)", _show_network_party_lobby)
-		_add_menu_button("Локальная сеть (тест)", _show_loopback_network_test_menu)
+		_add_menu_button("Инструменты разработчика", _show_developer_tools_menu)
 	_add_menu_button("Правила", _show_rules_menu)
 	_add_menu_button("Настройки", _show_settings_menu)
 	_add_menu_button("Выход", _on_quit_pressed)
@@ -681,6 +681,45 @@ func _developer_report_tools_enabled() -> bool:
 
 func _get_build_version_text() -> String:
 	return "версия разработчика %s" % GAME_VERSION if _developer_report_tools_enabled() else "версия для игроков %s" % GAME_VERSION
+
+
+func _show_developer_tools_menu() -> void:
+	_clear_children(menu_content)
+	_add_menu_title("Инструменты разработчика", "Локальные проверки, отчёты и подготовка Steam — эти пункты не войдут в публичное меню")
+	_add_menu_spacer(14.0)
+	_add_menu_button("Загрузить отчёт", _open_bug_report_file_dialog)
+	_add_menu_button("Сетевая партия (локально)", _show_network_party_lobby, true)
+	_add_menu_button("Локальная сеть (тест)", _show_loopback_network_test_menu)
+	_add_menu_button("Steam · диагностика", _show_steam_diagnostics_menu)
+	_add_menu_spacer(10.0)
+	_add_menu_button("Назад", _build_main_menu_content)
+
+
+func _show_steam_diagnostics_menu() -> void:
+	_clear_children(menu_content)
+	_add_menu_title("Steam · диагностика", "Безопасная проверка среды — без App ID, ключей, лобби и подключения игроков")
+	_add_menu_spacer(12.0)
+
+	var diagnostics: Dictionary = steam_bridge.get_diagnostics()
+	var runtime_available := bool(diagnostics.get("runtime_available", false))
+	var singleton_available := bool(diagnostics.get("singleton_available", false))
+	var can_initialize := bool(diagnostics.get("can_initialize", false))
+	var app_id_configured := bool(diagnostics.get("app_id_configured", false))
+	var available_color := Color(0.72, 0.9, 0.62, 1.0)
+	var waiting_color := Color(0.96, 0.78, 0.38, 1.0)
+	var muted_color := Color(0.72, 0.85, 0.76, 1.0)
+
+	_add_menu_label("GodotSteam: %s" % ("найден" if runtime_available else "не найден"), 18, available_color if runtime_available else waiting_color)
+	_add_menu_label("Steam API: %s" % ("доступен" if singleton_available else "пока не инициализирован"), 16, available_color if singleton_available else muted_color)
+	_add_menu_label("Метод инициализации: %s" % ("готов" if can_initialize else "недоступен"), 16, available_color if can_initialize else muted_color)
+	_add_menu_label("Локальный App ID: %s" % ("найден" if app_id_configured else "ещё не задан"), 16, muted_color)
+	_add_menu_spacer(8.0)
+	_add_menu_label(str(diagnostics.get("message", "Статус Steam не получен.")), 15, muted_color)
+	_add_menu_spacer(16.0)
+	_add_menu_label("На этом шаге игра не вызывает Steam API и не требует запущенного Steam-клиента. Следующим отдельным шагом будет локальная проверка инициализации с тестовым App ID, который не войдёт в релиз.", 14, muted_color)
+	_add_menu_spacer(16.0)
+	_add_menu_button("Обновить статус", _show_steam_diagnostics_menu, true)
+	_add_menu_button("Назад", _build_main_menu_content)
 
 
 func _is_loopback_network_client_launch() -> bool:
