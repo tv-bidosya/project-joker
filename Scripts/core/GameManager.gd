@@ -705,6 +705,8 @@ func _show_steam_diagnostics_menu() -> void:
 	var singleton_available := bool(diagnostics.get("singleton_available", false))
 	var can_initialize := bool(diagnostics.get("can_initialize", false))
 	var app_id_configured := bool(diagnostics.get("app_id_configured", false))
+	var initialization_attempted := bool(diagnostics.get("initialization_attempted", false))
+	var initialized := bool(diagnostics.get("initialized", false))
 	var available_color := Color(0.72, 0.9, 0.62, 1.0)
 	var waiting_color := Color(0.96, 0.78, 0.38, 1.0)
 	var muted_color := Color(0.72, 0.85, 0.76, 1.0)
@@ -713,13 +715,31 @@ func _show_steam_diagnostics_menu() -> void:
 	_add_menu_label("Steam API: %s" % ("доступен" if singleton_available else "пока не инициализирован"), 16, available_color if singleton_available else muted_color)
 	_add_menu_label("Метод инициализации: %s" % ("готов" if can_initialize else "недоступен"), 16, available_color if can_initialize else muted_color)
 	_add_menu_label("Локальный App ID: %s" % ("найден" if app_id_configured else "ещё не задан"), 16, muted_color)
+	if initialized:
+		var persona_name := str(diagnostics.get("persona_name", ""))
+		var active_app_id := int(diagnostics.get("active_app_id", 0))
+		_add_menu_label("Steam-клиент: подключён", 16, available_color)
+		_add_menu_label("Профиль Steam: %s · тестовый App ID: %d" % [persona_name if not persona_name.is_empty() else "без имени", active_app_id], 16, muted_color)
+	elif initialization_attempted:
+		var initialization_status := int(diagnostics.get("initialization_status", -1))
+		var initialization_verbal := str(diagnostics.get("initialization_verbal", ""))
+		_add_menu_label("Steam-клиент: не подтвердил подключение · код %d" % initialization_status, 16, waiting_color)
+		if not initialization_verbal.is_empty():
+			_add_menu_label(initialization_verbal, 15, muted_color)
 	_add_menu_spacer(8.0)
 	_add_menu_label(str(diagnostics.get("message", "Статус Steam не получен.")), 15, muted_color)
 	_add_menu_spacer(16.0)
-	_add_menu_label("На этом шаге игра не вызывает Steam API и не требует запущенного Steam-клиента. Следующим отдельным шагом будет локальная проверка инициализации с тестовым App ID, который не войдёт в релиз.", 14, muted_color)
+	_add_menu_label("Тест использует технический App ID 480 только на этом компьютере. Он не войдёт в экспорт, не создаёт лобби и не подключает других игроков.", 14, muted_color)
 	_add_menu_spacer(16.0)
-	_add_menu_button("Обновить статус", _show_steam_diagnostics_menu, true)
+	if can_initialize and not initialized:
+		_add_menu_button("Проверить Steam-клиент", _on_initialize_steam_diagnostics_pressed, true)
+	_add_menu_button("Обновить статус", _show_steam_diagnostics_menu)
 	_add_menu_button("Назад", _build_main_menu_content)
+
+
+func _on_initialize_steam_diagnostics_pressed() -> void:
+	steam_bridge.initialize_for_diagnostics()
+	_show_steam_diagnostics_menu()
 
 
 func _is_loopback_network_client_launch() -> bool:
