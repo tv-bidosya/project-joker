@@ -142,7 +142,10 @@ var game := Game.new(PLAYER_NAMES)
 var steam_bridge: RefCounted = SteamBridge.new()
 var steam_lobby_status_label: Label
 var steam_lobby_details_label: Label
+var steam_lobby_members_label: Label
 var steam_lobby_create_button: Button
+var steam_lobby_invite_button: Button
+var steam_lobby_ready_button: Button
 var steam_lobby_leave_button: Button
 var player_labels: Array[Label] = []
 var player_stats_labels: Array[Label] = []
@@ -426,6 +429,10 @@ func _ready() -> void:
 		else:
 			_show_loopback_network_test_menu()
 		call_deferred("_start_loopback_network_client_from_launch")
+	elif steam_bridge.has_lobby_join_request_from_launch():
+		steam_bridge.initialize_for_diagnostics()
+		steam_bridge.join_lobby_from_launch()
+		_show_steam_lobby_menu()
 	else:
 		_show_main_menu()
 
@@ -750,7 +757,7 @@ func _on_initialize_steam_diagnostics_pressed() -> void:
 
 func _show_steam_lobby_menu() -> void:
 	_clear_children(menu_content)
-	_add_menu_title("Steam-комната (тест)", "Закрытая комната на четыре места · без карточной партии, P2P и приглашений")
+	_add_menu_title("Steam-комната (тест)", "Закрытая комната на четыре места · приглашения Steam без карточной партии и P2P")
 	_add_menu_spacer(12.0)
 
 	steam_lobby_status_label = Label.new()
@@ -767,11 +774,20 @@ func _show_steam_lobby_menu() -> void:
 	steam_lobby_details_label.add_theme_color_override("font_color", Color(0.72, 0.85, 0.76, 1.0))
 	menu_content.add_child(steam_lobby_details_label)
 
+	steam_lobby_members_label = Label.new()
+	steam_lobby_members_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	steam_lobby_members_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	steam_lobby_members_label.add_theme_font_size_override("font_size", 15)
+	steam_lobby_members_label.add_theme_color_override("font_color", Color(0.86, 0.9, 0.82, 1.0))
+	menu_content.add_child(steam_lobby_members_label)
+
 	_add_menu_spacer(14.0)
 	steam_lobby_create_button = _add_menu_button("Создать закрытую комнату", _on_create_steam_lobby_pressed, true)
+	steam_lobby_invite_button = _add_menu_button("Пригласить друга через Steam", _on_open_steam_lobby_invite_pressed)
+	steam_lobby_ready_button = _add_menu_button("Отметиться готовым", _on_toggle_steam_lobby_ready_pressed)
 	steam_lobby_leave_button = _add_menu_button("Выйти из комнаты", _on_leave_steam_lobby_pressed)
 	_add_menu_spacer(10.0)
-	_add_menu_label("Эта проверка создаёт только комнату Steam с лимитом четыре игрока и метаданными Project Joker. Игровые карты, правила и закрытые руки пока через неё не передаются.", 14, Color(0.72, 0.85, 0.76, 1.0))
+	_add_menu_label("Приглашение открывает стандартный Steam Overlay. Принявший его друг войдёт в эту комнату, а готовность каждого видна всем. Игровые карты, правила и закрытые руки пока через неё не передаются.", 14, Color(0.72, 0.85, 0.76, 1.0))
 	_add_menu_spacer(14.0)
 	_add_menu_button("Назад", _show_developer_tools_menu)
 	_refresh_steam_lobby_status()
@@ -790,8 +806,19 @@ func _on_leave_steam_lobby_pressed() -> void:
 	_refresh_steam_lobby_status()
 
 
+func _on_open_steam_lobby_invite_pressed() -> void:
+	steam_bridge.open_lobby_invite_overlay()
+	_refresh_steam_lobby_status()
+
+
+func _on_toggle_steam_lobby_ready_pressed() -> void:
+	var lobby_state: Dictionary = steam_bridge.get_lobby_state()
+	steam_bridge.set_local_lobby_ready(not bool(lobby_state.get("local_ready", false)))
+	_refresh_steam_lobby_status()
+
+
 func _refresh_steam_lobby_status() -> void:
-	if not is_instance_valid(steam_lobby_status_label) or not is_instance_valid(steam_lobby_details_label):
+	if not is_instance_valid(steam_lobby_status_label) or not is_instance_valid(steam_lobby_details_label) or not is_instance_valid(steam_lobby_members_label):
 		return
 
 	var lobby_state: Dictionary = steam_bridge.get_lobby_state()
@@ -800,6 +827,8 @@ func _refresh_steam_lobby_status() -> void:
 	var member_count := int(lobby_state.get("member_count", 0))
 	var member_limit := int(lobby_state.get("member_limit", 4))
 	var lobby_status := str(lobby_state.get("status", "Статус Steam-комнаты не получен."))
+	var local_ready := bool(lobby_state.get("local_ready", false))
+	var members: Array = lobby_state.get("members", [])
 
 	steam_lobby_status_label.text = lobby_status
 	if lobby_id > 0:
@@ -807,8 +836,22 @@ func _refresh_steam_lobby_status() -> void:
 	else:
 		steam_lobby_details_label.text = "Steam: %s\nПосле создания появятся ID комнаты и число участников." % ("подключён" if initialized else "ещё не подключён")
 
+	var member_lines: PackedStringArray = []
+	for member_variant in members:
+		var member: Dictionary = member_variant
+		var member_name := str(member.get("name", "Игрок"))
+		var member_role := " · хост" if bool(member.get("is_owner", false)) else ""
+		var member_ready := "✓ готов" if bool(member.get("ready", false)) else "… ждём"
+		member_lines.append("%s%s — %s" % [member_name, member_role, member_ready])
+	steam_lobby_members_label.text = "Участники комнаты\n%s" % "\n".join(member_lines) if not member_lines.is_empty() else ""
+
 	if is_instance_valid(steam_lobby_create_button):
 		steam_lobby_create_button.disabled = not initialized or lobby_id > 0
+	if is_instance_valid(steam_lobby_invite_button):
+		steam_lobby_invite_button.disabled = lobby_id <= 0
+	if is_instance_valid(steam_lobby_ready_button):
+		steam_lobby_ready_button.disabled = lobby_id <= 0
+		steam_lobby_ready_button.text = "Готов ✓ (отменить)" if local_ready else "Отметиться готовым"
 	if is_instance_valid(steam_lobby_leave_button):
 		steam_lobby_leave_button.disabled = lobby_id <= 0
 

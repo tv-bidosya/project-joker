@@ -22,6 +22,8 @@ var _active_app_id := 0
 var _lobby_callbacks_connected := false
 var _lobby_id := 0
 var _lobby_status := "Steam-комната ещё не создана."
+var _local_lobby_ready := false
+var _pending_join_source := ""
 
 
 func get_diagnostics() -> Dictionary:
@@ -131,6 +133,88 @@ func create_friends_lobby() -> Dictionary:
 	return get_lobby_state()
 
 
+func open_lobby_invite_overlay() -> Dictionary:
+	if _lobby_id <= 0:
+		_lobby_status = "Сначала создай или зайди в Steam-комнату."
+		lobby_status_changed.emit()
+		return get_lobby_state()
+
+	var steam_api := _get_steam_api()
+	if steam_api == null or not steam_api.has_method(&"activateGameOverlayInviteDialog"):
+		_lobby_status = "Steam Overlay с приглашениями недоступен в этой среде."
+		lobby_status_changed.emit()
+		return get_lobby_state()
+
+	steam_api.call(&"activateGameOverlayInviteDialog", _lobby_id)
+	_lobby_status = "Steam открыл диалог приглашения для этой комнаты."
+	lobby_status_changed.emit()
+	return get_lobby_state()
+
+
+func join_lobby(lobby_id: int, source: String = "Steam") -> Dictionary:
+	if not _initialized:
+		_lobby_status = "Сначала подключи Steam-клиент."
+		lobby_status_changed.emit()
+		return get_lobby_state()
+	if lobby_id <= 0:
+		_lobby_status = "Steam передал некорректный ID комнаты."
+		lobby_status_changed.emit()
+		return get_lobby_state()
+	if _lobby_id == lobby_id:
+		_lobby_status = "Ты уже находишься в этой Steam-комнате."
+		lobby_status_changed.emit()
+		return get_lobby_state()
+	if _lobby_id > 0:
+		_lobby_status = "Сначала выйди из текущей Steam-комнаты."
+		lobby_status_changed.emit()
+		return get_lobby_state()
+
+	var steam_api := _get_steam_api()
+	if steam_api == null or not steam_api.has_method(&"joinLobby"):
+		_lobby_status = "Steam API не предоставляет вход в комнаты в этой среде."
+		lobby_status_changed.emit()
+		return get_lobby_state()
+
+	_ensure_lobby_callbacks(steam_api)
+	_pending_join_source = source
+	_lobby_status = "Входим в Steam-комнату по %s…" % source
+	steam_api.call(&"joinLobby", lobby_id)
+	lobby_status_changed.emit()
+	return get_lobby_state()
+
+
+func join_lobby_from_launch() -> Dictionary:
+	var lobby_id := _get_launch_lobby_id()
+	if lobby_id <= 0:
+		_lobby_status = "Steam не передал ID комнаты при запуске."
+		lobby_status_changed.emit()
+		return get_lobby_state()
+	return join_lobby(lobby_id, "приглашению Steam")
+
+
+func has_lobby_join_request_from_launch() -> bool:
+	return _get_launch_lobby_id() > 0
+
+
+func set_local_lobby_ready(ready: bool) -> Dictionary:
+	if _lobby_id <= 0:
+		_lobby_status = "Готовность можно отметить только внутри Steam-комнаты."
+		lobby_status_changed.emit()
+		return get_lobby_state()
+
+	var steam_api := _get_steam_api()
+	if steam_api == null or not steam_api.has_method(&"setLobbyMemberData"):
+		_lobby_status = "Steam API не предоставляет отметку готовности в этой среде."
+		lobby_status_changed.emit()
+		return get_lobby_state()
+
+	_local_lobby_ready = ready
+	steam_api.call(&"setLobbyMemberData", _lobby_id, "pj_ready", "1" if ready else "0")
+	_lobby_status = "Ты готов к сетевой партии." if ready else "Готовность отменена."
+	lobby_status_changed.emit()
+	return get_lobby_state()
+
+
 func leave_lobby() -> Dictionary:
 	if _lobby_id <= 0:
 		_lobby_status = "Активной Steam-комнаты нет."
@@ -141,6 +225,8 @@ func leave_lobby() -> Dictionary:
 	if steam_api != null and steam_api.has_method(&"leaveLobby"):
 		steam_api.call(&"leaveLobby", _lobby_id)
 	_lobby_id = 0
+	_local_lobby_ready = false
+	_pending_join_source = ""
 	_lobby_status = "Ты вышел из тестовой Steam-комнаты."
 	lobby_status_changed.emit()
 	return get_lobby_state()
@@ -150,6 +236,7 @@ func get_lobby_state() -> Dictionary:
 	var member_count := 0
 	var member_limit := LOBBY_MEMBER_LIMIT
 	var lobby_owner := 0
+	var members: Array[Dictionary] = []
 	var steam_api := _get_steam_api()
 	if _lobby_id > 0 and steam_api != null:
 		if steam_api.has_method(&"getNumLobbyMembers"):
@@ -158,6 +245,7 @@ func get_lobby_state() -> Dictionary:
 			member_limit = int(steam_api.call(&"getLobbyMemberLimit", _lobby_id))
 		if steam_api.has_method(&"getLobbyOwner"):
 			lobby_owner = int(steam_api.call(&"getLobbyOwner", _lobby_id))
+		members = _get_lobby_members(steam_api, member_count, lobby_owner)
 
 	return {
 		"initialized": _initialized,
@@ -166,6 +254,8 @@ func get_lobby_state() -> Dictionary:
 		"member_count": member_count,
 		"member_limit": member_limit,
 		"lobby_owner": lobby_owner,
+		"members": members,
+		"local_ready": _local_lobby_ready,
 	}
 
 
@@ -187,6 +277,10 @@ func _ensure_lobby_callbacks(steam_api: Object) -> void:
 		steam_api.connect(&"lobby_chat_update", _on_lobby_chat_update)
 	if steam_api.has_signal(&"lobby_data_update"):
 		steam_api.connect(&"lobby_data_update", _on_lobby_data_update)
+	if steam_api.has_signal(&"lobby_invite"):
+		steam_api.connect(&"lobby_invite", _on_lobby_invite)
+	if steam_api.has_signal(&"join_requested"):
+		steam_api.connect(&"join_requested", _on_join_requested)
 	_lobby_callbacks_connected = true
 
 
@@ -215,9 +309,14 @@ func _on_lobby_joined(lobby_id: int, _permissions: int, _locked: bool, response:
 		lobby_status_changed.emit()
 		return
 
-	if _lobby_id == 0:
-		_lobby_id = lobby_id
-	_lobby_status = "Ты находишься в Steam-комнате. Ожидаем игроков."
+	_lobby_id = lobby_id
+	_local_lobby_ready = false
+	var steam_api := _get_steam_api()
+	if steam_api != null and steam_api.has_method(&"setLobbyMemberData"):
+		steam_api.call(&"setLobbyMemberData", _lobby_id, "pj_ready", "0")
+	var joined_from := _pending_join_source
+	_pending_join_source = ""
+	_lobby_status = "Ты вошёл в Steam-комнату. Отметь готовность, когда все соберутся." if not joined_from.is_empty() else "Ты находишься в Steam-комнате. Ожидаем игроков."
 	lobby_status_changed.emit()
 
 
@@ -230,6 +329,57 @@ func _on_lobby_chat_update(lobby_id: int, _changed_id: int, _making_change_id: i
 func _on_lobby_data_update(success: int, lobby_id: int, _member_id: int) -> void:
 	if success == STEAM_RESULT_OK and lobby_id == _lobby_id:
 		lobby_status_changed.emit()
+
+
+func _on_lobby_invite(inviter_id: int, _lobby_id_from_invite: int, _game_id: int) -> void:
+	var inviter_name := _get_persona_name(inviter_id)
+	_lobby_status = "%s пригласил тебя в Steam-комнату. Прими приглашение в Steam." % inviter_name
+	lobby_status_changed.emit()
+
+
+func _on_join_requested(lobby_id: int, _inviter_id: int) -> void:
+	join_lobby(lobby_id, "приглашению Steam")
+
+
+func _get_lobby_members(steam_api: Object, member_count: int, lobby_owner: int) -> Array[Dictionary]:
+	var members: Array[Dictionary] = []
+	if not steam_api.has_method(&"getLobbyMemberByIndex"):
+		return members
+
+	for member_index in range(member_count):
+		var member_id := int(steam_api.call(&"getLobbyMemberByIndex", _lobby_id, member_index))
+		var is_ready := false
+		if steam_api.has_method(&"getLobbyMemberData"):
+			is_ready = str(steam_api.call(&"getLobbyMemberData", _lobby_id, member_id, "pj_ready")) == "1"
+		members.append({
+			"steam_id": member_id,
+			"name": _get_persona_name(member_id),
+			"ready": is_ready,
+			"is_owner": member_id == lobby_owner,
+		})
+
+	return members
+
+
+func _get_persona_name(steam_id: int) -> String:
+	var steam_api := _get_steam_api()
+	if steam_api != null and steam_api.has_method(&"getFriendPersonaName"):
+		var persona_name := str(steam_api.call(&"getFriendPersonaName", steam_id))
+		if not persona_name.is_empty():
+			return persona_name
+	return "Игрок %d" % steam_id
+
+
+func _get_launch_lobby_id() -> int:
+	var argument_lists := [OS.get_cmdline_user_args(), OS.get_cmdline_args()]
+	for argument_list_variant in argument_lists:
+		var argument_list: PackedStringArray = argument_list_variant
+		var lobby_argument_index := argument_list.find("+connect_lobby")
+		if lobby_argument_index >= 0 and lobby_argument_index + 1 < argument_list.size():
+			var lobby_id := int(argument_list[lobby_argument_index + 1])
+			if lobby_id > 0:
+				return lobby_id
+	return 0
 
 
 func _get_app_id_file_paths() -> PackedStringArray:
