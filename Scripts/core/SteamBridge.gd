@@ -3,6 +3,7 @@ extends RefCounted
 
 
 signal lobby_status_changed
+signal lobby_joined_successfully
 
 
 const STEAM_SINGLETON_NAME := &"Steam"
@@ -11,6 +12,10 @@ const LOBBY_TYPE_FRIENDS_ONLY := 1
 const LOBBY_MEMBER_LIMIT := 4
 const STEAM_RESULT_OK := 1
 const LOBBY_JOIN_RESPONSE_SUCCESS := 1
+const P2P_MATCH_CHANNEL := 42
+const P2P_SEND_RELIABLE := 2
+const MAX_P2P_PACKET_BYTES := 32 * 1024
+const MAX_P2P_PACKETS_PER_POLL := 32
 
 
 var _initialization_attempted := false
@@ -24,6 +29,135 @@ var _lobby_id := 0
 var _lobby_status := "Steam-комната ещё не создана."
 var _local_lobby_ready := false
 var _pending_join_source := ""
+
+
+func is_p2p_transport_available() -> bool:
+	var steam_api := _get_steam_api()
+	return (
+		_initialized
+		and steam_api != null
+		and steam_api.has_method(&"sendP2PPacket")
+		and steam_api.has_method(&"getAvailableP2PPacketSize")
+		and steam_api.has_method(&"readP2PPacket")
+	)
+
+
+func is_multiplayer_peer_transport_available() -> bool:
+	return _initialized and ClassDB.class_exists("SteamMultiplayerPeer")
+
+
+func prepare_multiplayer_peer_transport() -> bool:
+	if not is_multiplayer_peer_transport_available():
+		return false
+
+	var steam_api := _get_steam_api()
+	if steam_api != null and steam_api.has_method(&"allowP2PPacketRelay"):
+		steam_api.call(&"allowP2PPacketRelay", true)
+	return true
+
+
+func create_multiplayer_peer() -> Object:
+	if not is_multiplayer_peer_transport_available():
+		return null
+
+	var multiplayer_peer: Object = ClassDB.instantiate("SteamMultiplayerPeer")
+	if multiplayer_peer == null:
+		return null
+	return multiplayer_peer
+
+
+func prepare_p2p_transport() -> bool:
+	if not is_p2p_transport_available():
+		return false
+
+	var steam_api := _get_steam_api()
+	if steam_api.has_method(&"allowP2PPacketRelay"):
+		steam_api.call(&"allowP2PPacketRelay", true)
+	return true
+
+
+func get_local_steam_id() -> int:
+	var steam_api := _get_steam_api()
+	if not _initialized or steam_api == null or not steam_api.has_method(&"getSteamID"):
+		return 0
+	return int(steam_api.call(&"getSteamID"))
+
+
+func is_current_lobby_member(steam_id: int) -> bool:
+	if steam_id <= 0 or _lobby_id <= 0:
+		return false
+	for member in get_lobby_state().get("members", []):
+		if member is Dictionary and int(member.get("steam_id", 0)) == steam_id:
+			return true
+	return false
+
+
+func send_p2p_match_message(remote_steam_id: int, message: Dictionary) -> bool:
+	if not is_p2p_transport_available() or remote_steam_id <= 0:
+		return false
+	if remote_steam_id == get_local_steam_id() or not is_current_lobby_member(remote_steam_id):
+		return false
+
+	var encoded_message := JSON.stringify(message).to_utf8_buffer()
+	if encoded_message.is_empty() or encoded_message.size() > MAX_P2P_PACKET_BYTES:
+		return false
+
+	var steam_api := _get_steam_api()
+	return bool(steam_api.call(&"sendP2PPacket", remote_steam_id, encoded_message, P2P_SEND_RELIABLE, P2P_MATCH_CHANNEL))
+
+
+func receive_p2p_match_messages() -> Array[Dictionary]:
+	var messages: Array[Dictionary] = []
+	if not is_p2p_transport_available():
+		return messages
+
+	var steam_api := _get_steam_api()
+	for _packet_index in range(MAX_P2P_PACKETS_PER_POLL):
+		var packet_size := int(steam_api.call(&"getAvailableP2PPacketSize", P2P_MATCH_CHANNEL))
+		if packet_size <= 0:
+			break
+		if packet_size > MAX_P2P_PACKET_BYTES:
+			steam_api.call(&"readP2PPacket", packet_size, P2P_MATCH_CHANNEL)
+			continue
+
+		var packet_variant: Variant = steam_api.call(&"readP2PPacket", packet_size, P2P_MATCH_CHANNEL)
+		if not (packet_variant is Dictionary):
+			continue
+		var packet: Dictionary = packet_variant
+		var remote_steam_id := int(packet.get("steam_id_remote", packet.get("steamIDRemote", 0)))
+		if not is_current_lobby_member(remote_steam_id):
+			continue
+
+		var data_variant: Variant = packet.get("data", PackedByteArray())
+		var packet_bytes := PackedByteArray()
+		if data_variant is PackedByteArray:
+			packet_bytes = data_variant
+		elif data_variant is Array:
+			for byte_variant in data_variant:
+				packet_bytes.append(int(byte_variant))
+		if packet_bytes.is_empty():
+			continue
+
+		var parsed_message: Variant = JSON.parse_string(packet_bytes.get_string_from_utf8())
+		if parsed_message is Dictionary:
+			messages.append({
+				"sender_steam_id": remote_steam_id,
+				"message": parsed_message
+			})
+
+	return messages
+
+
+func close_p2p_match_sessions() -> void:
+	var steam_api := _get_steam_api()
+	if steam_api == null or not steam_api.has_method(&"closeP2PChannelWithUser"):
+		return
+	for member in get_lobby_state().get("members", []):
+		if not (member is Dictionary):
+			continue
+		var member_steam_id := int(member.get("steam_id", 0))
+		if member_steam_id > 0 and member_steam_id != get_local_steam_id():
+			steam_api.call(&"closeP2PChannelWithUser", member_steam_id, P2P_MATCH_CHANNEL)
 
 
 func get_diagnostics() -> Dictionary:
@@ -281,6 +415,10 @@ func _ensure_lobby_callbacks(steam_api: Object) -> void:
 		steam_api.connect(&"lobby_invite", _on_lobby_invite)
 	if steam_api.has_signal(&"join_requested"):
 		steam_api.connect(&"join_requested", _on_join_requested)
+	if steam_api.has_signal(&"p2p_session_request"):
+		steam_api.connect(&"p2p_session_request", _on_p2p_session_request)
+	if steam_api.has_signal(&"p2p_session_connect_fail"):
+		steam_api.connect(&"p2p_session_connect_fail", _on_p2p_session_connect_fail)
 	_lobby_callbacks_connected = true
 
 
@@ -318,6 +456,7 @@ func _on_lobby_joined(lobby_id: int, _permissions: int, _locked: bool, response:
 	_pending_join_source = ""
 	_lobby_status = "Ты вошёл в Steam-комнату. Отметь готовность, когда все соберутся." if not joined_from.is_empty() else "Ты находишься в Steam-комнате. Ожидаем игроков."
 	lobby_status_changed.emit()
+	lobby_joined_successfully.emit()
 
 
 func _on_lobby_chat_update(lobby_id: int, _changed_id: int, _making_change_id: int, _chat_state: int) -> void:
@@ -339,6 +478,20 @@ func _on_lobby_invite(inviter_id: int, _lobby_id_from_invite: int, _game_id: int
 
 func _on_join_requested(lobby_id: int, _inviter_id: int) -> void:
 	join_lobby(lobby_id, "приглашению Steam")
+
+
+func _on_p2p_session_request(remote_steam_id: int) -> void:
+	var steam_api := _get_steam_api()
+	if steam_api == null:
+		return
+	if is_current_lobby_member(remote_steam_id) and steam_api.has_method(&"acceptP2PSessionWithUser"):
+		steam_api.call(&"acceptP2PSessionWithUser", remote_steam_id)
+
+
+func _on_p2p_session_connect_fail(remote_steam_id: int, error_code: int) -> void:
+	if is_current_lobby_member(remote_steam_id):
+		_lobby_status = "Не удалось установить Steam P2P-связь с %s. Код: %d." % [_get_persona_name(remote_steam_id), error_code]
+		lobby_status_changed.emit()
 
 
 func _get_lobby_members(steam_api: Object, member_count: int, lobby_owner: int) -> Array[Dictionary]:

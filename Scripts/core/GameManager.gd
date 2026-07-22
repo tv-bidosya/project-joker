@@ -32,6 +32,7 @@ const NetworkCommand = preload("res://Scripts/core/MatchCommand.gd")
 const NetworkHost = preload("res://Scripts/core/LocalMatchHost.gd")
 const LoopbackNetwork = preload("res://Scripts/core/LoopbackNetworkTest.gd")
 const SteamBridge = preload("res://Scripts/core/SteamBridge.gd")
+const SteamP2PMatch = preload("res://Scripts/core/SteamP2PMatch.gd")
 const SCORE_SHEET_NUMBER_COLUMN_WIDTH := 46.0
 const SCORE_SHEET_MODE_COLUMN_WIDTH := 132.0
 const SCORE_SHEET_CARDS_COLUMN_WIDTH := 52.0
@@ -143,9 +144,14 @@ var steam_bridge: RefCounted = SteamBridge.new()
 var steam_lobby_status_label: Label
 var steam_lobby_details_label: Label
 var steam_lobby_members_label: Label
+var steam_p2p_status_label: Label
 var steam_lobby_create_button: Button
 var steam_lobby_invite_button: Button
 var steam_lobby_ready_button: Button
+var steam_p2p_prepare_button: Button
+var steam_p2p_prepare_with_bots_button: Button
+var steam_p2p_start_round_button: Button
+var steam_p2p_open_table_button: Button
 var steam_lobby_leave_button: Button
 var player_labels: Array[Label] = []
 var player_stats_labels: Array[Label] = []
@@ -230,6 +236,7 @@ var undo_vote_rejected_style: StyleBoxFlat
 var menu_overlay: Control
 var menu_backdrop: ColorRect
 var menu_panel: PanelContainer
+var menu_scroll: ScrollContainer
 var menu_content: VBoxContainer
 var bot_speed_index := 1
 var bot_difficulty: BotDifficulty = BotDifficulty.NORMAL
@@ -335,6 +342,7 @@ var local_statistics: Dictionary = {
 var game_statistics_recorded_for_current_session := false
 var statistics_return_to_final_menu := false
 var loopback_network_test
+var steam_p2p_match
 var loopback_network_status_label: Label
 var loopback_network_start_round_button: Button
 var loopback_network_start_joker_round_button: Button
@@ -344,6 +352,7 @@ var loopback_network_action_controls: VBoxContainer
 var loopback_network_joker_selection_open := false
 var loopback_network_pending_joker_suit := -1
 var loopback_network_is_technical_presentation := true
+var steam_p2p_table_presentation := false
 var network_table_view: Control
 var network_table_title_label: Label
 var network_table_round_label: Label
@@ -368,6 +377,7 @@ var network_table_avatar_symbols: Array[Label] = []
 func _ready() -> void:
 	bot_random.randomize()
 	steam_bridge.lobby_status_changed.connect(_refresh_steam_lobby_status)
+	steam_bridge.lobby_joined_successfully.connect(_on_steam_lobby_joined_successfully)
 	_run_joker_rule_checks()
 	_run_score_rule_checks()
 	_run_dark_round_checks()
@@ -408,6 +418,10 @@ func _ready() -> void:
 	loopback_network_test = LoopbackNetwork.new()
 	loopback_network_test.status_changed.connect(_refresh_loopback_network_status)
 	add_child(loopback_network_test)
+	steam_p2p_match = SteamP2PMatch.new()
+	steam_p2p_match.name = "SteamP2PMatch"
+	steam_p2p_match.status_changed.connect(_refresh_steam_p2p_status)
+	add_child(steam_p2p_match)
 	_create_network_table_view()
 	joker_controls.z_index = 80
 	joker_controls.mouse_filter = Control.MOUSE_FILTER_PASS
@@ -621,10 +635,18 @@ func _create_main_menu() -> void:
 	menu_margin.add_theme_constant_override("margin_bottom", 38)
 	menu_panel.add_child(menu_margin)
 
+	menu_scroll = ScrollContainer.new()
+	menu_scroll.name = "MenuScroll"
+	menu_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	menu_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	menu_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	menu_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	menu_margin.add_child(menu_scroll)
+
 	menu_content = VBoxContainer.new()
 	menu_content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	menu_content.add_theme_constant_override("separation", 14)
-	menu_margin.add_child(menu_content)
+	menu_scroll.add_child(menu_content)
 
 
 func _show_main_menu() -> void:
@@ -756,6 +778,8 @@ func _on_initialize_steam_diagnostics_pressed() -> void:
 
 
 func _show_steam_lobby_menu() -> void:
+	is_pause_menu_open = false
+	menu_overlay.visible = true
 	_clear_children(menu_content)
 	_add_menu_title("Steam-комната (тест)", "Закрытая комната на четыре места · приглашения Steam без карточной партии и P2P")
 	_add_menu_spacer(12.0)
@@ -781,16 +805,38 @@ func _show_steam_lobby_menu() -> void:
 	steam_lobby_members_label.add_theme_color_override("font_color", Color(0.86, 0.9, 0.82, 1.0))
 	menu_content.add_child(steam_lobby_members_label)
 
+	steam_p2p_status_label = Label.new()
+	steam_p2p_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	steam_p2p_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	steam_p2p_status_label.add_theme_font_size_override("font_size", 14)
+	steam_p2p_status_label.add_theme_color_override("font_color", Color(0.76, 0.87, 0.82, 1.0))
+	menu_content.add_child(steam_p2p_status_label)
+
 	_add_menu_spacer(14.0)
 	steam_lobby_create_button = _add_menu_button("Создать закрытую комнату", _on_create_steam_lobby_pressed, true)
 	steam_lobby_invite_button = _add_menu_button("Пригласить друга через Steam", _on_open_steam_lobby_invite_pressed)
 	steam_lobby_ready_button = _add_menu_button("Отметиться готовым", _on_toggle_steam_lobby_ready_pressed)
+	steam_p2p_prepare_button = _add_menu_button("Подготовить Steam P2P", _on_prepare_steam_p2p_pressed)
+	steam_p2p_prepare_with_bots_button = _add_menu_button("P2P-тест: 2 игрока + 2 бота", _on_prepare_steam_p2p_with_bots_pressed)
+	steam_p2p_start_round_button = _add_menu_button("Начать P2P-раздачу (2 карты)", _on_start_steam_p2p_round_pressed, true)
+	steam_p2p_open_table_button = _add_menu_button("Открыть Steam P2P-стол", _on_open_steam_p2p_table_pressed)
 	steam_lobby_leave_button = _add_menu_button("Выйти из комнаты", _on_leave_steam_lobby_pressed)
 	_add_menu_spacer(10.0)
-	_add_menu_label("Приглашение открывает стандартный Steam Overlay. Принявший его друг войдёт в эту комнату, а готовность каждого видна всем. Игровые карты, правила и закрытые руки пока через неё не передаются.", 14, Color(0.72, 0.85, 0.76, 1.0))
+	_add_menu_label("Приглашение открывает стандартный Steam Overlay. После готовности всех четырёх игроков каждый отдельно подключает Steam P2P, а хост запускает короткую раздачу. Для проверки двух компьютеров есть отдельный режим с двумя ботами у хоста. Хост по-прежнему проверяет команды и отправляет каждому только его руку.", 14, Color(0.72, 0.85, 0.76, 1.0))
 	_add_menu_spacer(14.0)
 	_add_menu_button("Назад", _show_developer_tools_menu)
 	_refresh_steam_lobby_status()
+
+
+func _on_steam_lobby_joined_successfully() -> void:
+	# Внешнее приглашение Steam может прийти, пока открыт локальный стол.
+	# В этом случае переводим интерфейс прямо в Steam-комнату, не меняя
+	# саму локальную партию и не оставляя пользователя в меню паузы.
+	steam_p2p_table_presentation = false
+	_reset_loopback_network_joker_selection()
+	if is_instance_valid(network_table_view):
+		network_table_view.visible = false
+	_show_steam_lobby_menu()
 
 
 func _on_create_steam_lobby_pressed() -> void:
@@ -802,6 +848,9 @@ func _on_create_steam_lobby_pressed() -> void:
 
 
 func _on_leave_steam_lobby_pressed() -> void:
+	if steam_p2p_match != null and steam_p2p_match.is_running():
+		steam_p2p_match.stop()
+	steam_p2p_table_presentation = false
 	steam_bridge.leave_lobby()
 	_refresh_steam_lobby_status()
 
@@ -815,6 +864,36 @@ func _on_toggle_steam_lobby_ready_pressed() -> void:
 	var lobby_state: Dictionary = steam_bridge.get_lobby_state()
 	steam_bridge.set_local_lobby_ready(not bool(lobby_state.get("local_ready", false)))
 	_refresh_steam_lobby_status()
+
+
+func _on_prepare_steam_p2p_pressed() -> void:
+	_reset_loopback_network_joker_selection()
+	steam_p2p_match.start_from_current_lobby(steam_bridge)
+	_refresh_steam_lobby_status()
+
+
+func _on_prepare_steam_p2p_with_bots_pressed() -> void:
+	_reset_loopback_network_joker_selection()
+	steam_p2p_match.start_from_current_lobby(steam_bridge, true)
+	_refresh_steam_lobby_status()
+
+
+func _on_start_steam_p2p_round_pressed() -> void:
+	if steam_p2p_match == null or not steam_p2p_match.is_host():
+		return
+	_reset_loopback_network_joker_selection()
+	steam_p2p_match.start_test_round()
+	_refresh_steam_lobby_status()
+
+
+func _on_open_steam_p2p_table_pressed() -> void:
+	if steam_p2p_match == null or not steam_p2p_match.is_running():
+		return
+	steam_p2p_table_presentation = true
+	_reset_loopback_network_joker_selection()
+	menu_overlay.visible = false
+	network_table_view.visible = true
+	_refresh_network_table_view()
 
 
 func _refresh_steam_lobby_status() -> void:
@@ -852,8 +931,50 @@ func _refresh_steam_lobby_status() -> void:
 	if is_instance_valid(steam_lobby_ready_button):
 		steam_lobby_ready_button.disabled = lobby_id <= 0
 		steam_lobby_ready_button.text = "Готов ✓ (отменить)" if local_ready else "Отметиться готовым"
+	var all_members_ready := member_count == member_limit and member_limit == 4 and not members.is_empty()
+	for member_variant in members:
+		if not (member_variant is Dictionary) or not bool(member_variant.get("ready", false)):
+			all_members_ready = false
+			break
+	var two_members_ready := member_count == 2 and members.size() == 2
+	for member_variant in members:
+		if not (member_variant is Dictionary) or not bool(member_variant.get("ready", false)):
+			two_members_ready = false
+			break
+	var can_prepare_p2p: bool = lobby_id > 0 and local_ready and all_members_ready and steam_bridge.is_multiplayer_peer_transport_available()
+	if is_instance_valid(steam_p2p_prepare_button):
+		steam_p2p_prepare_button.disabled = not can_prepare_p2p or (steam_p2p_match != null and steam_p2p_match.is_running())
+	var can_prepare_p2p_with_bots: bool = lobby_id > 0 and local_ready and two_members_ready and steam_bridge.is_multiplayer_peer_transport_available()
+	if is_instance_valid(steam_p2p_prepare_with_bots_button):
+		steam_p2p_prepare_with_bots_button.disabled = not can_prepare_p2p_with_bots or (steam_p2p_match != null and steam_p2p_match.is_running())
+	if is_instance_valid(steam_p2p_start_round_button):
+		steam_p2p_start_round_button.disabled = steam_p2p_match == null or not steam_p2p_match.is_host() or not steam_p2p_match.can_start_test_round()
+	if is_instance_valid(steam_p2p_open_table_button):
+		steam_p2p_open_table_button.disabled = steam_p2p_match == null or not steam_p2p_match.is_running()
 	if is_instance_valid(steam_lobby_leave_button):
 		steam_lobby_leave_button.disabled = lobby_id <= 0
+	_refresh_steam_p2p_status()
+
+
+func _refresh_steam_p2p_status() -> void:
+	if not is_instance_valid(steam_p2p_status_label):
+		if steam_p2p_table_presentation and is_instance_valid(network_table_view) and network_table_view.visible:
+			_refresh_network_table_view()
+		return
+	if steam_p2p_match == null or not steam_p2p_match.is_running():
+		steam_p2p_status_label.text = "Steam P2P ещё не подключён. После готовности всех четырёх игроков каждый нажимает «Подготовить Steam P2P»."
+	else:
+		steam_p2p_status_label.text = "Steam P2P: %s" % steam_p2p_match.status_text
+	if is_instance_valid(steam_p2p_prepare_button) and steam_p2p_match != null and steam_p2p_match.is_running():
+		steam_p2p_prepare_button.disabled = true
+	if is_instance_valid(steam_p2p_prepare_with_bots_button) and steam_p2p_match != null and steam_p2p_match.is_running():
+		steam_p2p_prepare_with_bots_button.disabled = true
+	if is_instance_valid(steam_p2p_start_round_button):
+		steam_p2p_start_round_button.disabled = steam_p2p_match == null or not steam_p2p_match.is_host() or not steam_p2p_match.can_start_test_round()
+	if is_instance_valid(steam_p2p_open_table_button):
+		steam_p2p_open_table_button.disabled = steam_p2p_match == null or not steam_p2p_match.is_running()
+	if steam_p2p_table_presentation and is_instance_valid(network_table_view) and network_table_view.visible:
+		_refresh_network_table_view()
 
 
 func _is_loopback_network_client_launch() -> bool:
@@ -891,6 +1012,7 @@ func _show_network_party_lobby() -> void:
 
 func _show_loopback_network_lobby() -> void:
 	is_pause_menu_open = false
+	steam_p2p_table_presentation = false
 	menu_overlay.visible = true
 	_clear_children(menu_content)
 	loopback_network_start_round_button = null
@@ -1017,19 +1139,27 @@ func _on_start_loopback_test_response_joker_round_pressed() -> void:
 
 
 func _on_submit_loopback_test_bid_pressed(bid: int) -> void:
-	if loopback_network_test.is_host():
-		loopback_network_test.submit_host_test_bid(bid)
+	var network_match = _get_active_network_match()
+	if network_match == null:
+		return
+	if network_match.is_host():
+		network_match.submit_host_test_bid(bid)
 	else:
-		loopback_network_test.submit_test_bid(bid)
+		network_match.submit_test_bid(bid)
 	_refresh_loopback_network_status()
+	_refresh_steam_p2p_status()
 
 
 func _on_submit_loopback_test_card_pressed(card_key: String) -> void:
-	if loopback_network_test.is_host():
-		loopback_network_test.submit_host_test_card(card_key)
+	var network_match = _get_active_network_match()
+	if network_match == null:
+		return
+	if network_match.is_host():
+		network_match.submit_host_test_card(card_key)
 	else:
-		loopback_network_test.submit_test_card(card_key)
+		network_match.submit_test_card(card_key)
 	_refresh_loopback_network_status()
+	_refresh_steam_p2p_status()
 
 
 func _on_open_loopback_test_joker_selection_pressed() -> void:
@@ -1051,18 +1181,33 @@ func _on_choose_loopback_test_joker_suit_pressed(suit: int) -> void:
 
 func _on_submit_loopback_test_joker_pressed(mode: Trick.JokerMode, declared_suit: int = -1, forced_card_rank: Trick.ForcedCardRank = Trick.ForcedCardRank.NONE) -> void:
 	var was_submitted := false
-	if loopback_network_test.is_host():
-		was_submitted = loopback_network_test.submit_host_test_joker_choice(mode, declared_suit, forced_card_rank)
+	var network_match = _get_active_network_match()
+	if network_match == null:
+		return
+	if network_match.is_host():
+		was_submitted = network_match.submit_host_test_joker_choice(mode, declared_suit, forced_card_rank)
 	else:
-		was_submitted = loopback_network_test.submit_test_joker_choice(mode, declared_suit, forced_card_rank)
+		was_submitted = network_match.submit_test_joker_choice(mode, declared_suit, forced_card_rank)
 	if was_submitted:
 		_reset_loopback_network_joker_selection()
 	_refresh_loopback_network_status()
+	_refresh_steam_p2p_status()
 
 
 func _on_cancel_loopback_test_joker_selection_pressed() -> void:
 	_reset_loopback_network_joker_selection()
 	_refresh_loopback_network_status()
+	_refresh_steam_p2p_status()
+
+
+func _get_active_network_match():
+	if steam_p2p_table_presentation and steam_p2p_match != null and steam_p2p_match.is_running():
+		return steam_p2p_match
+	return loopback_network_test
+
+
+func _is_steam_p2p_table_active() -> bool:
+	return steam_p2p_table_presentation and steam_p2p_match != null and steam_p2p_match.is_running()
 
 
 func _on_close_loopback_network_test_pressed() -> void:
@@ -1094,9 +1239,10 @@ func _refresh_loopback_network_status() -> void:
 
 
 func _should_open_network_table_automatically() -> bool:
-	if loopback_network_test == null or not loopback_network_test.is_running():
+	var network_match = _get_active_network_match()
+	if network_match == null or not network_match.is_running():
 		return false
-	var snapshot: Dictionary = loopback_network_test.get_test_table_snapshot()
+	var snapshot: Dictionary = network_match.get_test_table_snapshot()
 	if snapshot.is_empty():
 		return false
 	var round_data: Dictionary = snapshot.get("round", {})
@@ -1104,7 +1250,8 @@ func _should_open_network_table_automatically() -> bool:
 
 
 func _on_open_network_table_pressed() -> void:
-	if loopback_network_test == null or not loopback_network_test.is_running():
+	var network_match = _get_active_network_match()
+	if network_match == null or not network_match.is_running():
 		return
 	_reset_loopback_network_joker_selection()
 	menu_overlay.visible = false
@@ -1115,7 +1262,12 @@ func _on_open_network_table_pressed() -> void:
 func _on_close_network_table_pressed() -> void:
 	_reset_loopback_network_joker_selection()
 	network_table_view.visible = false
-	_show_loopback_network_lobby()
+	if _is_steam_p2p_table_active():
+		steam_p2p_table_presentation = false
+		is_pause_menu_open = false
+		_show_steam_lobby_menu()
+	else:
+		_show_loopback_network_lobby()
 
 
 func _create_network_table_view() -> void:
@@ -1292,13 +1444,19 @@ func _place_network_table_player_widgets(player_index: int, relative_slot: int) 
 
 
 func _refresh_network_table_view() -> void:
-	if not is_instance_valid(network_table_view) or loopback_network_test == null:
+	var network_match = _get_active_network_match()
+	if not is_instance_valid(network_table_view) or network_match == null:
 		return
 
-	network_table_title_label.text = "Сетевой стол · локальный ENet-тест" if loopback_network_is_technical_presentation else "Сетевая партия"
-	network_table_close_button.text = "Вернуться к тесту" if loopback_network_is_technical_presentation else "Вернуться в комнату"
-	network_table_close_button.tooltip_text = "Вернуться к техническому окну локальной сети" if loopback_network_is_technical_presentation else "Вернуться в комнату"
-	var snapshot: Dictionary = loopback_network_test.get_test_table_snapshot()
+	if _is_steam_p2p_table_active():
+		network_table_title_label.text = "Steam P2P · тестовая раздача"
+		network_table_close_button.text = "Вернуться в Steam-комнату"
+		network_table_close_button.tooltip_text = "Вернуться в техническую Steam-комнату"
+	else:
+		network_table_title_label.text = "Сетевой стол · локальный ENet-тест" if loopback_network_is_technical_presentation else "Сетевая партия"
+		network_table_close_button.text = "Вернуться к тесту" if loopback_network_is_technical_presentation else "Вернуться в комнату"
+		network_table_close_button.tooltip_text = "Вернуться к техническому окну локальной сети" if loopback_network_is_technical_presentation else "Вернуться в комнату"
+	var snapshot: Dictionary = network_match.get_test_table_snapshot()
 	if snapshot.is_empty():
 		network_table_round_label.text = "Ожидание безопасного снимка стола"
 		network_table_info_label.text = "Подключение к хосту… после запуска раздачи здесь появятся публичный стол и только твоя рука."
@@ -1312,7 +1470,7 @@ func _refresh_network_table_view() -> void:
 
 	var round_data: Dictionary = snapshot.get("round", {})
 	var active_trick: Dictionary = snapshot.get("active_trick", {})
-	var viewer_index: int = loopback_network_test.get_test_table_viewer_index()
+	var viewer_index: int = network_match.get_test_table_viewer_index()
 	var active_player_index := _get_network_table_active_player_index(round_data, active_trick)
 	_refresh_network_table_header(snapshot, round_data, active_trick, active_player_index)
 	_refresh_network_table_players(snapshot, viewer_index, active_player_index)
@@ -1461,13 +1619,14 @@ func _on_network_table_card_pressed(_card: Card, card_key: String) -> void:
 
 
 func _is_network_table_card_available(card_key: String) -> bool:
-	if loopback_network_test == null or card_key.is_empty():
+	var network_match = _get_active_network_match()
+	if network_match == null or card_key.is_empty():
 		return false
 	var available_cards: Array[Dictionary] = []
-	if loopback_network_test.is_host() and loopback_network_test.can_submit_host_test_card():
-		available_cards = loopback_network_test.get_available_host_test_cards()
-	elif loopback_network_test.is_client() and loopback_network_test.can_submit_test_card():
-		available_cards = loopback_network_test.get_available_test_cards()
+	if network_match.is_host() and network_match.can_submit_host_test_card():
+		available_cards = network_match.get_available_host_test_cards()
+	elif network_match.is_client() and network_match.can_submit_test_card():
+		available_cards = network_match.get_available_test_cards()
 	for card_data in available_cards:
 		if str(card_data.get("card_key", "")) == card_key:
 			return true
@@ -1489,10 +1648,11 @@ func _refresh_network_table_action_controls(snapshot: Dictionary) -> void:
 
 	_place_network_table_action_panel(false)
 	var available_bids: Array[int] = []
-	if loopback_network_test.is_host() and loopback_network_test.can_submit_host_test_bid():
-		available_bids = loopback_network_test.get_available_host_test_bids()
-	elif loopback_network_test.is_client() and loopback_network_test.can_submit_test_bid():
-		available_bids = loopback_network_test.get_available_test_bids()
+	var network_match = _get_active_network_match()
+	if network_match != null and network_match.is_host() and network_match.can_submit_host_test_bid():
+		available_bids = network_match.get_available_host_test_bids()
+	elif network_match != null and network_match.is_client() and network_match.can_submit_test_bid():
+		available_bids = network_match.get_available_test_bids()
 
 	var title := Label.new()
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -1810,15 +1970,17 @@ func _add_loopback_test_joker_cancel_button() -> void:
 
 
 func _can_submit_loopback_test_joker() -> bool:
-	if loopback_network_test == null:
+	var network_match = _get_active_network_match()
+	if network_match == null:
 		return false
-	return loopback_network_test.can_submit_host_test_joker() if loopback_network_test.is_host() else loopback_network_test.can_submit_test_joker()
+	return network_match.can_submit_host_test_joker() if network_match.is_host() else network_match.can_submit_test_joker()
 
 
 func _is_loopback_test_joker_leading() -> bool:
-	if loopback_network_test == null:
+	var network_match = _get_active_network_match()
+	if network_match == null:
 		return false
-	return loopback_network_test.is_host_test_joker_leading() if loopback_network_test.is_host() else loopback_network_test.is_client_test_joker_leading()
+	return network_match.is_host_test_joker_leading() if network_match.is_host() else network_match.is_client_test_joker_leading()
 
 
 func _reset_loopback_network_joker_selection() -> void:
