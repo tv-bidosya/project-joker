@@ -27,6 +27,21 @@ var _join_request_attempt_count := 0
 var _steam_peer_connection_reported := false
 var _connected_remote_peer_ids: Dictionary = {}
 var _steam_peer_wait_seconds := 0.0
+var _outbound_flush_pending := false
+
+
+func start_first_real_round() -> bool:
+	if not super.start_first_real_round():
+		return false
+	_set_status("Steam P2P: начата первая обычная раздача. Хост раздал по одной карте и ждёт подтверждение личных рук.")
+	return true
+
+
+func start_next_scheduled_round() -> bool:
+	if not super.start_next_scheduled_round():
+		return false
+	_set_status("Steam P2P: хост начал следующую раздачу и отправляет каждому только его закрытую руку.")
+	return true
 
 
 func start_from_current_lobby(bridge: RefCounted, fill_empty_seats_with_bots: bool = false) -> bool:
@@ -87,6 +102,7 @@ func stop() -> void:
 	_steam_peer_connection_reported = false
 	_connected_remote_peer_ids.clear()
 	_steam_peer_wait_seconds = 0.0
+	_outbound_flush_pending = false
 	steam_bridge = null
 	super.stop()
 
@@ -103,6 +119,11 @@ func _process(delta: float) -> void:
 	# цикла. Явно опрашиваем его и ждём peer_connected, а не только формального
 	# CONNECTION_CONNECTED: последний появляется до завершения обмена peer ID.
 	steam_multiplayer_peer.call(&"poll")
+	# SteamMultiplayerPeer складывает пакеты в транспорт отдельно от обычного
+	# MultiplayerAPI. Автоматический опрос SceneTree уже мог пройти раньше в
+	# этом кадре, поэтому обрабатываем входящие RPC сразу после poll(). Иначе
+	# публичное событие хоста могло ждать следующего исходящего пакета клиента.
+	get_tree().get_multiplayer().poll()
 	_steam_peer_wait_seconds += delta
 	_refresh_connected_remote_peers()
 
@@ -129,9 +150,27 @@ func _send_message(message: Dictionary, target_peer_id: int) -> bool:
 
 	if mode == Mode.CLIENT:
 		_receive_client_message.rpc_id(1, message)
-		return true
-	_receive_host_message.rpc_id(target_peer_id, message)
+	else:
+		_receive_host_message.rpc_id(target_peer_id, message)
+	_schedule_outbound_transport_flush()
 	return true
+
+
+func _schedule_outbound_transport_flush() -> void:
+	if _outbound_flush_pending:
+		return
+	_outbound_flush_pending = true
+	call_deferred("_flush_outbound_transport")
+
+
+func _flush_outbound_transport() -> void:
+	_outbound_flush_pending = false
+	if not is_running() or steam_multiplayer_peer == null:
+		return
+	# RPC ставит пакет в очередь SteamMultiplayerPeer. Явный poll в конце
+	# текущего кадра выталкивает его сразу, не дожидаясь нового игрового хода.
+	steam_multiplayer_peer.call(&"poll")
+	get_tree().get_multiplayer().poll()
 
 
 @rpc("any_peer", "reliable")

@@ -353,11 +353,24 @@ var loopback_network_joker_selection_open := false
 var loopback_network_pending_joker_suit := -1
 var loopback_network_is_technical_presentation := true
 var steam_p2p_table_presentation := false
+var steam_p2p_main_table_presentation := false
+var network_round_result_key := ""
+var network_round_finish_presentation_key := ""
+var network_round_finish_presentation_active := false
+var network_public_event_stream_key := ""
+var network_last_public_event_id := -1
+var network_card_event_queue: Array[Dictionary] = []
+var network_card_play_presentation_active := false
 var network_table_view: Control
 var network_table_title_label: Label
 var network_table_round_label: Label
 var network_table_info_label: Label
+var network_table_info_panel: PanelContainer
+var network_table_history_label: Label
 var network_table_deck_label: Label
+var network_table_deck_visual: Control
+var network_table_trump_card_view: CardView
+var network_table_deck_back_panels: Array[PanelContainer] = []
 var network_table_trick_label: Label
 var network_table_joker_label: Label
 var network_table_trick_layer: Control
@@ -406,7 +419,9 @@ func _ready() -> void:
 	_create_sound_players()
 	_create_background_music_player()
 	music_player_panel.reparent(self)
-	_set_control_layout(music_player_panel, 0.0, 1.0, 0.0, 1.0, 36.0, -102.0, 312.0, -24.0)
+	# Внизу слева плеер пересекался с длинным выбором условий Джокера.
+	# Переносим его в свободную зону справа от истории раздачи.
+	_set_control_layout(music_player_panel, 0.0, 0.0, 0.0, 0.0, 316.0, 54.0, 592.0, 132.0)
 	music_player_panel.z_index = 90
 	_create_music_controls_popup()
 	_create_tutorial_panel()
@@ -417,10 +432,12 @@ func _ready() -> void:
 	_create_main_menu()
 	loopback_network_test = LoopbackNetwork.new()
 	loopback_network_test.status_changed.connect(_refresh_loopback_network_status)
+	loopback_network_test.public_table_event_received.connect(_on_network_public_table_event_received)
 	add_child(loopback_network_test)
 	steam_p2p_match = SteamP2PMatch.new()
 	steam_p2p_match.name = "SteamP2PMatch"
 	steam_p2p_match.status_changed.connect(_refresh_steam_p2p_status)
+	steam_p2p_match.public_table_event_received.connect(_on_network_public_table_event_received)
 	add_child(steam_p2p_match)
 	_create_network_table_view()
 	joker_controls.z_index = 80
@@ -818,11 +835,11 @@ func _show_steam_lobby_menu() -> void:
 	steam_lobby_ready_button = _add_menu_button("Отметиться готовым", _on_toggle_steam_lobby_ready_pressed)
 	steam_p2p_prepare_button = _add_menu_button("Подготовить Steam P2P", _on_prepare_steam_p2p_pressed)
 	steam_p2p_prepare_with_bots_button = _add_menu_button("P2P-тест: 2 игрока + 2 бота", _on_prepare_steam_p2p_with_bots_pressed)
-	steam_p2p_start_round_button = _add_menu_button("Начать P2P-раздачу (2 карты)", _on_start_steam_p2p_round_pressed, true)
+	steam_p2p_start_round_button = _add_menu_button("Начать первую раздачу (1 карта)", _on_start_steam_p2p_round_pressed, true)
 	steam_p2p_open_table_button = _add_menu_button("Открыть Steam P2P-стол", _on_open_steam_p2p_table_pressed)
 	steam_lobby_leave_button = _add_menu_button("Выйти из комнаты", _on_leave_steam_lobby_pressed)
 	_add_menu_spacer(10.0)
-	_add_menu_label("Приглашение открывает стандартный Steam Overlay. После готовности всех четырёх игроков каждый отдельно подключает Steam P2P, а хост запускает короткую раздачу. Для проверки двух компьютеров есть отдельный режим с двумя ботами у хоста. Хост по-прежнему проверяет команды и отправляет каждому только его руку.", 14, Color(0.72, 0.85, 0.76, 1.0))
+	_add_menu_label("Приглашение открывает стандартный Steam Overlay. После готовности игроков каждый отдельно подключает Steam P2P, а хост запускает первую обычную раздачу на одну карту. Для проверки двух компьютеров есть режим с двумя ботами у хоста. Хост по-прежнему проверяет команды и отправляет каждому только его руку.", 14, Color(0.72, 0.85, 0.76, 1.0))
 	_add_menu_spacer(14.0)
 	_add_menu_button("Назад", _show_developer_tools_menu)
 	_refresh_steam_lobby_status()
@@ -833,6 +850,7 @@ func _on_steam_lobby_joined_successfully() -> void:
 	# В этом случае переводим интерфейс прямо в Steam-комнату, не меняя
 	# саму локальную партию и не оставляя пользователя в меню паузы.
 	steam_p2p_table_presentation = false
+	steam_p2p_main_table_presentation = false
 	_reset_loopback_network_joker_selection()
 	if is_instance_valid(network_table_view):
 		network_table_view.visible = false
@@ -851,6 +869,7 @@ func _on_leave_steam_lobby_pressed() -> void:
 	if steam_p2p_match != null and steam_p2p_match.is_running():
 		steam_p2p_match.stop()
 	steam_p2p_table_presentation = false
+	steam_p2p_main_table_presentation = false
 	steam_bridge.leave_lobby()
 	_refresh_steam_lobby_status()
 
@@ -882,7 +901,7 @@ func _on_start_steam_p2p_round_pressed() -> void:
 	if steam_p2p_match == null or not steam_p2p_match.is_host():
 		return
 	_reset_loopback_network_joker_selection()
-	steam_p2p_match.start_test_round()
+	steam_p2p_match.start_first_real_round()
 	_refresh_steam_lobby_status()
 
 
@@ -890,10 +909,12 @@ func _on_open_steam_p2p_table_pressed() -> void:
 	if steam_p2p_match == null or not steam_p2p_match.is_running():
 		return
 	steam_p2p_table_presentation = true
+	steam_p2p_main_table_presentation = true
 	_reset_loopback_network_joker_selection()
 	menu_overlay.visible = false
-	network_table_view.visible = true
-	_refresh_network_table_view()
+	if is_instance_valid(network_table_view):
+		network_table_view.visible = false
+	_refresh_network_main_table()
 
 
 func _refresh_steam_lobby_status() -> void:
@@ -957,8 +978,13 @@ func _refresh_steam_lobby_status() -> void:
 
 
 func _refresh_steam_p2p_status() -> void:
+	if steam_p2p_main_table_presentation and (steam_p2p_match == null or not steam_p2p_match.is_running()):
+		steam_p2p_main_table_presentation = false
+		steam_p2p_table_presentation = false
 	if not is_instance_valid(steam_p2p_status_label):
-		if steam_p2p_table_presentation and is_instance_valid(network_table_view) and network_table_view.visible:
+		if steam_p2p_main_table_presentation:
+			_refresh_network_main_table()
+		elif steam_p2p_table_presentation and is_instance_valid(network_table_view) and network_table_view.visible:
 			_refresh_network_table_view()
 		return
 	if steam_p2p_match == null or not steam_p2p_match.is_running():
@@ -973,8 +999,24 @@ func _refresh_steam_p2p_status() -> void:
 		steam_p2p_start_round_button.disabled = steam_p2p_match == null or not steam_p2p_match.is_host() or not steam_p2p_match.can_start_test_round()
 	if is_instance_valid(steam_p2p_open_table_button):
 		steam_p2p_open_table_button.disabled = steam_p2p_match == null or not steam_p2p_match.is_running()
+	if steam_p2p_main_table_presentation:
+		_refresh_network_main_table()
+	elif steam_p2p_table_presentation and is_instance_valid(network_table_view) and network_table_view.visible:
+		_refresh_network_table_view()
+
+
+func _on_network_public_table_event_received() -> void:
+	# Реакции, подарки и саундпад не меняют ревизию раздачи. Текст статуса у
+	# клиента может остаться тем же, хотя событие хоста уже дошло, поэтому
+	# обновляем стол по отдельному сигналу, не дожидаясь следующего игрового хода.
+	if steam_p2p_main_table_presentation and steam_p2p_match != null and steam_p2p_match.is_running():
+		_refresh_network_main_table()
+		return
 	if steam_p2p_table_presentation and is_instance_valid(network_table_view) and network_table_view.visible:
 		_refresh_network_table_view()
+		return
+	if loopback_network_test != null and loopback_network_test.is_running():
+		_refresh_loopback_network_status()
 
 
 func _is_loopback_network_client_launch() -> bool:
@@ -1013,6 +1055,7 @@ func _show_network_party_lobby() -> void:
 func _show_loopback_network_lobby() -> void:
 	is_pause_menu_open = false
 	steam_p2p_table_presentation = false
+	steam_p2p_main_table_presentation = false
 	menu_overlay.visible = true
 	_clear_children(menu_content)
 	loopback_network_start_round_button = null
@@ -1162,12 +1205,25 @@ func _on_submit_loopback_test_card_pressed(card_key: String) -> void:
 	_refresh_steam_p2p_status()
 
 
+func _submit_network_social_action(payload: Dictionary) -> bool:
+	var network_match = _get_active_network_match()
+	if network_match == null or not network_match.has_method(&"submit_social_action"):
+		return false
+	var was_submitted := bool(network_match.call(&"submit_social_action", payload))
+	if not was_submitted:
+		_refresh_social_action_buttons()
+	_refresh_loopback_network_status()
+	_refresh_steam_p2p_status()
+	return was_submitted
+
+
 func _on_open_loopback_test_joker_selection_pressed() -> void:
 	if not _can_submit_loopback_test_joker():
 		return
 	loopback_network_joker_selection_open = true
 	loopback_network_pending_joker_suit = -1
 	_refresh_loopback_network_status()
+	_refresh_steam_p2p_status()
 
 
 func _on_choose_loopback_test_joker_suit_pressed(suit: int) -> void:
@@ -1177,6 +1233,7 @@ func _on_choose_loopback_test_joker_suit_pressed(suit: int) -> void:
 		return
 	loopback_network_pending_joker_suit = suit
 	_refresh_loopback_network_status()
+	_refresh_steam_p2p_status()
 
 
 func _on_submit_loopback_test_joker_pressed(mode: Trick.JokerMode, declared_suit: int = -1, forced_card_rank: Trick.ForcedCardRank = Trick.ForcedCardRank.NONE) -> void:
@@ -1208,6 +1265,807 @@ func _get_active_network_match():
 
 func _is_steam_p2p_table_active() -> bool:
 	return steam_p2p_table_presentation and steam_p2p_match != null and steam_p2p_match.is_running()
+
+
+func _is_steam_p2p_main_table_active() -> bool:
+	return steam_p2p_main_table_presentation and _is_steam_p2p_table_active()
+
+
+func _get_network_main_snapshot() -> Dictionary:
+	var network_match = _get_active_network_match()
+	if network_match == null:
+		return {}
+	return network_match.get_test_table_snapshot()
+
+
+func _refresh_network_main_table() -> void:
+	if not _is_steam_p2p_main_table_active():
+		return
+
+	if is_instance_valid(network_table_view):
+		network_table_view.visible = false
+	if is_instance_valid(menu_overlay):
+		menu_overlay.visible = false
+
+	var snapshot: Dictionary = _get_network_main_snapshot()
+	if snapshot.is_empty():
+		_refresh_network_main_waiting_state()
+		return
+
+	var round_data: Dictionary = snapshot.get("round", {})
+	var active_trick: Dictionary = snapshot.get("active_trick", {})
+	var viewer_index: int = int(snapshot.get("recipient_player_index", 0))
+	var active_player_index: int = _get_network_table_active_player_index(round_data, active_trick)
+	var round_finished := int(round_data.get("state", Round.State.SETUP)) == Round.State.FINISHED
+	var result_key := _get_network_round_result_key(snapshot, round_data)
+	var hide_completed_trick := round_finished and network_round_result_key == result_key
+
+	_refresh_network_main_header(snapshot, round_data, active_player_index)
+	_refresh_network_main_deck(snapshot, round_data)
+	_refresh_network_main_players(snapshot, viewer_index, active_player_index)
+	_refresh_network_main_trick(snapshot, viewer_index, active_trick, hide_completed_trick)
+	_refresh_network_main_history(snapshot, round_data, active_trick, active_player_index)
+	_refresh_network_main_action_controls(snapshot, round_data)
+	_refresh_network_main_hand(snapshot, round_data)
+	_refresh_network_main_results(snapshot, round_data)
+	_refresh_network_main_markers(snapshot, round_data, viewer_index)
+	_refresh_network_main_score_sheet(snapshot, round_data)
+	_refresh_network_main_common_controls()
+	_process_network_public_table_events(snapshot, viewer_index)
+
+
+func _refresh_network_main_waiting_state() -> void:
+	phase_label.text = "Этап: подключение к сетевому столу"
+	trump_label.text = "Козырь будет открыт после запуска раздачи"
+	action_label.visible = true
+	action_label.text = "Ожидаем безопасный снимок стола от хоста."
+	table_label.text = "Сетевой стол ожидает начала раздачи"
+	history_label.text = "Сетевая история\nОжидание публичного состояния от хоста."
+	round_results_panel.visible = false
+	deck_visual.visible = false
+	_clear_children(hand_container)
+	_clear_children(bid_controls)
+	_clear_children(joker_controls)
+	joker_controls.visible = false
+	next_round_button.visible = false
+	undo_button.disabled = true
+	_refresh_network_main_common_controls()
+
+
+func _refresh_network_main_header(snapshot: Dictionary, round_data: Dictionary, active_player_index: int) -> void:
+	var state: int = int(round_data.get("state", Round.State.SETUP))
+	var round_type: int = int(round_data.get("round_type", Round.RoundType.NORMAL))
+	var phase_text := "подготовка"
+	match state:
+		Round.State.BIDDING:
+			phase_text = "заказ взяток"
+		Round.State.PLAYING:
+			phase_text = "розыгрыш взяток"
+		Round.State.FINISHED:
+			phase_text = "завершена"
+	phase_label.text = "Раздача %d · %s" % [int(round_data.get("number", 0)), phase_text]
+
+	var trump_card: Card = _create_network_table_card(snapshot.get("trump_card", {}))
+	if round_type == Round.RoundType.MISERE:
+		trump_label.text = "Мизерная: козырей нет"
+	elif round_type == Round.RoundType.GOLDEN:
+		trump_label.text = "Золотая: козырей нет"
+	elif trump_card == null:
+		trump_label.text = "Козырь: не определён"
+	elif trump_card.is_joker:
+		trump_label.text = "Открыт Джокер · бескозырка"
+	else:
+		trump_label.text = "Открыта %s · козырь %s" % [trump_card.get_card_name(), _get_suit_symbol(trump_card.suit)]
+
+	var players_by_index: Dictionary = _get_network_players_by_index(snapshot)
+	var action_text_network := "Ожидание действий хоста"
+	if state == Round.State.BIDDING:
+		if active_player_index == int(snapshot.get("recipient_player_index", -1)):
+			action_text_network = "Твой заказ: выбери число взяток."
+		elif players_by_index.has(active_player_index):
+			action_text_network = "Заказывает %s" % str((players_by_index[active_player_index] as Dictionary).get("display_name", "игрок"))
+	elif state == Round.State.PLAYING:
+		if loopback_network_joker_selection_open:
+			action_text_network = "Выбери условие для Джокера."
+		elif active_player_index == int(snapshot.get("recipient_player_index", -1)):
+			action_text_network = "Твой ход: выбери подсвеченную карту в руке."
+		elif players_by_index.has(active_player_index):
+			action_text_network = "Ходит %s" % str((players_by_index[active_player_index] as Dictionary).get("display_name", "игрок"))
+	elif state == Round.State.FINISHED:
+		action_text_network = "Раздача завершена. Итоги — в центре стола."
+	action_label.visible = true
+	action_label.text = action_text_network
+
+
+func _get_network_players_by_index(snapshot: Dictionary) -> Dictionary:
+	var players_by_index: Dictionary = {}
+	for player_data_variant in snapshot.get("players", []):
+		if player_data_variant is Dictionary:
+			var player_data: Dictionary = player_data_variant
+			players_by_index[int(player_data.get("player_index", -1))] = player_data
+	return players_by_index
+
+
+func _refresh_network_main_common_controls() -> void:
+	_refresh_music_player()
+	hand_sort_by_suit_button.disabled = hand_sort_mode == HandSortMode.BY_SUIT
+	hand_sort_trumps_left_button.disabled = hand_sort_mode == HandSortMode.TRUMPS_LEFT
+	undo_button.disabled = true
+	undo_button.tooltip_text = "Возврат хода для сетевой партии будет работать через голосование игроков."
+	turn_timer_active = false
+	if is_instance_valid(turn_timer_indicator):
+		turn_timer_indicator.visible = false
+	_refresh_reaction_controls()
+	_refresh_sticker_controls()
+	_refresh_soundpad_controls()
+
+
+func _refresh_network_main_deck(snapshot: Dictionary, round_data: Dictionary) -> void:
+	var state: int = int(round_data.get("state", Round.State.SETUP))
+	deck_visual.visible = state != Round.State.SETUP
+	if not deck_visual.visible:
+		return
+
+	var trump_card: Card = _create_network_table_card(snapshot.get("trump_card", {}))
+	var cards_left: int = int(snapshot.get("cards_left_in_deck", 0))
+	var has_open_trump := trump_card != null
+	for card_index in deck_back_panels.size():
+		deck_back_panels[card_index].visible = has_open_trump and card_index < mini(3, cards_left)
+
+	if has_open_trump:
+		deck_trump_label.text = trump_card.get_card_name()
+		deck_trump_label.add_theme_font_size_override("font_size", 17)
+		deck_trump_label.add_theme_color_override(
+			"font_color",
+			Color(0.74, 0.08, 0.06, 1.0) if trump_card.suit == Card.Suit.HEARTS or trump_card.suit == Card.Suit.DIAMONDS else Color(0.08, 0.08, 0.07, 1.0)
+		)
+		deck_trump_panel.tooltip_text = "Открытая карта и остаток колоды — публичная информация сетевой раздачи."
+		deck_caption_label.text = "Открытый Джокер · бескозырка" if trump_card.is_joker else "Открытый козырь · в колоде: %d" % cards_left
+		return
+
+	deck_trump_label.text = "—"
+	deck_trump_label.add_theme_font_size_override("font_size", 32)
+	deck_trump_label.add_theme_color_override("font_color", Color(0.08, 0.08, 0.07, 1.0))
+	deck_trump_panel.tooltip_text = "Козырь ещё не открыт."
+	deck_caption_label.text = "Козырь будет определён хостом"
+
+
+func _refresh_network_main_players(snapshot: Dictionary, viewer_index: int, active_player_index: int) -> void:
+	var players_by_index: Dictionary = _get_network_players_by_index(snapshot)
+	for player_index in range(PLAYER_NAMES.size()):
+		var relative_slot: int = posmod(player_index - viewer_index, PLAYER_NAMES.size())
+		var player_data: Dictionary = players_by_index.get(player_index, {})
+		var panel: PanelContainer = player_panels[relative_slot]
+		_place_player_panel(panel, relative_slot)
+		var is_current := player_index == active_player_index
+		panel.add_theme_stylebox_override("panel", active_human_player_panel_style if is_current and relative_slot == HUMAN_PLAYER_INDEX else active_player_panel_style if is_current else human_player_panel_style if relative_slot == HUMAN_PLAYER_INDEX else player_panel_style)
+
+		player_labels[relative_slot].text = ("Ход · " if is_current else "") + str(player_data.get("display_name", "Игрок %d" % (player_index + 1)))
+		var bid_value: int = int(player_data.get("bid", -1))
+		var bid_text := "—" if bid_value < 0 else str(bid_value)
+		player_stats_labels[relative_slot].text = "Заказ: %s  ·  Взято: %d" % [bid_text, int(player_data.get("tricks_taken", 0))]
+		var total_score: int = int(player_data.get("total_score", 0))
+		player_score_labels[relative_slot].text = "Счёт: %d" % total_score
+		player_score_labels[relative_slot].add_theme_color_override("font_color", Color(0.97, 0.84, 0.38, 1.0) if total_score >= 0 else Color(0.96, 0.42, 0.34, 1.0))
+
+		var avatar_badge: PanelContainer = avatar_badges[relative_slot]
+		_place_player_avatar_badge(avatar_badge, relative_slot)
+		avatar_badge.tooltip_text = "Игрок: %s" % str(player_data.get("display_name", "Игрок"))
+		var avatar_texture: Texture2D = _get_player_avatar_texture(relative_slot)
+		avatar_images[relative_slot].texture = avatar_texture
+		avatar_labels[relative_slot].visible = avatar_texture == null
+		avatar_labels[relative_slot].text = _get_player_avatar_symbol(relative_slot)
+		if relative_slot < undo_vote_badges.size():
+			undo_vote_badges[relative_slot].visible = false
+
+	_refresh_network_main_card_backs(players_by_index, viewer_index)
+
+
+func _refresh_network_main_card_backs(players_by_index: Dictionary, viewer_index: int) -> void:
+	for holder in bot_card_back_holders:
+		holder.visible = false
+
+	for player_index in range(PLAYER_NAMES.size()):
+		if player_index == viewer_index:
+			continue
+		var relative_slot: int = posmod(player_index - viewer_index, PLAYER_NAMES.size())
+		if relative_slot <= 0 or relative_slot > bot_card_back_holders.size():
+			continue
+		var holder: Control = bot_card_back_holders[relative_slot - 1]
+		var player_data: Dictionary = players_by_index.get(player_index, {})
+		var visible_card_count: int = mini(3, int(player_data.get("cards_in_hand", 0)))
+		_place_bot_card_back_holder(holder, relative_slot)
+		holder.visible = visible_card_count > 0
+		for card_index in holder.get_child_count():
+			var card_back: Control = holder.get_child(card_index) as Control
+			if card_back != null:
+				card_back.visible = card_index < visible_card_count
+
+
+func _refresh_network_main_trick(snapshot: Dictionary, viewer_index: int, active_trick: Dictionary, hide_completed_trick := false) -> void:
+	if network_round_finish_presentation_active or network_card_play_presentation_active:
+		return
+
+	for card_view in trick_card_views:
+		card_view.visible = false
+		card_view.set_winner_highlight(false)
+
+	var trick_data: Dictionary = active_trick
+	var is_active := not trick_data.is_empty() and not (trick_data.get("played_cards", []) as Array).is_empty()
+	if not is_active:
+		if hide_completed_trick:
+			table_label.text = "Следующая взятка"
+			return
+		trick_data = snapshot.get("last_completed_trick", {})
+	var played_cards: Array = trick_data.get("played_cards", trick_data.get("cards", []))
+	var played_by: Array = trick_data.get("played_by", [])
+	if played_cards.is_empty():
+		table_label.text = "Следующая взятка"
+		return
+
+	table_label.text = "Текущая взятка" if is_active else "Последняя взятка"
+	var declaration_text := _get_network_table_joker_text(trick_data)
+	if not declaration_text.is_empty():
+		table_label.text += "\n%s" % declaration_text
+	var winner_index: int = -1 if is_active else int(snapshot.get("last_trick_winner_index", -1))
+	for card_index in played_cards.size():
+		if card_index >= played_by.size() or not (played_cards[card_index] is Dictionary):
+			continue
+		var player_index: int = int(played_by[card_index])
+		var relative_slot: int = posmod(player_index - viewer_index, PLAYER_NAMES.size())
+		var card_data: Dictionary = played_cards[card_index]
+		var card: Card = _create_network_table_card(card_data)
+		if card == null:
+			continue
+		var card_view: CardView = trick_card_views[relative_slot]
+		_place_trick_slot(card_view, relative_slot)
+		card_view.set_card(card)
+		card_view.set_status(_get_network_main_trick_card_status(card, card_index, trick_data))
+		card_view.set_winner_highlight(player_index == winner_index)
+		card_view.visible = true
+
+
+func _process_network_public_table_events(snapshot: Dictionary, viewer_index: int) -> void:
+	var network_match = _get_active_network_match()
+	if network_match == null:
+		return
+	var stream_key := "%d:%d" % [network_match.get_instance_id(), viewer_index]
+	var events: Array = snapshot.get("public_table_events", [])
+	if stream_key != network_public_event_stream_key:
+		network_public_event_stream_key = stream_key
+		network_last_public_event_id = _get_latest_network_public_event_id(events)
+		network_card_event_queue.clear()
+		network_card_play_presentation_active = false
+		social_action_uses[SocialAction.REACTION] = 0
+		social_action_uses[SocialAction.STICKER] = 0
+		social_action_uses[SocialAction.SOUNDPAD] = 0
+		social_action_cooldown_until[SocialAction.REACTION] = 0
+		social_action_cooldown_until[SocialAction.STICKER] = 0
+		social_action_cooldown_until[SocialAction.SOUNDPAD] = 0
+		return
+
+	for event_variant in events:
+		if not (event_variant is Dictionary):
+			continue
+		var event: Dictionary = event_variant
+		var event_id := int(event.get("event_id", -1))
+		if event_id <= network_last_public_event_id:
+			continue
+		network_last_public_event_id = event_id
+		_present_network_public_table_event(event, viewer_index)
+
+
+func _get_latest_network_public_event_id(events: Array) -> int:
+	var latest_event_id := -1
+	for event_variant in events:
+		if event_variant is Dictionary:
+			latest_event_id = maxi(latest_event_id, int((event_variant as Dictionary).get("event_id", -1)))
+	return latest_event_id
+
+
+func _present_network_public_table_event(event: Dictionary, viewer_index: int) -> void:
+	match str(event.get("kind", "")):
+		"played_card":
+			network_card_event_queue.append(event.duplicate(true))
+			if not network_card_play_presentation_active:
+				network_card_play_presentation_active = true
+				call_deferred("_present_next_network_card_event", viewer_index)
+		"reaction":
+			_present_network_reaction_event(event, viewer_index)
+		"sticker":
+			_present_network_sticker_event(event, viewer_index)
+		"soundpad":
+			_present_network_soundpad_event(event, viewer_index)
+
+
+func _present_next_network_card_event(viewer_index: int) -> void:
+	if network_card_event_queue.is_empty():
+		network_card_play_presentation_active = false
+		return
+	var event: Dictionary = network_card_event_queue.pop_front()
+	var actor_player_index := int(event.get("actor_player_index", -1))
+	var relative_slot := posmod(actor_player_index - viewer_index, PLAYER_NAMES.size())
+	if relative_slot >= 0 and relative_slot < trick_card_views.size():
+		var card_view: CardView = trick_card_views[relative_slot]
+		if card_view.visible:
+			await get_tree().process_frame
+			var target_position := card_view.global_position
+			card_view.pivot_offset = card_view.size * 0.5
+			card_view.global_position = _get_played_card_source_global_position(relative_slot, card_view.size)
+			card_view.scale = Vector2(0.78, 0.78)
+			card_view.modulate = Color(1.0, 1.0, 1.0, 0.86)
+			var tween := create_tween()
+			tween.set_parallel(true)
+			tween.tween_property(card_view, "global_position", target_position, CARD_FLY_DURATION).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+			tween.tween_property(card_view, "scale", Vector2.ONE, CARD_FLY_DURATION).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+			tween.tween_property(card_view, "modulate", Color.WHITE, CARD_FLY_DURATION)
+			await tween.finished
+	if not network_card_event_queue.is_empty():
+		call_deferred("_present_next_network_card_event", viewer_index)
+	else:
+		network_card_play_presentation_active = false
+
+
+func _present_network_reaction_event(event: Dictionary, viewer_index: int) -> void:
+	if not is_instance_valid(reaction_bubble):
+		return
+	var relative_slot := posmod(int(event.get("actor_player_index", -1)) - viewer_index, PLAYER_NAMES.size())
+	if relative_slot < 0 or relative_slot >= avatar_badges.size():
+		return
+	reaction_bubble_label.text = str(event.get("reaction", ""))
+	reaction_bubble.visible = true
+	reaction_bubble.modulate = Color.WHITE
+	var badge_rect := avatar_badges[relative_slot].get_global_rect()
+	reaction_bubble.global_position = badge_rect.get_center() - reaction_bubble.size * 0.5 + Vector2(0.0, -64.0)
+	if is_instance_valid(reaction_bubble_tween):
+		reaction_bubble_tween.kill()
+	var start_position := reaction_bubble.position
+	reaction_bubble_tween = create_tween()
+	reaction_bubble_tween.tween_property(reaction_bubble, "position", start_position + Vector2(0.0, -24.0), 0.28)
+	reaction_bubble_tween.parallel().tween_property(reaction_bubble, "modulate:a", 0.0, REACTION_DISPLAY_DURATION)
+	reaction_bubble_tween.tween_callback(_hide_reaction_bubble)
+
+
+func _present_network_sticker_event(event: Dictionary, viewer_index: int) -> void:
+	if not is_instance_valid(sticker_flyer):
+		return
+	var source_relative := posmod(int(event.get("actor_player_index", -1)) - viewer_index, PLAYER_NAMES.size())
+	var target_relative := posmod(int(event.get("target_player_index", -1)) - viewer_index, PLAYER_NAMES.size())
+	if source_relative < 0 or source_relative >= avatar_badges.size() or target_relative < 0 or target_relative >= avatar_badges.size():
+		return
+	_configure_sticker_flyer({"symbol": str(event.get("sticker", ""))})
+	sticker_flyer.visible = true
+	sticker_flyer.modulate = Color.WHITE
+	sticker_flyer.scale = Vector2.ONE
+	if is_instance_valid(sticker_flyer_tween):
+		sticker_flyer_tween.kill()
+	var flyer_size := sticker_flyer.size
+	var source_center := avatar_badges[source_relative].get_global_rect().get_center()
+	var target_center := avatar_badges[target_relative].get_global_rect().get_center()
+	sticker_flyer.global_position = source_center - flyer_size * 0.5
+	sticker_flyer_tween = create_tween()
+	sticker_flyer_tween.tween_property(sticker_flyer, "global_position", target_center - flyer_size * 0.5, STICKER_FLY_DURATION)
+	sticker_flyer_tween.parallel().tween_property(sticker_flyer, "scale", Vector2(1.12, 1.12), STICKER_FLY_DURATION * 0.7)
+	sticker_flyer_tween.tween_interval(STICKER_HOLD_DURATION)
+	sticker_flyer_tween.tween_property(sticker_flyer, "modulate:a", 0.0, 0.22)
+	sticker_flyer_tween.tween_callback(_hide_sticker_flyer)
+
+
+func _present_network_soundpad_event(event: Dictionary, viewer_index: int) -> void:
+	var sound_id := str(event.get("sound_id", ""))
+	for sound_data in soundpad_sounds:
+		if str(sound_data.get("path", "")) == sound_id:
+			var sound_stream: AudioStream = sound_data.get("stream", null) as AudioStream
+			if sound_stream != null:
+				_play_soundpad_stream(sound_stream)
+			break
+	if not is_instance_valid(soundpad_bubble):
+		return
+	var relative_slot := posmod(int(event.get("actor_player_index", -1)) - viewer_index, PLAYER_NAMES.size())
+	if relative_slot < 0 or relative_slot >= avatar_badges.size():
+		return
+	var badge_rect := avatar_badges[relative_slot].get_global_rect()
+	soundpad_bubble.global_position = badge_rect.get_center() - soundpad_bubble.size * 0.5 + Vector2(42.0, -42.0)
+	_show_soundpad_bubble()
+
+
+func _get_network_main_trick_card_status(card: Card, card_index: int, trick_data: Dictionary) -> String:
+	if not card.is_joker:
+		return ""
+	var is_leading_joker := card_index == 0
+	var joker_mode: int = int(trick_data.get("joker_mode", Trick.JokerMode.NORMAL_CARD_WINS))
+	if not is_leading_joker:
+		return "ЗАБИРАЕТ" if joker_mode == Trick.JokerMode.JOKER_WINS else "НЕ БЕРЁТ"
+
+	var declared_suit: int = int(trick_data.get("declared_suit", -1))
+	var forced_card_rank: int = int(trick_data.get("forced_card_rank", Trick.ForcedCardRank.NONE))
+	var suit_symbol := _get_suit_symbol(declared_suit)
+	if forced_card_rank == Trick.ForcedCardRank.HIGHEST:
+		return "%s · СТАРШАЯ" % suit_symbol
+	if forced_card_rank == Trick.ForcedCardRank.LOWEST:
+		return "%s · МЛАДШАЯ" % suit_symbol
+	if joker_mode == Trick.JokerMode.JOKER_WINS:
+		return "%s · БЕРЁТ" % suit_symbol
+	if joker_mode == Trick.JokerMode.HIGHEST_DECLARED_CARD_WINS:
+		return "%s · СТАРШАЯ" % suit_symbol
+	if joker_mode == Trick.JokerMode.LOWEST_DECLARED_CARD_WINS:
+		return "%s · МЛАДШАЯ" % suit_symbol
+	return "%s · НЕ БЕРЁТ" % suit_symbol
+
+
+func _refresh_network_main_history(snapshot: Dictionary, round_data: Dictionary, active_trick: Dictionary, active_player_index: int) -> void:
+	var history_lines: PackedStringArray = ["Ход раздачи"]
+	var public_history: Array = snapshot.get("public_history", [])
+	for entry in public_history:
+		history_lines.append(str(entry))
+
+	if public_history.is_empty():
+		var cards_per_player: int = int(round_data.get("cards_per_player", 0))
+		history_lines.append("Раздача %d · %d %s" % [int(round_data.get("number", 0)), cards_per_player, "карта" if cards_per_player == 1 else "карты" if cards_per_player < 5 else "карт"])
+		var players_by_index: Dictionary = _get_network_players_by_index(snapshot)
+		if active_player_index >= 0 and players_by_index.has(active_player_index):
+			history_lines.append("Ходит: %s" % str((players_by_index[active_player_index] as Dictionary).get("display_name", "игрок")))
+		if not active_trick.is_empty() and not (active_trick.get("played_cards", []) as Array).is_empty():
+			history_lines.append("На столе карт: %d" % (active_trick.get("played_cards", []) as Array).size())
+	history_label.text = "\n".join(history_lines)
+	round_history_panel.visible = is_round_history_visible
+	round_history_toggle_button.text = "История"
+	round_history_toggle_button.tooltip_text = "Скрыть историю" if is_round_history_visible else "Показать историю"
+	round_history_toggle_button.disabled = false
+
+
+func _refresh_network_main_action_controls(snapshot: Dictionary, round_data: Dictionary) -> void:
+	_clear_children(bid_controls)
+	_clear_children(joker_controls)
+	joker_controls.visible = false
+	var state: int = int(round_data.get("state", Round.State.SETUP))
+	if state == Round.State.FINISHED:
+		return
+
+	if loopback_network_joker_selection_open:
+		_refresh_network_main_joker_controls()
+		return
+
+	if state != Round.State.BIDDING:
+		return
+	var available_bids: Array[int] = []
+	var network_match = _get_active_network_match()
+	if network_match != null and network_match.is_host() and network_match.can_submit_host_test_bid():
+		available_bids = network_match.get_available_host_test_bids()
+	elif network_match != null and network_match.is_client() and network_match.can_submit_test_bid():
+		available_bids = network_match.get_available_test_bids()
+	for bid in available_bids:
+		var bid_button := Button.new()
+		bid_button.text = "Заказать %d" % bid
+		bid_button.custom_minimum_size = Vector2(104.0, 40.0)
+		_apply_table_action_button_style(bid_button)
+		bid_button.pressed.connect(_on_submit_loopback_test_bid_pressed.bind(bid))
+		bid_controls.add_child(bid_button)
+
+
+func _refresh_network_main_joker_controls() -> void:
+	if not _can_submit_loopback_test_joker():
+		_reset_loopback_network_joker_selection()
+		return
+
+	joker_controls.visible = true
+	joker_controls.mouse_filter = Control.MOUSE_FILTER_STOP
+	var is_leading_joker := _is_loopback_test_joker_leading()
+	if is_leading_joker:
+		joker_controls.columns = 1
+		_set_control_layout(joker_controls, 0.0, 1.0, 0.0, 1.0, 64.0, -510.0, 444.0, -128.0)
+	else:
+		joker_controls.columns = 2
+		_set_control_layout(joker_controls, 0.5, 1.0, 0.5, 1.0, -280.0, -270.0, 280.0, -218.0)
+
+	if not is_leading_joker:
+		_add_network_main_joker_button("Джокер забирает", _on_submit_loopback_test_joker_pressed.bind(Trick.JokerMode.JOKER_WINS))
+		_add_network_main_joker_button("Сбросить Джокер (не забирает)", _on_submit_loopback_test_joker_pressed.bind(Trick.JokerMode.NORMAL_CARD_WINS))
+		return
+
+	if loopback_network_pending_joker_suit < Card.Suit.CLUBS:
+		for suit in [Card.Suit.CLUBS, Card.Suit.SPADES, Card.Suit.HEARTS, Card.Suit.DIAMONDS]:
+			_add_network_main_joker_button("Объявить %s" % _get_suit_symbol(suit), _on_choose_loopback_test_joker_suit_pressed.bind(suit))
+		_add_network_main_joker_button("Отменить выбор", _on_cancel_loopback_test_joker_selection_pressed)
+		return
+
+	var suit_symbol := _get_suit_symbol(loopback_network_pending_joker_suit)
+	var conditions: Array = [
+		["%s: Джокер забирает" % suit_symbol, Trick.JokerMode.JOKER_WINS, Trick.ForcedCardRank.NONE],
+		["%s: старшая забирает" % suit_symbol, Trick.JokerMode.HIGHEST_DECLARED_CARD_WINS, Trick.ForcedCardRank.NONE],
+		["%s: младшая забирает" % suit_symbol, Trick.JokerMode.LOWEST_DECLARED_CARD_WINS, Trick.ForcedCardRank.NONE],
+		["%s: кладите старшую — Джокер забирает" % suit_symbol, Trick.JokerMode.JOKER_WINS, Trick.ForcedCardRank.HIGHEST],
+		["%s: кладите младшую — Джокер забирает" % suit_symbol, Trick.JokerMode.JOKER_WINS, Trick.ForcedCardRank.LOWEST],
+		["%s: кладите старшую — Джокер не забирает" % suit_symbol, Trick.JokerMode.NORMAL_CARD_WINS, Trick.ForcedCardRank.HIGHEST],
+		["%s: кладите младшую — Джокер не забирает" % suit_symbol, Trick.JokerMode.NORMAL_CARD_WINS, Trick.ForcedCardRank.LOWEST]
+	]
+	for condition_variant in conditions:
+		var condition: Array = condition_variant
+		_add_network_main_joker_button(
+			str(condition[0]),
+			_on_submit_loopback_test_joker_pressed.bind(int(condition[1]), loopback_network_pending_joker_suit, int(condition[2]))
+		)
+	_add_network_main_joker_button("← Выбрать другую масть", _on_clear_loopback_test_joker_suit_pressed)
+	_add_network_main_joker_button("Отменить выбор", _on_cancel_loopback_test_joker_selection_pressed)
+
+
+func _add_network_main_joker_button(label_text: String, callback: Callable) -> void:
+	var button := Button.new()
+	button.text = label_text
+	button.custom_minimum_size = Vector2(0.0, 44.0)
+	button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_apply_table_action_button_style(button)
+	button.pressed.connect(callback)
+	joker_controls.add_child(button)
+
+
+func _refresh_network_main_hand(snapshot: Dictionary, round_data: Dictionary) -> void:
+	_clear_children(hand_container)
+	var private_hand: Array = snapshot.get("private_hand", [])
+	var round_finished := int(round_data.get("state", Round.State.SETUP)) == Round.State.FINISHED
+	if private_hand.is_empty() and bool(snapshot.get("cards_are_dealt", false)) and not round_finished:
+		var waiting_label := Label.new()
+		waiting_label.text = "Ожидание личной руки от хоста…"
+		waiting_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		waiting_label.add_theme_font_size_override("font_size", 16)
+		hand_container.add_child(waiting_label)
+		return
+
+	var cards: Array[Card] = []
+	var card_keys_by_instance: Dictionary = {}
+	for card_data_variant in private_hand:
+		if not (card_data_variant is Dictionary):
+			continue
+		var card_data: Dictionary = card_data_variant
+		var card: Card = _create_network_table_card(card_data)
+		if card == null:
+			continue
+		cards.append(card)
+		card_keys_by_instance[card] = str(card_data.get("card_key", ""))
+
+	var trump: Round.TrumpSuit = int(round_data.get("trump", Round.TrumpSuit.NONE))
+	var displayed_cards: Array[Card] = _sort_cards_for_display(cards, trump, hand_sort_mode)
+	for card in displayed_cards:
+		var card_view := CardView.new()
+		card_view.set_card(card)
+		var card_key: String = str(card_keys_by_instance.get(card, ""))
+		var card_is_available := _is_network_table_card_available(card_key)
+		var joker_is_available := card.is_joker and _can_submit_loopback_test_joker()
+		var interactive := joker_is_available if card.is_joker else card_is_available
+		card_view.set_interactive(interactive, not interactive or loopback_network_joker_selection_open)
+		if interactive:
+			if card.is_joker:
+				card_view.card_pressed.connect(_on_network_table_joker_pressed)
+			else:
+				card_view.card_pressed.connect(_on_network_table_card_pressed.bind(card_key))
+		hand_container.add_child(card_view)
+
+
+func _refresh_network_main_results(snapshot: Dictionary, round_data: Dictionary) -> void:
+	var round_finished := int(round_data.get("state", Round.State.SETUP)) == Round.State.FINISHED
+	if not round_finished:
+		network_round_result_key = ""
+		network_round_finish_presentation_key = ""
+		network_round_finish_presentation_active = false
+		round_results_panel.visible = false
+		round_results_label.text = ""
+		next_round_button.visible = false
+		return
+
+	var result_key := _get_network_round_result_key(snapshot, round_data)
+	if network_round_result_key == result_key:
+		round_results_panel.visible = true
+		round_results_label.text = _get_network_table_result_text(snapshot)
+		_refresh_network_main_next_round_button()
+		return
+
+	round_results_panel.visible = false
+	next_round_button.visible = false
+	if not network_round_finish_presentation_active:
+		network_round_finish_presentation_active = true
+		network_round_finish_presentation_key = result_key
+		call_deferred("_present_network_round_finish", result_key, int(snapshot.get("last_trick_winner_index", -1)), int(snapshot.get("recipient_player_index", 0)))
+
+
+func _get_network_round_result_key(snapshot: Dictionary, round_data: Dictionary) -> String:
+	return "%d:%d" % [int(round_data.get("number", 0)), int(snapshot.get("revision", -1))]
+
+
+func _present_network_round_finish(result_key: String, winner_player_index: int, viewer_index: int) -> void:
+	await get_tree().process_frame
+	while network_card_play_presentation_active:
+		await get_tree().process_frame
+	if not _is_network_round_result_key_current(result_key):
+		network_round_finish_presentation_active = false
+		return
+
+	var relative_winner_index: int = posmod(winner_player_index - viewer_index, PLAYER_NAMES.size())
+	if winner_player_index >= 0:
+		_play_sound(SoundEffect.TRICK)
+		_set_trick_winner_highlight(relative_winner_index, true)
+		var snapshot := _get_network_main_snapshot()
+		var players_by_index := _get_network_players_by_index(snapshot)
+		var winner_data: Dictionary = players_by_index.get(winner_player_index, {})
+		action_label.text = "Взятку забирает %s." % str(winner_data.get("display_name", "игрок"))
+		await get_tree().create_timer(TRICK_WINNER_HOLD_DURATION).timeout
+		if not _is_network_round_result_key_current(result_key):
+			network_round_finish_presentation_active = false
+			return
+		_set_trick_winner_highlight(relative_winner_index, false)
+		await _animate_network_trick_collection(relative_winner_index)
+
+	if not _is_network_round_result_key_current(result_key):
+		network_round_finish_presentation_active = false
+		return
+	network_round_result_key = result_key
+	network_round_finish_presentation_key = ""
+	network_round_finish_presentation_active = false
+	_refresh_network_main_table()
+
+
+func _is_network_round_result_key_current(result_key: String) -> bool:
+	if not _is_steam_p2p_main_table_active():
+		return false
+	var snapshot := _get_network_main_snapshot()
+	var round_data: Dictionary = snapshot.get("round", {})
+	return (
+		int(round_data.get("state", Round.State.SETUP)) == Round.State.FINISHED
+		and _get_network_round_result_key(snapshot, round_data) == result_key
+	)
+
+
+func _animate_network_trick_collection(relative_winner_index: int) -> void:
+	if relative_winner_index < 0 or relative_winner_index >= avatar_badges.size():
+		return
+
+	var card_size := Vector2(108.0, 132.0)
+	var destination_rect: Rect2 = avatar_badges[relative_winner_index].get_global_rect()
+	var destination_position := destination_rect.get_center() - card_size * 0.5
+	var tween: Tween = create_tween()
+	var has_visible_cards := false
+	tween.set_parallel(true)
+
+	for player_index in trick_card_views.size():
+		var card_view: CardView = trick_card_views[player_index]
+		if not card_view.visible:
+			continue
+		has_visible_cards = true
+		card_view.pivot_offset = card_view.size * 0.5
+		var stack_offset := Vector2(float(player_index * 3), float(player_index * 2))
+		tween.tween_property(card_view, "global_position", destination_position + stack_offset, TRICK_COLLECTION_DURATION).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+		tween.tween_property(card_view, "scale", Vector2(0.36, 0.36), TRICK_COLLECTION_DURATION)
+		tween.tween_property(card_view, "modulate", Color(1.0, 1.0, 1.0, 0.0), TRICK_COLLECTION_DURATION)
+
+	if has_visible_cards:
+		await tween.finished
+
+	for card_view in trick_card_views:
+		card_view.visible = false
+		card_view.scale = Vector2.ONE
+		card_view.modulate = Color.WHITE
+
+
+func _refresh_network_main_next_round_button() -> void:
+	var can_start_next: bool = (
+		steam_p2p_match != null
+		and steam_p2p_match.is_host()
+		and steam_p2p_match.can_start_next_scheduled_round()
+	)
+	next_round_button.visible = can_start_next
+	next_round_button.disabled = not can_start_next
+	next_round_button.text = "Следующая раздача"
+
+
+func _refresh_network_main_markers(snapshot: Dictionary, round_data: Dictionary, viewer_index: int) -> void:
+	var state: int = int(round_data.get("state", Round.State.SETUP))
+	var dealer_index: int = int(snapshot.get("dealer_index", -1))
+	dealer_marker.visible = dealer_index >= 0 and state != Round.State.SETUP
+	if dealer_marker.visible:
+		_place_table_marker(dealer_marker, posmod(dealer_index - viewer_index, PLAYER_NAMES.size()), true)
+
+	var lead_player_index: int = int(round_data.get("lead_player_index", -1))
+	lead_marker.visible = lead_player_index >= 0 and state == Round.State.PLAYING
+	if lead_marker.visible:
+		_place_table_marker(lead_marker, posmod(lead_player_index - viewer_index, PLAYER_NAMES.size()), false)
+
+
+func _refresh_network_main_score_sheet(snapshot: Dictionary, round_data: Dictionary) -> void:
+	score_sheet_toggle_button.text = "📋 Расписка"
+	score_sheet_toggle_button.disabled = false
+	score_sheet_panel.visible = is_score_sheet_visible
+	if is_instance_valid(score_sheet_backdrop):
+		score_sheet_backdrop.visible = is_score_sheet_visible
+	if is_instance_valid(score_sheet_close_button):
+		score_sheet_close_button.visible = is_score_sheet_visible
+		score_sheet_close_button.disabled = false
+	final_results_label.visible = false
+	if not is_score_sheet_visible:
+		return
+
+	_clear_children(score_sheet_grid)
+	score_sheet_grid.columns = 1
+	var completed_rounds: Dictionary = {}
+	var completed_rounds_data: Array = snapshot.get("completed_rounds", [])
+	for completed_round_variant in completed_rounds_data:
+		if completed_round_variant is Dictionary:
+			var completed_round: Dictionary = completed_round_variant
+			completed_rounds[int(completed_round.get("round_number", 0))] = completed_round
+
+	score_sheet_title.text = "Сетевая расписка: %d из %d раздач сыграно · полный план партии" % [completed_rounds.size(), TOTAL_ROUND_COUNT]
+	var header_row := _create_score_sheet_row()
+	_add_score_sheet_cell(header_row, "№", true, false, false, SCORE_SHEET_NUMBER_COLUMN_WIDTH)
+	_add_score_sheet_cell(header_row, "Режим", true, false, false, SCORE_SHEET_MODE_COLUMN_WIDTH)
+	_add_score_sheet_cell(header_row, "Карт", true, false, false, SCORE_SHEET_CARDS_COLUMN_WIDTH)
+	_add_score_sheet_cell(header_row, "Козырь", true, false, false, SCORE_SHEET_TRUMP_COLUMN_WIDTH)
+	var players_by_index: Dictionary = _get_network_players_by_index(snapshot)
+	for player_index in range(PLAYER_NAMES.size()):
+		var player_data: Dictionary = players_by_index.get(player_index, {})
+		_add_score_sheet_player_header(header_row, player_index, str(player_data.get("display_name", "Игрок %d" % (player_index + 1))))
+	score_sheet_grid.add_child(header_row)
+
+	var current_round_number := int(round_data.get("number", 0))
+	for round_number in range(1, TOTAL_ROUND_COUNT + 1):
+		var round_plan := _get_planned_round(round_number)
+		var has_completed_round := completed_rounds.has(round_number)
+		var is_current_round := round_number == current_round_number and not has_completed_round
+		var is_future_round := round_number > current_round_number
+		var trump_name := str(round_plan.get("trump_name", "—"))
+
+		if has_completed_round:
+			var completed_round: Dictionary = completed_rounds[round_number]
+			trump_name = str(completed_round.get("trump_name", trump_name))
+		elif is_current_round:
+			var trump_card: Card = _create_network_table_card(snapshot.get("trump_card", {}))
+			if trump_card != null:
+				trump_name = "без козыря" if trump_card.is_joker else _get_suit_symbol(trump_card.suit)
+			else:
+				trump_name = _get_trump_name_from_suit(int(round_data.get("trump", Round.TrumpSuit.RANDOM)))
+
+		var row := _create_score_sheet_row()
+		_add_score_sheet_cell(row, str(round_number), false, is_current_round, is_future_round, SCORE_SHEET_NUMBER_COLUMN_WIDTH)
+		_add_score_sheet_cell(row, str(round_plan.get("label", "Раздача %d" % round_number)), false, is_current_round, is_future_round, SCORE_SHEET_MODE_COLUMN_WIDTH)
+		_add_score_sheet_cell(row, str(int(round_plan.get("cards_per_player", 0))), false, is_current_round, is_future_round, SCORE_SHEET_CARDS_COLUMN_WIDTH)
+		_add_score_sheet_cell(row, trump_name, false, is_current_round, is_future_round, SCORE_SHEET_TRUMP_COLUMN_WIDTH)
+
+		for player_index in range(PLAYER_NAMES.size()):
+			var result_cells := PackedStringArray(["—", "—", "—"])
+			if has_completed_round:
+				var completed_round: Dictionary = completed_rounds[round_number]
+				var player_results: Array = completed_round.get("players", [])
+				if player_index < player_results.size() and player_results[player_index] is Dictionary:
+					var player_result: Dictionary = player_results[player_index]
+					var bid_text := str(player_result.get("bid", "—")) if bool(completed_round.get("uses_bids", true)) else "—"
+					result_cells = PackedStringArray([
+						bid_text,
+						str(int(player_result.get("tricks_taken", 0))),
+						_format_score(int(player_result.get("round_score", 0)))
+					])
+			elif is_current_round:
+				var player_data: Dictionary = players_by_index.get(player_index, {})
+				var bid_value := int(player_data.get("bid", -1))
+				var bid_text := str(bid_value) if bool(round_plan.get("uses_bids", true)) and bid_value >= 0 else "—"
+				result_cells = PackedStringArray([bid_text, str(int(player_data.get("tricks_taken", 0))), "…"])
+
+			_add_score_sheet_player_group(row, player_index, result_cells, is_current_round, is_future_round)
+
+		score_sheet_grid.add_child(row)
+
+	var total_row := _create_score_sheet_row()
+	_add_score_sheet_cell(total_row, "Итого", false, false, false, SCORE_SHEET_NUMBER_COLUMN_WIDTH, true)
+	_add_score_sheet_cell(total_row, "", false, false, false, SCORE_SHEET_MODE_COLUMN_WIDTH, true)
+	_add_score_sheet_cell(total_row, "", false, false, false, SCORE_SHEET_CARDS_COLUMN_WIDTH, true)
+	_add_score_sheet_cell(total_row, "", false, false, false, SCORE_SHEET_TRUMP_COLUMN_WIDTH, true)
+	for player_index in range(PLAYER_NAMES.size()):
+		var player_data: Dictionary = players_by_index.get(player_index, {})
+		_add_score_sheet_player_group(
+			total_row,
+			player_index,
+			PackedStringArray(["", "", "Счёт: %d" % int(player_data.get("total_score", 0))]),
+			false,
+			false,
+			true
+		)
+	score_sheet_grid.add_child(total_row)
 
 
 func _on_close_loopback_network_test_pressed() -> void:
@@ -1255,13 +2113,16 @@ func _on_open_network_table_pressed() -> void:
 		return
 	_reset_loopback_network_joker_selection()
 	menu_overlay.visible = false
+	steam_p2p_main_table_presentation = false
 	network_table_view.visible = true
 	_refresh_network_table_view()
 
 
 func _on_close_network_table_pressed() -> void:
 	_reset_loopback_network_joker_selection()
-	network_table_view.visible = false
+	steam_p2p_main_table_presentation = false
+	if is_instance_valid(network_table_view):
+		network_table_view.visible = false
 	if _is_steam_p2p_table_active():
 		steam_p2p_table_presentation = false
 		is_pause_menu_open = false
@@ -1291,8 +2152,21 @@ func _create_network_table_view() -> void:
 		"panel",
 		_create_flat_style(Color(0.025, 0.19, 0.095, 1.0), Color(0.66, 0.38, 0.1, 1.0), 8, 250, 10)
 	)
-	_set_control_layout(table_surface, 0.5, 0.5, 0.5, 0.5, -690.0, -355.0, 690.0, 350.0)
+	_set_control_layout(table_surface, 0.5, 0.5, 0.5, 0.5, -690.0, -335.0, 690.0, 330.0)
 	network_table_view.add_child(table_surface)
+
+	var history_panel := PanelContainer.new()
+	history_panel.add_theme_stylebox_override("panel", _create_flat_style(Color(0.008, 0.045, 0.025, 0.9), Color(0.28, 0.36, 0.22, 0.72), 1, 8, 3))
+	history_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_set_control_layout(history_panel, 0.0, 0.0, 0.0, 0.0, 20.0, 72.0, 298.0, 255.0)
+	network_table_view.add_child(history_panel)
+	network_table_history_label = Label.new()
+	network_table_history_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	network_table_history_label.add_theme_font_size_override("font_size", 14)
+	network_table_history_label.add_theme_color_override("font_color", Color(0.76, 0.88, 0.78, 1.0))
+	network_table_history_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	network_table_history_label.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	history_panel.add_child(network_table_history_label)
 
 	network_table_title_label = Label.new()
 	network_table_title_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -1308,21 +2182,29 @@ func _create_network_table_view() -> void:
 	_set_control_layout(network_table_round_label, 0.5, 0.0, 0.5, 0.0, -420.0, 58.0, 420.0, 84.0)
 	network_table_view.add_child(network_table_round_label)
 
+	network_table_info_panel = PanelContainer.new()
+	network_table_info_panel.add_theme_stylebox_override("panel", _create_flat_style(Color(0.008, 0.035, 0.018, 0.94), Color(0.57, 0.4, 0.11, 0.9), 1, 9, 3))
+	network_table_info_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_set_control_layout(network_table_info_panel, 1.0, 1.0, 1.0, 1.0, -430.0, -300.0, -44.0, -158.0)
+	network_table_view.add_child(network_table_info_panel)
 	network_table_info_label = Label.new()
 	network_table_info_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	network_table_info_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	network_table_info_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	network_table_info_label.add_theme_font_size_override("font_size", 16)
+	network_table_info_label.add_theme_font_size_override("font_size", 15)
 	network_table_info_label.add_theme_color_override("font_color", Color(0.78, 0.86, 0.78, 1.0))
-	_set_control_layout(network_table_info_label, 0.5, 0.0, 0.5, 0.0, -430.0, 86.0, 430.0, 132.0)
-	network_table_view.add_child(network_table_info_label)
+	network_table_info_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	network_table_info_label.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	network_table_info_panel.add_child(network_table_info_label)
 
 	network_table_deck_label = Label.new()
 	network_table_deck_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	network_table_deck_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	network_table_deck_label.add_theme_font_size_override("font_size", 15)
 	network_table_deck_label.add_theme_color_override("font_color", Color(0.88, 0.9, 0.8, 1.0))
-	_set_control_layout(network_table_deck_label, 1.0, 0.0, 1.0, 0.0, -440.0, 145.0, -46.0, 198.0)
+	_set_control_layout(network_table_deck_label, 1.0, 0.0, 1.0, 0.0, -420.0, 198.0, -42.0, 244.0)
 	network_table_view.add_child(network_table_deck_label)
+	_create_network_table_deck_visual()
 
 	network_table_close_button = Button.new()
 	network_table_close_button.custom_minimum_size = Vector2(185.0, 38.0)
@@ -1367,6 +2249,36 @@ func _create_network_table_view() -> void:
 	network_table_hand_container.add_theme_constant_override("separation", 12)
 	_set_control_layout(network_table_hand_container, 0.5, 1.0, 0.5, 1.0, -500.0, -165.0, 500.0, -28.0)
 	network_table_view.add_child(network_table_hand_container)
+
+
+func _create_network_table_deck_visual() -> void:
+	network_table_deck_visual = Control.new()
+	network_table_deck_visual.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_set_control_layout(network_table_deck_visual, 1.0, 0.0, 1.0, 0.0, -270.0, 106.0, -52.0, 196.0)
+	network_table_view.add_child(network_table_deck_visual)
+
+	for card_index in range(3):
+		var card_back := PanelContainer.new()
+		card_back.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		card_back.position = Vector2(float(card_index * 13), 9.0)
+		card_back.size = Vector2(60.0, 82.0)
+		card_back.add_theme_stylebox_override("panel", card_back_style)
+		var ornament := Label.new()
+		ornament.text = "✦"
+		ornament.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		ornament.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		ornament.add_theme_font_size_override("font_size", 24)
+		ornament.add_theme_color_override("font_color", Color(0.94, 0.73, 0.22, 1.0))
+		ornament.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		card_back.add_child(ornament)
+		network_table_deck_visual.add_child(card_back)
+		network_table_deck_back_panels.append(card_back)
+
+	network_table_trump_card_view = CardView.new()
+	network_table_trump_card_view.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	network_table_trump_card_view.set_card_size(Vector2(68.0, 96.0))
+	network_table_trump_card_view.position = Vector2(56.0, 0.0)
+	network_table_deck_visual.add_child(network_table_trump_card_view)
 
 
 func _create_network_table_player_widgets() -> void:
@@ -1449,7 +2361,7 @@ func _refresh_network_table_view() -> void:
 		return
 
 	if _is_steam_p2p_table_active():
-		network_table_title_label.text = "Steam P2P · тестовая раздача"
+		network_table_title_label.text = "Steam P2P · сетевая партия"
 		network_table_close_button.text = "Вернуться в Steam-комнату"
 		network_table_close_button.tooltip_text = "Вернуться в техническую Steam-комнату"
 	else:
@@ -1460,7 +2372,10 @@ func _refresh_network_table_view() -> void:
 	if snapshot.is_empty():
 		network_table_round_label.text = "Ожидание безопасного снимка стола"
 		network_table_info_label.text = "Подключение к хосту… после запуска раздачи здесь появятся публичный стол и только твоя рука."
+		network_table_info_panel.visible = false
+		network_table_history_label.text = "Сетевая история\n\nПодключение к хосту…\n\nПосле старта здесь появятся только общедоступные события раздачи."
 		network_table_deck_label.text = ""
+		_refresh_network_table_deck_visual({})
 		network_table_trick_label.text = "Стол ещё не создан"
 		network_table_joker_label.text = ""
 		_clear_network_table_trick_cards()
@@ -1473,6 +2388,7 @@ func _refresh_network_table_view() -> void:
 	var viewer_index: int = network_match.get_test_table_viewer_index()
 	var active_player_index := _get_network_table_active_player_index(round_data, active_trick)
 	_refresh_network_table_header(snapshot, round_data, active_trick, active_player_index)
+	_refresh_network_table_history(snapshot, round_data, active_trick, active_player_index)
 	_refresh_network_table_players(snapshot, viewer_index, active_player_index)
 	_refresh_network_table_trick(snapshot, viewer_index, active_trick)
 	var private_hand: Array = snapshot.get("private_hand", [])
@@ -1491,11 +2407,21 @@ func _refresh_network_table_header(snapshot: Dictionary, round_data: Dictionary,
 		phase_text = "розыгрыш взяток"
 	elif state == Round.State.FINISHED:
 		phase_text = "раздача завершена"
-	network_table_round_label.text = "%s раздача %d · %d карт · %s" % ["Тестовая" if loopback_network_is_technical_presentation else "", round_number, cards_per_player, phase_text]
-	network_table_round_label.text = network_table_round_label.text.strip_edges()
+	var round_type_text := "Обычная"
+	match int(round_data.get("round_type", Round.RoundType.NORMAL)):
+		Round.RoundType.DARK:
+			round_type_text = "Тёмная"
+		Round.RoundType.MISERE:
+			round_type_text = "Мизер"
+		Round.RoundType.GOLDEN:
+			round_type_text = "Золотая"
+	var cards_text := "карта" if cards_per_player == 1 else "карты" if cards_per_player >= 2 and cards_per_player <= 4 else "карт"
+	var technical_prefix := "Тестовая " if loopback_network_is_technical_presentation and not _is_steam_p2p_table_active() else ""
+	network_table_round_label.text = "%s%s раздача %d · %d %s · %s" % [technical_prefix, round_type_text, round_number, cards_per_player, cards_text, phase_text]
 
 	var trump_data: Dictionary = snapshot.get("trump_card", {})
 	var trump_card: Card = _create_network_table_card(trump_data)
+	_refresh_network_table_deck_visual(trump_data)
 	if trump_card == null:
 		network_table_deck_label.text = "Колода ещё не открыта"
 	elif trump_card.is_joker:
@@ -1505,13 +2431,64 @@ func _refresh_network_table_header(snapshot: Dictionary, round_data: Dictionary,
 
 	if state == Round.State.FINISHED:
 		network_table_info_label.text = _get_network_table_result_text(snapshot)
+		network_table_info_panel.visible = true
 	elif active_player_index >= 0:
+		network_table_info_panel.visible = false
 		network_table_info_label.text = "Сейчас действует место %d." % [active_player_index + 1]
 	else:
+		network_table_info_panel.visible = false
 		network_table_info_label.text = "Ожидание следующего действия хоста."
 
 	var joker_text := _get_network_table_joker_text(active_trick)
 	network_table_joker_label.text = joker_text
+
+
+func _refresh_network_table_deck_visual(trump_data: Dictionary) -> void:
+	if not is_instance_valid(network_table_deck_visual) or not is_instance_valid(network_table_trump_card_view):
+		return
+	var trump_card: Card = _create_network_table_card(trump_data)
+	var has_open_trump := trump_card != null
+	network_table_deck_visual.visible = has_open_trump
+	network_table_trump_card_view.visible = has_open_trump
+	for card_back in network_table_deck_back_panels:
+		card_back.visible = has_open_trump
+	if has_open_trump:
+		network_table_trump_card_view.set_card(trump_card)
+
+
+func _refresh_network_table_history(snapshot: Dictionary, round_data: Dictionary, active_trick: Dictionary, active_player_index: int) -> void:
+	if not is_instance_valid(network_table_history_label):
+		return
+	var history_lines: PackedStringArray = ["Сетевая история"]
+	var round_number: int = int(round_data.get("number", 0))
+	var cards_per_player: int = int(round_data.get("cards_per_player", 0))
+	if round_number > 0:
+		history_lines.append("Раздача %d · по %d %s" % [round_number, cards_per_player, "карте" if cards_per_player == 1 else "карт"])
+	var trump_card: Card = _create_network_table_card(snapshot.get("trump_card", {}))
+	if trump_card != null:
+		history_lines.append("Козырь: %s" % ("без козыря" if trump_card.is_joker else trump_card.get_card_name()))
+
+	var state: int = int(round_data.get("state", -1))
+	if state == Round.State.BIDDING:
+		history_lines.append("Заказы: %d из %d" % [int(round_data.get("bids_made", 0)), PLAYER_NAMES.size()])
+	elif state == Round.State.PLAYING:
+		history_lines.append("Взятка %d" % (int(round_data.get("tricks_played", 0)) + 1))
+	elif state == Round.State.FINISHED:
+		history_lines.append("Раздача завершена")
+
+	var players_by_index: Dictionary = {}
+	for player_data_variant in snapshot.get("players", []):
+		if player_data_variant is Dictionary:
+			var player_data: Dictionary = player_data_variant
+			players_by_index[int(player_data.get("player_index", -1))] = str(player_data.get("display_name", "Игрок"))
+	if active_player_index >= 0 and active_player_index in players_by_index:
+		history_lines.append("Действует: %s" % str(players_by_index[active_player_index]))
+	var last_winner_index: int = int(snapshot.get("last_trick_winner_index", -1))
+	if last_winner_index >= 0 and last_winner_index in players_by_index:
+		history_lines.append("Последняя взятка: %s" % str(players_by_index[last_winner_index]))
+	if not active_trick.is_empty() and not (active_trick.get("played_cards", []) as Array).is_empty():
+		history_lines.append("Карты на столе: %d" % (active_trick.get("played_cards", []) as Array).size())
+	network_table_history_label.text = "\n".join(history_lines)
 
 
 func _refresh_network_table_players(snapshot: Dictionary, viewer_index: int, active_player_index: int) -> void:
@@ -1608,7 +2585,7 @@ func _refresh_network_table_hand(private_hand: Array) -> void:
 		card_view.set_interactive(interactive, not interactive)
 		if interactive:
 			if card.is_joker:
-				card_view.card_pressed.connect(_on_open_loopback_test_joker_selection_pressed)
+				card_view.card_pressed.connect(_on_network_table_joker_pressed)
 			else:
 				card_view.card_pressed.connect(_on_network_table_card_pressed.bind(card_key))
 		network_table_hand_container.add_child(card_view)
@@ -1616,6 +2593,10 @@ func _refresh_network_table_hand(private_hand: Array) -> void:
 
 func _on_network_table_card_pressed(_card: Card, card_key: String) -> void:
 	_on_submit_loopback_test_card_pressed(card_key)
+
+
+func _on_network_table_joker_pressed(_card: Card) -> void:
+	_on_open_loopback_test_joker_selection_pressed()
 
 
 func _is_network_table_card_available(card_key: String) -> bool:
@@ -1673,7 +2654,7 @@ func _refresh_network_table_action_controls(snapshot: Dictionary) -> void:
 	if _is_network_table_card_available_in_any_hand(snapshot) or _can_submit_loopback_test_joker():
 		title.text = "Твой ход · выбери подсвеченную карту в руке"
 	else:
-		title.text = "Ожидание хода другого игрока"
+		network_table_action_panel.visible = false
 
 
 func _place_network_table_action_panel(is_joker_selection: bool) -> void:
@@ -1963,6 +2944,7 @@ func _refresh_loopback_network_joker_selection_controls() -> void:
 func _on_clear_loopback_test_joker_suit_pressed() -> void:
 	loopback_network_pending_joker_suit = -1
 	_refresh_loopback_network_status()
+	_refresh_steam_p2p_status()
 
 
 func _add_loopback_test_joker_cancel_button() -> void:
@@ -2964,6 +3946,9 @@ func _on_pause_menu_pressed() -> void:
 
 	is_pause_menu_open = true
 	menu_overlay.visible = true
+	if _is_steam_p2p_main_table_active():
+		_build_network_pause_menu_content()
+		return
 	if is_bug_report_review_mode:
 		_build_bug_report_review_menu()
 		return
@@ -2984,6 +3969,27 @@ func _build_pause_menu_content() -> void:
 	_add_menu_button("Настройки", _show_settings_menu)
 	_add_menu_button("Сообщить об ошибке", _show_bug_report_menu)
 	_add_menu_button("Завершить партию", _show_end_session_confirmation)
+
+
+func _build_network_pause_menu_content() -> void:
+	_clear_children(menu_content)
+	_add_menu_title("Сетевая пауза", "Сетевая раздача продолжается у хоста. Здесь можно безопасно вернуться в комнату или открыть личные настройки.")
+	_add_menu_spacer(18.0)
+	_add_menu_button("Продолжить", _resume_current_game, true)
+	_add_menu_button("Вернуться в Steam-комнату", _return_to_steam_lobby_from_main_table)
+	_add_menu_button("Показать аудиоплеер" if music_player_hidden else "Скрыть аудиоплеер", _on_music_player_visibility_toggle_pressed)
+	_add_menu_button("Профиль", _show_profile_menu)
+	_add_menu_button("Правила", _show_rules_menu)
+	_add_menu_button("Настройки", _show_settings_menu)
+	_add_menu_label("Расписка и история на столе показывают только публичные данные. Голосование за возврат, чат и реакции будут подключены отдельным сетевым шагом.", 14, Color(0.72, 0.85, 0.76, 1.0))
+
+
+func _return_to_steam_lobby_from_main_table() -> void:
+	_reset_loopback_network_joker_selection()
+	steam_p2p_main_table_presentation = false
+	steam_p2p_table_presentation = false
+	is_pause_menu_open = false
+	_show_steam_lobby_menu()
 
 
 func _show_bug_report_menu() -> void:
@@ -3191,8 +4197,10 @@ func _open_music_controls_popup() -> void:
 
 	_refresh_music_controls_popup()
 	var popup_size := Vector2i(340, 610)
-	var popup_top := maxi(20, roundi(get_viewport_rect().size.y - float(popup_size.y) - 118.0))
-	music_controls_popup.popup(Rect2i(Vector2i(36, popup_top), popup_size))
+	var viewport_size := get_viewport_rect().size
+	var popup_left := mini(316, maxi(20, roundi(viewport_size.x - float(popup_size.x) - 20.0)))
+	var popup_top := mini(140, maxi(20, roundi(viewport_size.y - float(popup_size.y) - 20.0)))
+	music_controls_popup.popup(Rect2i(Vector2i(popup_left, popup_top), popup_size))
 
 
 func _on_music_volume_slider_changed(value: float) -> void:
@@ -4969,6 +5977,10 @@ func _on_hand_sort_trumps_left_pressed() -> void:
 
 
 func _on_next_round_pressed() -> void:
+	if _is_steam_p2p_main_table_active():
+		_on_start_next_steam_p2p_round_from_table_pressed()
+		return
+
 	if is_bug_report_review_mode or not _can_start_next_round():
 		return
 
@@ -4997,6 +6009,19 @@ func _on_next_round_pressed() -> void:
 		return
 
 	_start_round()
+
+
+func _on_start_next_steam_p2p_round_from_table_pressed() -> void:
+	if steam_p2p_match == null or not steam_p2p_match.is_host():
+		return
+	if not steam_p2p_match.start_next_scheduled_round():
+		return
+
+	_reset_loopback_network_joker_selection()
+	network_round_result_key = ""
+	network_round_finish_presentation_key = ""
+	network_round_finish_presentation_active = false
+	_refresh_network_main_table()
 
 
 func _finish_round() -> void:
@@ -5205,6 +6230,10 @@ func _reset_trick_presentation() -> void:
 
 
 func _refresh_ui() -> void:
+	if _is_steam_p2p_main_table_active():
+		_refresh_network_main_table()
+		return
+
 	_refresh_header()
 	_refresh_deck_visual()
 	_refresh_player_panels()
@@ -5714,7 +6743,7 @@ func _create_score_sheet_row() -> HBoxContainer:
 	return row
 
 
-func _add_score_sheet_player_header(row: HBoxContainer, player_index: int) -> void:
+func _add_score_sheet_player_header(row: HBoxContainer, player_index: int, display_name: String = "") -> void:
 	var group := PanelContainer.new()
 	group.custom_minimum_size = Vector2(SCORE_SHEET_PLAYER_GROUP_WIDTH, 70.0)
 	group.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -5725,7 +6754,7 @@ func _add_score_sheet_player_header(row: HBoxContainer, player_index: int) -> vo
 	group.add_child(group_content)
 
 	var name_label := Label.new()
-	name_label.text = game.players[player_index].display_name
+	name_label.text = display_name if not display_name.is_empty() else game.players[player_index].display_name
 	name_label.custom_minimum_size = Vector2(SCORE_SHEET_PLAYER_GROUP_WIDTH, 24.0)
 	name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	name_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
@@ -6490,7 +7519,7 @@ func _create_reaction_controls() -> void:
 
 
 func _on_reaction_toggle_pressed() -> void:
-	if not _can_show_reaction_controls() or not _is_social_action_ready(SocialAction.REACTION):
+	if not _can_show_reaction_controls() or (not _is_steam_p2p_main_table_active() and not _is_social_action_ready(SocialAction.REACTION)):
 		return
 
 	sticker_picker.visible = false
@@ -6500,6 +7529,12 @@ func _on_reaction_toggle_pressed() -> void:
 
 func _on_reaction_selected(reaction: String) -> void:
 	if not _can_show_reaction_controls():
+		return
+	if _is_steam_p2p_main_table_active():
+		if not _try_consume_social_action(SocialAction.REACTION):
+			return
+		reaction_picker.visible = false
+		_submit_network_social_action({"kind": "reaction", "reaction": reaction})
 		return
 	if not _try_consume_social_action(SocialAction.REACTION):
 		return
@@ -6526,6 +7561,14 @@ func _hide_reaction_bubble() -> void:
 
 
 func _can_show_reaction_controls() -> bool:
+	if _is_steam_p2p_main_table_active():
+		var snapshot := _get_network_main_snapshot()
+		var round_data: Dictionary = snapshot.get("round", {})
+		return (
+			not snapshot.is_empty()
+			and int(round_data.get("state", Round.State.SETUP)) != Round.State.SETUP
+			and (menu_overlay == null or not menu_overlay.visible)
+		)
 	return (
 		not is_bug_report_review_mode
 		and game.current_round.state != Round.State.SETUP
@@ -6625,7 +7668,7 @@ func _create_sticker_controls() -> void:
 
 
 func _on_sticker_toggle_pressed() -> void:
-	if not _can_show_reaction_controls() or not _is_social_action_ready(SocialAction.STICKER):
+	if not _can_show_reaction_controls() or (not _is_steam_p2p_main_table_active() and not _is_social_action_ready(SocialAction.STICKER)):
 		return
 
 	reaction_picker.visible = false
@@ -6645,9 +7688,20 @@ func _build_sticker_target_picker() -> void:
 	target_row.alignment = BoxContainer.ALIGNMENT_CENTER
 	target_row.add_theme_constant_override("separation", 4)
 	sticker_picker_content.add_child(target_row)
-	for player_index in range(1, game.players.size()):
+	var player_names_by_index: Dictionary = {}
+	var viewer_index := HUMAN_PLAYER_INDEX
+	if _is_steam_p2p_main_table_active():
+		var snapshot := _get_network_main_snapshot()
+		viewer_index = int(snapshot.get("recipient_player_index", -1))
+		player_names_by_index = _get_network_players_by_index(snapshot)
+	for player_index in range(PLAYER_NAMES.size()):
+		if player_index == viewer_index:
+			continue
+		var target_name := game.players[player_index].display_name
+		if player_names_by_index.has(player_index):
+			target_name = str((player_names_by_index[player_index] as Dictionary).get("display_name", target_name))
 		var target_button := Button.new()
-		target_button.text = game.players[player_index].display_name.left(8)
+		target_button.text = target_name.left(8)
 		target_button.custom_minimum_size = Vector2(80.0, 38.0)
 		target_button.add_theme_font_size_override("font_size", 14)
 		target_button.pressed.connect(_on_sticker_target_selected.bind(player_index))
@@ -6655,7 +7709,11 @@ func _build_sticker_target_picker() -> void:
 
 
 func _on_sticker_target_selected(player_index: int) -> void:
-	if player_index <= HUMAN_PLAYER_INDEX or player_index >= game.players.size():
+	if _is_steam_p2p_main_table_active():
+		var snapshot := _get_network_main_snapshot()
+		if player_index < 0 or player_index >= PLAYER_NAMES.size() or player_index == int(snapshot.get("recipient_player_index", -1)):
+			return
+	elif player_index <= HUMAN_PLAYER_INDEX or player_index >= game.players.size():
 		return
 
 	sticker_selected_target_index = player_index
@@ -6665,7 +7723,12 @@ func _on_sticker_target_selected(player_index: int) -> void:
 func _build_sticker_choice_picker() -> void:
 	_clear_children(sticker_picker_content)
 	sticker_picker_back_button.visible = true
-	sticker_picker_title.text = "Что отправить %s?" % game.players[sticker_selected_target_index].display_name.left(12)
+	var target_name := game.players[sticker_selected_target_index].display_name
+	if _is_steam_p2p_main_table_active():
+		var players_by_index := _get_network_players_by_index(_get_network_main_snapshot())
+		if players_by_index.has(sticker_selected_target_index):
+			target_name = str((players_by_index[sticker_selected_target_index] as Dictionary).get("display_name", target_name))
+	sticker_picker_title.text = "Что отправить %s?" % target_name.left(12)
 	_set_control_layout(sticker_picker, 0.5, 1.0, 0.5, 1.0, 128.0, -558.0, 414.0, -408.0)
 
 	var sticker_scroll := ScrollContainer.new()
@@ -6679,7 +7742,8 @@ func _build_sticker_choice_picker() -> void:
 	sticker_grid.add_theme_constant_override("h_separation", 4)
 	sticker_grid.add_theme_constant_override("v_separation", 4)
 	sticker_scroll.add_child(sticker_grid)
-	for sticker in _get_available_stickers():
+	var stickers := _get_network_available_stickers() if _is_steam_p2p_main_table_active() else _get_available_stickers()
+	for sticker in stickers:
 		var sticker_button := Button.new()
 		var sticker_texture: Texture2D = sticker.get("texture", null) as Texture2D
 		sticker_button.text = str(sticker.get("symbol", "")) if sticker_texture == null else ""
@@ -6723,8 +7787,28 @@ func _get_available_stickers() -> Array[Dictionary]:
 	return stickers
 
 
+func _get_network_available_stickers() -> Array[Dictionary]:
+	return [
+		{"symbol": "🍫", "tooltip": "Шоколад"},
+		{"symbol": "☕", "tooltip": "Кофе"},
+		{"symbol": "🍺", "tooltip": "Пиво"},
+		{"symbol": "💋", "tooltip": "Поцелуй"},
+		{"symbol": "♥", "tooltip": "Сердечко"}
+	]
+
+
 func _on_sticker_selected(sticker: Dictionary) -> void:
-	if sticker_selected_target_index < 0 or sticker_selected_target_index >= game.players.size():
+	if sticker_selected_target_index < 0 or sticker_selected_target_index >= PLAYER_NAMES.size():
+		return
+	if _is_steam_p2p_main_table_active():
+		if not _try_consume_social_action(SocialAction.STICKER):
+			return
+		sticker_picker.visible = false
+		_submit_network_social_action({
+			"kind": "sticker",
+			"target_player_index": sticker_selected_target_index,
+			"sticker": str(sticker.get("symbol", ""))
+		})
 		return
 	if not _try_consume_social_action(SocialAction.STICKER):
 		return
@@ -7178,7 +8262,16 @@ func _on_soundpad_selected(sound_data: Dictionary) -> void:
 		return
 
 	var sound_stream: AudioStream = sound_data.get("stream", null) as AudioStream
-	if sound_stream == null or not _try_consume_social_action(SocialAction.SOUNDPAD):
+	if sound_stream == null:
+		return
+	if _is_steam_p2p_main_table_active():
+		var sound_id := str(sound_data.get("path", ""))
+		if sound_id.is_empty() or sound_id not in SoundpadManifest.PATHS or not _try_consume_social_action(SocialAction.SOUNDPAD):
+			return
+		soundpad_picker.visible = false
+		_submit_network_social_action({"kind": "soundpad", "sound_id": sound_id})
+		return
+	if not _try_consume_social_action(SocialAction.SOUNDPAD):
 		return
 
 	soundpad_picker.visible = false

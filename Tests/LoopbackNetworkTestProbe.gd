@@ -10,6 +10,7 @@ var host
 var clients: Array = []
 var elapsed_seconds := 0.0
 var round_started := false
+var social_actions_checked := false
 
 
 func _init() -> void:
@@ -66,11 +67,19 @@ func _process(delta: float) -> bool:
 						assert(not available_cards.is_empty(), "Проверка ENet-лобби: у активного клиента должна быть допустимая обычная карта.")
 						assert(client.submit_test_card(str(available_cards[0].get("card_key", ""))), "Проверка ENet-лобби: клиент не смог отправить обычный ход хосту.")
 
-			if host.match_host.revision == 8 and host.match_host.game.current_round.state == Round.State.PLAYING and host.match_host.game.current_round.tricks_played == 1 and host._snapshot_acknowledged_by_player.size() == 3:
+			if host.match_host.revision == 8 and host.match_host.game.current_round.state == Round.State.PLAYING and host.match_host.game.current_round.tricks_played == 1 and not social_actions_checked:
+				for _action_index in 3:
+					assert(host.submit_social_action({"kind": "reaction", "reaction": "👏"}), "Проверка ENet-лобби: хост должен отправить три разрешённые эмоции.")
+				assert(not host.submit_social_action({"kind": "reaction", "reaction": "👏"}), "Проверка ENet-лобби: четвёртая эмоция должна ждать перезарядки.")
+				social_actions_checked = true
+
+			if host.match_host.revision == 8 and host.match_host.game.current_round.state == Round.State.PLAYING and host.match_host.game.current_round.tricks_played == 1 and host._snapshot_acknowledged_by_player.size() == 3 and social_actions_checked:
+				assert(host.match_host.public_table_events.size() == 7, "Проверка ENet-лобби: хост должен сохранить четыре сыгранные карты и три публичные эмоции.")
 				for client in clients:
 					assert(int(client.client_snapshot.get("revision", -1)) == 8, "Проверка ENet-лобби: клиент должен получить обновление после завершённой взятки.")
 					assert(int(client.client_snapshot.get("round", {}).get("state", -1)) == Round.State.PLAYING, "Проверка ENet-лобби: после четырёх заказов должен начаться розыгрыш.")
 					assert(client.client_snapshot.get("last_completed_trick", {}).get("cards", []).size() == 4, "Проверка ENet-лобби: клиент должен увидеть четыре публичные карты завершённой взятки.")
+					assert(client.client_snapshot.get("public_table_events", []).size() == 7, "Проверка ENet-лобби: клиент должен получить публичные события карт и эмоций.")
 				print("Four-seat loopback ENet lobby bid and play test passed.")
 				quit(0)
 				return true

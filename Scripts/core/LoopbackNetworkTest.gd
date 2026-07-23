@@ -10,6 +10,12 @@ const HOST_PORT := 24567
 const HOST_PLAYER_INDEX := 0
 const FIRST_CLIENT_PLAYER_INDEX := 1
 const PLAYER_COUNT := 4
+const NORMAL_ROUND_COUNT := 13
+const DARK_ROUND_COUNT := 5
+const NO_TRUMP_ROUND_COUNT := 4
+const GOLDEN_ROUND_COUNT := 5
+const MISERE_ROUND_COUNT := 5
+const TOTAL_ROUND_COUNT := NORMAL_ROUND_COUNT + DARK_ROUND_COUNT + NO_TRUMP_ROUND_COUNT + GOLDEN_ROUND_COUNT + MISERE_ROUND_COUNT
 const PROTOCOL_VERSION := 2
 const SNAPSHOT_DELIVERY_INTERVAL_SECONDS := 0.15
 const SNAPSHOT_RETRY_INTERVAL_SECONDS := 1.0
@@ -33,6 +39,7 @@ enum TestJokerScenario {
 
 
 signal status_changed
+signal public_table_event_received
 
 
 var mode: Mode = Mode.NONE
@@ -173,16 +180,118 @@ func start_test_round_with_response_joker() -> bool:
 	return _start_test_round(TestJokerScenario.RESPONSE)
 
 
-func _start_test_round(joker_scenario: TestJokerScenario) -> bool:
-	if not can_start_test_round():
-		_set_status("Тестовую раздачу можно начать только после подключения всех четырёх мест.")
+func start_first_real_round() -> bool:
+	if not _prepare_network_round(1, Round.RoundType.NORMAL, Round.TrumpSuit.RANDOM):
+		return false
+	_finish_network_round_start("Первая обычная раздача начата. Ждём подтверждение получения личных рук от клиентов.")
+	return true
+
+
+func can_start_next_scheduled_round() -> bool:
+	if not is_host() or not lobby_round_started or match_host == null or match_host.game.current_round == null:
+		return false
+	return (
+		match_host.game.current_round.state == Round.State.FINISHED
+		and match_host.game.round_number < TOTAL_ROUND_COUNT
+	)
+
+
+func start_next_scheduled_round() -> bool:
+	if not can_start_next_scheduled_round():
+		_set_status("Следующую сетевую раздачу можно начать только после завершения текущей.")
 		return false
 
-	# Даже короткая сетевая раздача должна проходить через тот же старт,
-	# что и обычная игра: колода, открытая карта и случайный козырь.
-	# Две карты оставляем только для быстрой проверки четырёх окон.
-	if not match_host.game.start_round(2, Round.RoundType.NORMAL, Round.TrumpSuit.RANDOM):
-		_set_status("Не удалось начать тестовую раздачу.")
+	var next_round_number: int = match_host.game.round_number + 1
+	var plan := _get_scheduled_round_plan(next_round_number)
+	if plan.is_empty():
+		_set_status("Полный сетевой цикл из %d раздач уже завершён." % TOTAL_ROUND_COUNT)
+		return false
+
+	if not match_host.start_next_round(
+		int(plan.get("cards_per_player", 0)),
+		int(plan.get("round_type", Round.RoundType.NORMAL)),
+		int(plan.get("trump", Round.TrumpSuit.RANDOM)),
+		bool(plan.get("deal_cards_immediately", true))
+	):
+		_set_status("Хост не смог начать следующую сетевую раздачу.")
+		return false
+
+	_finish_network_round_start("%s начата. Хост раздал карты и ждёт подтверждение личных рук от клиентов." % str(plan.get("label", "Следующая раздача")))
+	return true
+
+
+func _get_scheduled_round_plan(round_number: int) -> Dictionary:
+	var round_index := round_number - 1
+	if round_index < 0 or round_index >= TOTAL_ROUND_COUNT:
+		return {}
+
+	if round_index < NORMAL_ROUND_COUNT:
+		var cards_per_player := round_index + 1 if round_index < 8 else 9
+		var trump: Round.TrumpSuit = Round.TrumpSuit.RANDOM if round_index < 8 else _get_fixed_trump_for_scheduled_round(round_index - 8)
+		return {
+			"label": "Обычная раздача %d/%d" % [round_index + 1, NORMAL_ROUND_COUNT],
+			"cards_per_player": cards_per_player,
+			"round_type": Round.RoundType.NORMAL,
+			"trump": trump,
+			"deal_cards_immediately": true
+		}
+
+	round_index -= NORMAL_ROUND_COUNT
+	if round_index < DARK_ROUND_COUNT:
+		return {
+			"label": "Тёмная раздача %d/%d" % [round_index + 1, DARK_ROUND_COUNT],
+			"cards_per_player": 9,
+			"round_type": Round.RoundType.DARK,
+			"trump": _get_fixed_trump_for_scheduled_round(round_index),
+			"deal_cards_immediately": false
+		}
+
+	round_index -= DARK_ROUND_COUNT
+	if round_index < NO_TRUMP_ROUND_COUNT:
+		return {
+			"label": "Бескозырка %d/%d" % [round_index + 1, NO_TRUMP_ROUND_COUNT],
+			"cards_per_player": 9,
+			"round_type": Round.RoundType.NO_TRUMP,
+			"trump": Round.TrumpSuit.NONE,
+			"deal_cards_immediately": true
+		}
+
+	round_index -= NO_TRUMP_ROUND_COUNT
+	if round_index < GOLDEN_ROUND_COUNT:
+		return {
+			"label": "Золотая раздача %d/%d" % [round_index + 1, GOLDEN_ROUND_COUNT],
+			"cards_per_player": 9,
+			"round_type": Round.RoundType.GOLDEN,
+			"trump": _get_fixed_trump_for_scheduled_round(round_index),
+			"deal_cards_immediately": true
+		}
+
+	round_index -= GOLDEN_ROUND_COUNT
+	return {
+		"label": "Мизерная раздача %d/%d" % [round_index + 1, MISERE_ROUND_COUNT],
+		"cards_per_player": 9,
+		"round_type": Round.RoundType.MISERE,
+		"trump": _get_fixed_trump_for_scheduled_round(round_index),
+		"deal_cards_immediately": true
+	}
+
+
+func _get_fixed_trump_for_scheduled_round(round_index: int) -> Round.TrumpSuit:
+	match round_index:
+		0:
+			return Round.TrumpSuit.CLUBS
+		1:
+			return Round.TrumpSuit.SPADES
+		2:
+			return Round.TrumpSuit.HEARTS
+		3:
+			return Round.TrumpSuit.DIAMONDS
+		_:
+			return Round.TrumpSuit.NONE
+
+
+func _start_test_round(joker_scenario: TestJokerScenario) -> bool:
+	if not _prepare_network_round(2, Round.RoundType.NORMAL, Round.TrumpSuit.RANDOM):
 		return false
 	if joker_scenario == TestJokerScenario.LEADING:
 		if not _ensure_test_round_has_non_joker_trump():
@@ -199,13 +308,30 @@ func _start_test_round(joker_scenario: TestJokerScenario) -> bool:
 			_set_status("Не удалось подготовить тестовую раздачу с Джокером в ответ.")
 			return false
 
+	_finish_network_round_start("Тестовая раздача начата. Ждём подтверждение получения личных рук от клиентов.")
+	return true
+
+
+func _prepare_network_round(cards_per_player: int, round_type: Round.RoundType, trump: Round.TrumpSuit, deal_cards_immediately: bool = true) -> bool:
+	if not can_start_test_round():
+		_set_status("Тестовую раздачу можно начать только после подключения всех четырёх мест.")
+		return false
+
+	if not match_host.game.start_round(cards_per_player, round_type, trump, deal_cards_immediately):
+		_set_status("Не удалось начать сетевую раздачу.")
+		return false
+	return true
+
+
+func _finish_network_round_start(status_text: String) -> void:
+	if match_host != null:
+		match_host.record_current_round_started()
 	lobby_round_started = true
 	_rebuild_host_lobby_seats()
 	_broadcast_lobby_state()
 	_broadcast_round_started()
 	_queue_player_snapshots_for_delivery()
-	_set_status("Тестовая раздача начата. Ждём подтверждение получения личных рук от клиентов.")
-	return true
+	_set_status(status_text)
 
 
 func _process(delta: float) -> void:
@@ -283,6 +409,9 @@ func _handle_message(message: Dictionary, sender_peer_id: int) -> void:
 		return
 	if mode == Mode.CLIENT and message_type == "player_snapshot":
 		_handle_client_snapshot(message)
+		return
+	if mode == Mode.CLIENT and message_type == "public_table_event":
+		_handle_client_public_table_event(message)
 		return
 	if mode == Mode.CLIENT and message_type == "command_result":
 		_handle_client_command_result(message)
@@ -398,7 +527,7 @@ func _handle_host_match_command(message: Dictionary, sender_peer_id: int) -> voi
 		return
 
 	var requested_type := int(command_data.get("type", NetworkCommand.Type.INVALID))
-	if requested_type != NetworkCommand.Type.BID and requested_type != NetworkCommand.Type.PLAY_CARD:
+	if requested_type != NetworkCommand.Type.BID and requested_type != NetworkCommand.Type.PLAY_CARD and requested_type != NetworkCommand.Type.SOCIAL_ACTION:
 		_send_command_result(sender_peer_id, false, "unsupported_command", match_host.revision)
 		return
 
@@ -420,8 +549,10 @@ func _handle_host_match_command(message: Dictionary, sender_peer_id: int) -> voi
 		_set_status("Хост отклонил действие места %d: %s." % [assigned_player_index + 1, str(result.get("reason", "unknown"))])
 		return
 
+	if requested_type == NetworkCommand.Type.SOCIAL_ACTION:
+		_broadcast_latest_public_table_event()
 	_queue_player_snapshots_for_delivery()
-	var action_name := "заказ" if requested_type == NetworkCommand.Type.BID else "ход картой"
+	var action_name := "заказ" if requested_type == NetworkCommand.Type.BID else "ход картой" if requested_type == NetworkCommand.Type.PLAY_CARD else "социальное действие"
 	_set_status("Хост принял %s места %d. Ревизия %d отправляется всем клиентам." % [action_name, assigned_player_index + 1, match_host.revision])
 
 
@@ -475,6 +606,9 @@ func _handle_lobby_state(message: Dictionary) -> void:
 
 func _handle_client_round_started(message: Dictionary) -> void:
 	lobby_round_started = true
+	client_snapshot_acknowledged = false
+	client_command_in_flight = false
+	client_expected_revision = -1
 	_store_lobby_seats(message.get("lobby_seats", []))
 	_update_client_confirmation_from_seats()
 	_set_status("Тестовая раздача началась. Жду только свою закрытую руку…")
@@ -495,6 +629,27 @@ func _handle_client_snapshot(message: Dictionary) -> void:
 		client_command_in_flight = false
 		client_expected_revision = -1
 		client_last_command_message = "Хост принял действие. Стол обновлён."
+	_set_status(_get_client_lobby_status())
+
+
+func _handle_client_public_table_event(message: Dictionary) -> void:
+	var event_data: Variant = message.get("event", {})
+	if not (event_data is Dictionary):
+		return
+	var event: Dictionary = event_data.duplicate(true)
+	var event_id := int(event.get("event_id", -1))
+	if event_id < 0:
+		return
+
+	var events: Array = client_snapshot.get("public_table_events", []).duplicate(true)
+	for existing_event_variant in events:
+		if existing_event_variant is Dictionary and int((existing_event_variant as Dictionary).get("event_id", -1)) == event_id:
+			return
+	events.append(event)
+	while events.size() > 48:
+		events.pop_front()
+	client_snapshot["public_table_events"] = events
+	public_table_event_received.emit()
 	_set_status(_get_client_lobby_status())
 
 
@@ -683,6 +838,51 @@ func submit_test_joker_choice(mode: Trick.JokerMode, declared_suit: int = -1, fo
 	client_command_in_flight = true
 	client_expected_revision = -1
 	client_last_command_message = "Отправляю условие Джокера хосту…"
+	_set_status(_get_client_lobby_status())
+	return true
+
+
+func submit_social_action(payload: Dictionary) -> bool:
+	if not is_running() or payload.is_empty():
+		return false
+
+	if is_host():
+		if match_host == null or not lobby_round_started:
+			return false
+		var host_command := NetworkCommand.new(
+			NetworkCommand.Type.SOCIAL_ACTION,
+			HOST_PLAYER_INDEX,
+			match_host.game.round_number,
+			match_host.revision,
+			payload
+		)
+		var host_result: Dictionary = match_host.apply_command(host_command)
+		if not bool(host_result.get("accepted", false)):
+			_set_status("Хост не смог отправить действие: %s." % str(host_result.get("reason", "unknown")))
+			return false
+		_broadcast_latest_public_table_event()
+		_queue_player_snapshots_for_delivery()
+		return true
+
+	if not is_client() or not client_snapshot_is_safe or client_player_index < FIRST_CLIENT_PLAYER_INDEX:
+		return false
+	var command := NetworkCommand.new(
+		NetworkCommand.Type.SOCIAL_ACTION,
+		client_player_index,
+		int(client_snapshot.get("round_number", -1)),
+		int(client_snapshot.get("revision", -1)),
+		payload
+	)
+	var was_sent := _send_message({
+		"type": "match_command",
+		"command": command.to_dictionary()
+	}, 1)
+	if not was_sent:
+		client_last_command_message = "Не удалось отправить действие за столом."
+		_set_status(_get_client_lobby_status())
+		return false
+
+	client_last_command_message = "Отправляю действие за столом…"
 	_set_status(_get_client_lobby_status())
 	return true
 
@@ -1178,8 +1378,12 @@ func _queue_player_snapshots_for_delivery() -> void:
 	_snapshot_delivery_queue.clear()
 	_snapshot_delivery_elapsed_seconds = SNAPSHOT_DELIVERY_INTERVAL_SECONDS
 	_snapshot_retry_elapsed_seconds = 0.0
+	# Публичные события (эмоции, подарки и саундпад) не меняют игровую
+	# ревизию. Поэтому их нельзя оставлять ждать следующего хода или новой
+	# ревизии: отправляем актуальный снимок сразу, а очередь сохраняем только
+	# как страховку на случай неудачной отправки.
 	for player_index_variant in _confirmed_client_peers_by_player:
-		_snapshot_delivery_queue.append(int(player_index_variant))
+		_send_player_snapshot(int(player_index_variant))
 
 
 func _process_snapshot_delivery(delta: float) -> void:
@@ -1218,6 +1422,19 @@ func _send_player_snapshot(player_index: int) -> void:
 	}, client_peer_id)
 	if not was_sent and not _snapshot_delivery_queue.has(player_index):
 		_snapshot_delivery_queue.append(player_index)
+
+
+func _broadcast_latest_public_table_event() -> void:
+	if match_host == null or match_host.public_table_events.is_empty():
+		return
+	var latest_event: Dictionary = match_host.public_table_events.back().duplicate(true)
+	for player_index_variant in _confirmed_client_peers_by_player:
+		var player_index := int(player_index_variant)
+		var client_peer_id := int(_confirmed_client_peers_by_player[player_index])
+		_send_message({
+			"type": "public_table_event",
+			"event": latest_event
+		}, client_peer_id)
 
 
 func _broadcast_round_started() -> void:
