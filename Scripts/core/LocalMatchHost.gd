@@ -161,6 +161,8 @@ func _apply_play_card_command(command) -> bool:
 	if not game.play_card(command.player_index, card, joker_mode, declared_suit, forced_card_rank):
 		return false
 
+	var trick_completed := game.active_trick == null and game.last_trick_winner_index >= 0
+	var round_completed := game.is_round_complete()
 	var player_name := _get_player_name(command.player_index)
 	if card.is_joker:
 		public_history.append("%s сыграл Джокером%s." % [player_name, _get_joker_history_suffix(joker_mode, declared_suit, forced_card_rank)])
@@ -169,12 +171,17 @@ func _apply_play_card_command(command) -> bool:
 	_append_public_table_event({
 		"kind": "played_card",
 		"actor_player_index": command.player_index,
-		"card": _serialize_public_card(card)
+		"card": _serialize_public_card(card),
+		"trick_completed": trick_completed,
+		"trick_winner_player_index": game.last_trick_winner_index if trick_completed else -1,
+		"round_completed": round_completed,
+		"round_number": game.current_round.number,
+		"tricks_played": game.current_round.tricks_played
 	})
 
-	if game.active_trick == null and game.last_trick_winner_index >= 0:
+	if trick_completed:
 		public_history.append("Взятку забирает %s." % _get_player_name(game.last_trick_winner_index))
-	if game.is_round_complete():
+	if round_completed:
 		var round_scores := game.finish_round()
 		if not round_scores.is_empty():
 			_record_completed_round(round_scores)

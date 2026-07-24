@@ -28,6 +28,9 @@ var _steam_peer_connection_reported := false
 var _connected_remote_peer_ids: Dictionary = {}
 var _steam_peer_wait_seconds := 0.0
 var _outbound_flush_pending := false
+var _steam_id_by_peer_id: Dictionary = {}
+var _player_index_by_steam_id: Dictionary = {}
+var _reconnecting_player_indices: Dictionary = {}
 
 
 func start_first_real_round() -> bool:
@@ -101,6 +104,9 @@ func stop() -> void:
 	_join_request_attempt_count = 0
 	_steam_peer_connection_reported = false
 	_connected_remote_peer_ids.clear()
+	_steam_id_by_peer_id.clear()
+	_player_index_by_steam_id.clear()
+	_reconnecting_player_indices.clear()
 	_steam_peer_wait_seconds = 0.0
 	_outbound_flush_pending = false
 	steam_bridge = null
@@ -109,6 +115,19 @@ func stop() -> void:
 
 func is_running() -> bool:
 	return _transport_active and mode != Mode.NONE
+
+
+func get_test_table_snapshot() -> Dictionary:
+	var snapshot: Dictionary = super.get_test_table_snapshot()
+	return _append_reconnect_state(snapshot)
+
+
+func is_match_paused_for_reconnect() -> bool:
+	if is_host():
+		return not _reconnecting_player_indices.is_empty()
+	if is_client():
+		return not _get_snapshot_reconnecting_player_indices().is_empty()
+	return false
 
 
 func _process(delta: float) -> void:
@@ -198,6 +217,129 @@ func _handle_host_join_request(message: Dictionary, sender_peer_id: int) -> void
 		return
 	_set_status("Steam P2P-хост получил запрос места через SteamMultiplayerPeer.")
 	super._handle_host_join_request(message, sender_peer_id)
+
+
+func _handle_host_seat_ack(message: Dictionary, sender_peer_id: int) -> void:
+	super._handle_host_seat_ack(message, sender_peer_id)
+	var player_index := int(_connected_player_by_peer.get(sender_peer_id, -1))
+	if lobby_round_started and _confirmed_client_peers_by_player.has(player_index):
+		_snapshot_acknowledged_by_player.erase(player_index)
+		_send_player_snapshot(player_index)
+		_set_status("Steam P2P: место %d переподключилось. Отправляю свежий личный снимок." % (player_index + 1))
+
+
+func _handle_host_match_command(message: Dictionary, sender_peer_id: int) -> void:
+	var command_data: Variant = message.get("command", {})
+	var requested_type := int((command_data as Dictionary).get("type", NetworkCommand.Type.INVALID)) if command_data is Dictionary else NetworkCommand.Type.INVALID
+	if requested_type != NetworkCommand.Type.SOCIAL_ACTION and is_match_paused_for_reconnect():
+		if match_host != null:
+			_send_command_result(sender_peer_id, false, "player_reconnecting", match_host.revision)
+		return
+	super._handle_host_match_command(message, sender_peer_id)
+
+
+func _assign_client_player_index(sender_peer_id: int, requested_player_index: int) -> int:
+	var sender_steam_id := _remember_steam_id_for_peer(sender_peer_id)
+	if sender_steam_id <= 0:
+		return -1
+
+	if _player_index_by_steam_id.has(sender_steam_id):
+		var assigned_player_index := int(_player_index_by_steam_id[sender_steam_id])
+		var active_peer_id := int(_connected_client_peers_by_player.get(assigned_player_index, 0))
+		if active_peer_id > 0 and active_peer_id != sender_peer_id:
+			return -1
+		_connected_client_peers_by_player[assigned_player_index] = sender_peer_id
+		_connected_player_by_peer[sender_peer_id] = assigned_player_index
+		_reconnecting_player_indices.erase(assigned_player_index)
+		return assigned_player_index
+
+	var assigned_player_index := super._assign_client_player_index(sender_peer_id, requested_player_index)
+	if assigned_player_index >= FIRST_CLIENT_PLAYER_INDEX:
+		_player_index_by_steam_id[sender_steam_id] = assigned_player_index
+	return assigned_player_index
+
+
+func _remember_steam_id_for_peer(peer_id: int) -> int:
+	if _steam_id_by_peer_id.has(peer_id):
+		return int(_steam_id_by_peer_id[peer_id])
+	if steam_multiplayer_peer == null or not steam_multiplayer_peer.has_method(&"get_steam_id_for_peer_id"):
+		return 0
+	var steam_id := int(steam_multiplayer_peer.call(&"get_steam_id_for_peer_id", peer_id))
+	if steam_id > 0:
+		_steam_id_by_peer_id[peer_id] = steam_id
+	return steam_id
+
+
+func _append_reconnect_state(snapshot: Dictionary) -> Dictionary:
+	if snapshot.is_empty():
+		return snapshot
+	snapshot["reconnecting_player_indices"] = _get_reconnecting_player_indices()
+	return snapshot
+
+
+func _get_reconnecting_player_indices() -> Array[int]:
+	var player_indices: Array[int] = []
+	for player_index_variant in _reconnecting_player_indices.keys():
+		player_indices.append(int(player_index_variant))
+	player_indices.sort()
+	return player_indices
+
+
+func _get_snapshot_reconnecting_player_indices() -> Array[int]:
+	var player_indices: Array[int] = []
+	if not client_snapshot_is_safe:
+		return player_indices
+	var reconnecting_data: Variant = client_snapshot.get("reconnecting_player_indices", [])
+	if not (reconnecting_data is Array):
+		return player_indices
+	for player_index_variant in reconnecting_data:
+		var player_index := int(player_index_variant)
+		if player_index >= FIRST_CLIENT_PLAYER_INDEX and player_index < PLAYER_COUNT:
+			player_indices.append(player_index)
+	return player_indices
+
+
+func _send_current_player_snapshots() -> void:
+	for player_index_variant in _confirmed_client_peers_by_player:
+		_send_player_snapshot(int(player_index_variant))
+
+
+func _send_player_snapshot(player_index: int) -> void:
+	if match_host == null or not _connected_client_peers_by_player.has(player_index):
+		return
+
+	var client_peer_id := int(_connected_client_peers_by_player[player_index])
+	var snapshot := _append_reconnect_state(match_host.create_player_snapshot(player_index))
+	var was_sent := _send_message({
+		"type": "player_snapshot",
+		"snapshot": snapshot
+	}, client_peer_id)
+	if not was_sent and not _snapshot_delivery_queue.has(player_index):
+		_snapshot_delivery_queue.append(player_index)
+
+
+func can_submit_test_bid() -> bool:
+	return not is_match_paused_for_reconnect() and super.can_submit_test_bid()
+
+
+func can_submit_test_card() -> bool:
+	return not is_match_paused_for_reconnect() and super.can_submit_test_card()
+
+
+func can_submit_test_joker() -> bool:
+	return not is_match_paused_for_reconnect() and super.can_submit_test_joker()
+
+
+func can_submit_host_test_bid() -> bool:
+	return not is_match_paused_for_reconnect() and super.can_submit_host_test_bid()
+
+
+func can_submit_host_test_card() -> bool:
+	return not is_match_paused_for_reconnect() and super.can_submit_host_test_card()
+
+
+func can_submit_host_test_joker() -> bool:
+	return not is_match_paused_for_reconnect() and super.can_submit_host_test_joker()
 
 
 func _start_as_host() -> void:
@@ -357,14 +499,37 @@ func _detach_steam_multiplayer_peer() -> void:
 
 func _on_steam_peer_connected(peer_id: int) -> void:
 	_connected_remote_peer_ids[peer_id] = true
+	_remember_steam_id_for_peer(peer_id)
 	if mode == Mode.CLIENT and peer_id == 1:
 		_set_status("Steam P2P: хост подтвердил соединение. Запрашиваем место за столом…")
 
 
 func _on_steam_peer_disconnected(peer_id: int) -> void:
 	_connected_remote_peer_ids.erase(peer_id)
+	var disconnected_player_index := int(_connected_player_by_peer.get(peer_id, -1))
+	_steam_id_by_peer_id.erase(peer_id)
+	if mode == Mode.HOST and disconnected_player_index >= FIRST_CLIENT_PLAYER_INDEX:
+		_connected_player_by_peer.erase(peer_id)
+		_connected_client_peers_by_player.erase(disconnected_player_index)
+		_confirmed_client_peers_by_player.erase(disconnected_player_index)
+		_snapshot_acknowledged_by_player.erase(disconnected_player_index)
+		_snapshot_delivery_queue.erase(disconnected_player_index)
+		_reconnecting_player_indices[disconnected_player_index] = true
+		_rebuild_host_lobby_seats()
+		_broadcast_lobby_state()
+		_send_current_player_snapshots()
+		_set_status("Steam P2P: место %d переподключается. Игра приостановлена." % (disconnected_player_index + 1))
+		return
 	if mode == Mode.CLIENT and peer_id == 1:
+		if client_player_index >= FIRST_CLIENT_PLAYER_INDEX:
+			client_requested_player_index = client_player_index
+		client_player_index = -1
+		client_seat_confirmed = false
+		client_snapshot.clear()
+		client_snapshot_is_safe = false
+		client_private_hand_size = 0
 		_join_request_sent = false
+		_join_request_retry_seconds = 1.0
 		_set_status("Steam P2P: связь с хостом потеряна. Ожидаем повторного подключения…")
 
 
@@ -386,7 +551,9 @@ func _rebuild_host_lobby_seats() -> void:
 	for player_index in PLAYER_COUNT:
 		var is_host_player := player_index == HOST_PLAYER_INDEX
 		var is_local_bot := _local_bot_player_indices.has(player_index)
-		var is_assigned := is_host_player or is_local_bot or _connected_client_peers_by_player.has(player_index)
+		var seat_reserved_for_reconnect := _player_index_by_steam_id.values().has(player_index)
+		var is_reconnecting := _reconnecting_player_indices.has(player_index)
+		var is_assigned := is_host_player or is_local_bot or _connected_client_peers_by_player.has(player_index) or seat_reserved_for_reconnect
 		var is_confirmed := is_host_player or is_local_bot or _confirmed_client_peers_by_player.has(player_index)
 		var display_name := "Хост" if is_host_player else ("Бот %d" % (player_index - 1) if is_local_bot else "Игрок %d" % (player_index + 1))
 		lobby_seats.append({
@@ -395,12 +562,13 @@ func _rebuild_host_lobby_seats() -> void:
 			"is_host": is_host_player,
 			"is_bot": is_local_bot,
 			"assigned": is_assigned,
-			"confirmed": is_confirmed
+			"confirmed": is_confirmed,
+			"reconnecting": is_reconnecting
 		})
 
 
 func _process_local_bots(delta: float) -> void:
-	if not _fill_empty_seats_with_bots or not lobby_round_started or match_host == null:
+	if not _fill_empty_seats_with_bots or not lobby_round_started or match_host == null or is_match_paused_for_reconnect():
 		return
 
 	_bot_action_delay_seconds = maxf(0.0, _bot_action_delay_seconds - delta)

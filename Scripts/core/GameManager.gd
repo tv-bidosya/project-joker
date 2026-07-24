@@ -357,6 +357,8 @@ var steam_p2p_main_table_presentation := false
 var network_round_result_key := ""
 var network_round_finish_presentation_key := ""
 var network_round_finish_presentation_active := false
+var network_visual_round_number := -1
+var network_collected_trick_key := ""
 var network_public_event_stream_key := ""
 var network_last_public_event_id := -1
 var network_card_event_queue: Array[Dictionary] = []
@@ -1297,8 +1299,16 @@ func _refresh_network_main_table() -> void:
 	var viewer_index: int = int(snapshot.get("recipient_player_index", 0))
 	var active_player_index: int = _get_network_table_active_player_index(round_data, active_trick)
 	var round_finished := int(round_data.get("state", Round.State.SETUP)) == Round.State.FINISHED
+	var round_number := int(round_data.get("number", 0))
+	if round_number != network_visual_round_number:
+		network_visual_round_number = round_number
+		network_collected_trick_key = ""
 	var result_key := _get_network_round_result_key(snapshot, round_data)
-	var hide_completed_trick := round_finished and network_round_result_key == result_key
+	var completed_trick_key := _get_network_completed_trick_key(round_data, active_trick)
+	var hide_completed_trick := (
+		(round_finished and network_round_result_key == result_key)
+		or (not completed_trick_key.is_empty() and completed_trick_key == network_collected_trick_key)
+	)
 
 	_refresh_network_main_header(snapshot, round_data, active_player_index)
 	_refresh_network_main_deck(snapshot, round_data)
@@ -1359,7 +1369,10 @@ func _refresh_network_main_header(snapshot: Dictionary, round_data: Dictionary, 
 
 	var players_by_index: Dictionary = _get_network_players_by_index(snapshot)
 	var action_text_network := "Ожидание действий хоста"
-	if state == Round.State.BIDDING:
+	var reconnecting_player_name := _get_network_reconnecting_player_name(snapshot, players_by_index)
+	if not reconnecting_player_name.is_empty():
+		action_text_network = "%s переподключается. Партия ожидает возвращения игрока." % reconnecting_player_name
+	elif state == Round.State.BIDDING:
 		if active_player_index == int(snapshot.get("recipient_player_index", -1)):
 			action_text_network = "Твой заказ: выбери число взяток."
 		elif players_by_index.has(active_player_index):
@@ -1384,6 +1397,26 @@ func _get_network_players_by_index(snapshot: Dictionary) -> Dictionary:
 			var player_data: Dictionary = player_data_variant
 			players_by_index[int(player_data.get("player_index", -1))] = player_data
 	return players_by_index
+
+
+func _is_network_player_reconnecting(snapshot: Dictionary, player_index: int) -> bool:
+	var reconnecting_data: Variant = snapshot.get("reconnecting_player_indices", [])
+	if not (reconnecting_data is Array):
+		return false
+	for reconnecting_player_index in reconnecting_data:
+		if int(reconnecting_player_index) == player_index:
+			return true
+	return false
+
+
+func _get_network_reconnecting_player_name(snapshot: Dictionary, players_by_index: Dictionary) -> String:
+	var reconnecting_data: Variant = snapshot.get("reconnecting_player_indices", [])
+	if not (reconnecting_data is Array) or reconnecting_data.is_empty():
+		return ""
+	var player_index := int(reconnecting_data[0])
+	if players_by_index.has(player_index):
+		return str((players_by_index[player_index] as Dictionary).get("display_name", "Игрок %d" % (player_index + 1)))
+	return "Игрок %d" % (player_index + 1)
 
 
 func _refresh_network_main_common_controls() -> void:
@@ -1440,10 +1473,12 @@ func _refresh_network_main_players(snapshot: Dictionary, viewer_index: int, acti
 		var is_current := player_index == active_player_index
 		panel.add_theme_stylebox_override("panel", active_human_player_panel_style if is_current and relative_slot == HUMAN_PLAYER_INDEX else active_player_panel_style if is_current else human_player_panel_style if relative_slot == HUMAN_PLAYER_INDEX else player_panel_style)
 
-		player_labels[relative_slot].text = ("Ход · " if is_current else "") + str(player_data.get("display_name", "Игрок %d" % (player_index + 1)))
+		var is_reconnecting := _is_network_player_reconnecting(snapshot, player_index)
+		var player_name := str(player_data.get("display_name", "Игрок %d" % (player_index + 1)))
+		player_labels[relative_slot].text = ("Переподключается · " if is_reconnecting else "Ход · " if is_current else "") + player_name
 		var bid_value: int = int(player_data.get("bid", -1))
 		var bid_text := "—" if bid_value < 0 else str(bid_value)
-		player_stats_labels[relative_slot].text = "Заказ: %s  ·  Взято: %d" % [bid_text, int(player_data.get("tricks_taken", 0))]
+		player_stats_labels[relative_slot].text = "Переподключается…" if is_reconnecting else "Заказ: %s  ·  Взято: %d" % [bid_text, int(player_data.get("tricks_taken", 0))]
 		var total_score: int = int(player_data.get("total_score", 0))
 		player_score_labels[relative_slot].text = "Счёт: %d" % total_score
 		player_score_labels[relative_slot].add_theme_color_override("font_color", Color(0.97, 0.84, 0.38, 1.0) if total_score >= 0 else Color(0.96, 0.42, 0.34, 1.0))
@@ -1525,6 +1560,15 @@ func _refresh_network_main_trick(snapshot: Dictionary, viewer_index: int, active
 		card_view.visible = true
 
 
+func _get_network_completed_trick_key(round_data: Dictionary, active_trick: Dictionary) -> String:
+	if not active_trick.is_empty():
+		return ""
+	var tricks_played := int(round_data.get("tricks_played", 0))
+	if tricks_played <= 0:
+		return ""
+	return "%d:%d" % [int(round_data.get("number", 0)), tricks_played]
+
+
 func _process_network_public_table_events(snapshot: Dictionary, viewer_index: int) -> void:
 	var network_match = _get_active_network_match()
 	if network_match == null:
@@ -1536,6 +1580,8 @@ func _process_network_public_table_events(snapshot: Dictionary, viewer_index: in
 		network_last_public_event_id = _get_latest_network_public_event_id(events)
 		network_card_event_queue.clear()
 		network_card_play_presentation_active = false
+		network_visual_round_number = -1
+		network_collected_trick_key = ""
 		social_action_uses[SocialAction.REACTION] = 0
 		social_action_uses[SocialAction.STICKER] = 0
 		social_action_uses[SocialAction.SOUNDPAD] = 0
@@ -1583,6 +1629,8 @@ func _present_next_network_card_event(viewer_index: int) -> void:
 		network_card_play_presentation_active = false
 		return
 	var event: Dictionary = network_card_event_queue.pop_front()
+	var trick_completed := bool(event.get("trick_completed", false))
+	var round_completed := bool(event.get("round_completed", false))
 	var actor_player_index := int(event.get("actor_player_index", -1))
 	var relative_slot := posmod(actor_player_index - viewer_index, PLAYER_NAMES.size())
 	if relative_slot >= 0 and relative_slot < trick_card_views.size():
@@ -1600,10 +1648,34 @@ func _present_next_network_card_event(viewer_index: int) -> void:
 			tween.tween_property(card_view, "scale", Vector2.ONE, CARD_FLY_DURATION).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 			tween.tween_property(card_view, "modulate", Color.WHITE, CARD_FLY_DURATION)
 			await tween.finished
+	if trick_completed and not round_completed:
+		await _present_network_completed_trick(
+			int(event.get("trick_winner_player_index", -1)),
+			viewer_index,
+			"%d:%d" % [int(event.get("round_number", 0)), int(event.get("tricks_played", 0))]
+		)
 	if not network_card_event_queue.is_empty():
 		call_deferred("_present_next_network_card_event", viewer_index)
 	else:
 		network_card_play_presentation_active = false
+		_refresh_network_main_table()
+
+
+func _present_network_completed_trick(winner_player_index: int, viewer_index: int, completed_trick_key: String) -> void:
+	var relative_winner_index := posmod(winner_player_index - viewer_index, PLAYER_NAMES.size())
+	if winner_player_index < 0 or relative_winner_index < 0 or relative_winner_index >= trick_card_views.size():
+		return
+
+	_play_sound(SoundEffect.TRICK)
+	_set_trick_winner_highlight(relative_winner_index, true)
+	var snapshot := _get_network_main_snapshot()
+	var players_by_index := _get_network_players_by_index(snapshot)
+	var winner_data: Dictionary = players_by_index.get(winner_player_index, {})
+	action_label.text = "Взятку забирает %s." % str(winner_data.get("display_name", "игрок"))
+	await get_tree().create_timer(TRICK_WINNER_HOLD_DURATION).timeout
+	_set_trick_winner_highlight(relative_winner_index, false)
+	await _animate_network_trick_collection(relative_winner_index)
+	network_collected_trick_key = completed_trick_key
 
 
 func _present_network_reaction_event(event: Dictionary, viewer_index: int) -> void:
@@ -1645,7 +1717,6 @@ func _present_network_sticker_event(event: Dictionary, viewer_index: int) -> voi
 	sticker_flyer.global_position = source_center - flyer_size * 0.5
 	sticker_flyer_tween = create_tween()
 	sticker_flyer_tween.tween_property(sticker_flyer, "global_position", target_center - flyer_size * 0.5, STICKER_FLY_DURATION)
-	sticker_flyer_tween.parallel().tween_property(sticker_flyer, "scale", Vector2(1.12, 1.12), STICKER_FLY_DURATION * 0.7)
 	sticker_flyer_tween.tween_interval(STICKER_HOLD_DURATION)
 	sticker_flyer_tween.tween_property(sticker_flyer, "modulate:a", 0.0, 0.22)
 	sticker_flyer_tween.tween_callback(_hide_sticker_flyer)
@@ -1824,6 +1895,7 @@ func _refresh_network_main_hand(snapshot: Dictionary, round_data: Dictionary) ->
 		card_keys_by_instance[card] = str(card_data.get("card_key", ""))
 
 	var trump: Round.TrumpSuit = int(round_data.get("trump", Round.TrumpSuit.NONE))
+	var presentation_locked := network_card_play_presentation_active or network_round_finish_presentation_active
 	var displayed_cards: Array[Card] = _sort_cards_for_display(cards, trump, hand_sort_mode)
 	for card in displayed_cards:
 		var card_view := CardView.new()
@@ -1831,7 +1903,7 @@ func _refresh_network_main_hand(snapshot: Dictionary, round_data: Dictionary) ->
 		var card_key: String = str(card_keys_by_instance.get(card, ""))
 		var card_is_available := _is_network_table_card_available(card_key)
 		var joker_is_available := card.is_joker and _can_submit_loopback_test_joker()
-		var interactive := joker_is_available if card.is_joker else card_is_available
+		var interactive := (joker_is_available if card.is_joker else card_is_available) and not presentation_locked
 		card_view.set_interactive(interactive, not interactive or loopback_network_joker_selection_open)
 		if interactive:
 			if card.is_joker:
@@ -7644,7 +7716,8 @@ func _create_sticker_controls() -> void:
 
 	sticker_flyer = PanelContainer.new()
 	sticker_flyer.visible = false
-	sticker_flyer.size = Vector2(76.0, 76.0)
+	sticker_flyer.size = Vector2(60.0, 60.0)
+	sticker_flyer.pivot_offset = sticker_flyer.size * 0.5
 	sticker_flyer.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	sticker_flyer.z_index = 32
 	sticker_flyer.add_theme_stylebox_override(
@@ -7662,7 +7735,7 @@ func _create_sticker_controls() -> void:
 	sticker_flyer_label = Label.new()
 	sticker_flyer_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	sticker_flyer_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	sticker_flyer_label.add_theme_font_size_override("font_size", 38)
+	sticker_flyer_label.add_theme_font_size_override("font_size", 31)
 	sticker_flyer.add_child(sticker_flyer_label)
 	players_container.add_child(sticker_flyer)
 
@@ -7829,7 +7902,6 @@ func _on_sticker_selected(sticker: Dictionary) -> void:
 
 	sticker_flyer_tween = create_tween()
 	sticker_flyer_tween.tween_property(sticker_flyer, "global_position", target_center - flyer_size * 0.5, STICKER_FLY_DURATION)
-	sticker_flyer_tween.parallel().tween_property(sticker_flyer, "scale", Vector2(1.12, 1.12), STICKER_FLY_DURATION * 0.7)
 	sticker_flyer_tween.tween_interval(STICKER_HOLD_DURATION)
 	sticker_flyer_tween.tween_property(sticker_flyer, "modulate:a", 0.0, 0.22)
 	sticker_flyer_tween.tween_callback(_hide_sticker_flyer)

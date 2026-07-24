@@ -1396,7 +1396,10 @@ func _process_snapshot_delivery(delta: float) -> void:
 		_snapshot_delivery_elapsed_seconds = 0.0
 		_send_player_snapshot(player_index)
 
-	if _snapshot_acknowledged_by_player.size() >= PLAYER_COUNT - 1:
+	# В Steam-режиме часть мест может быть занята локальными ботами, а игрок
+	# может временно переподключаться. Ждём подтверждений только от реально
+	# подключённых клиентских мест, а не от фиксированных трёх сетевых окон.
+	if _snapshot_acknowledged_by_player.size() >= _confirmed_client_peers_by_player.size():
 		return
 
 	_snapshot_retry_elapsed_seconds += delta
