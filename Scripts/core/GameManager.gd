@@ -154,6 +154,7 @@ enum UndoVoteState {
 @onready var music_playlist_button: Button = %MusicPlaylistButton
 @onready var music_add_button: Button = %MusicAddButton
 @onready var round_results_panel: PanelContainer = %RoundResultsPanel
+@onready var round_results_title_panel: PanelContainer = %RoundResultsTitlePanel
 @onready var round_results_label: Label = %RoundResultsLabel
 @onready var bid_controls: HBoxContainer = %BidControls
 @onready var joker_controls: GridContainer = %JokerControls
@@ -532,7 +533,16 @@ func _create_table_visual_styles() -> void:
 	undo_vote_approved_style = _create_flat_style(Color(0.05, 0.34, 0.14, 0.98), Color(0.62, 0.94, 0.46, 1.0), 2, 14, 2)
 	undo_vote_rejected_style = _create_flat_style(Color(0.36, 0.07, 0.06, 0.98), Color(1.0, 0.52, 0.42, 1.0), 2, 14, 2)
 	music_player_panel.add_theme_stylebox_override("panel", _create_flat_style(Color(0.012, 0.055, 0.034, 0.94), Color(0.38, 0.255, 0.11, 0.0), 0, 6, 0))
-	round_results_panel.add_theme_stylebox_override("panel", _create_flat_style(Color(0.018, 0.08, 0.052, 0.97), Color(0.38, 0.255, 0.11, 0.78), 1, 10, 3))
+	var round_results_style := _create_flat_style(Color(0.018, 0.08, 0.052, 0.97), Color(0.38, 0.255, 0.11, 0.78), 1, 10, 3)
+	round_results_style.content_margin_left = 12.0
+	round_results_style.content_margin_top = 12.0
+	round_results_style.content_margin_right = 12.0
+	round_results_style.content_margin_bottom = 12.0
+	round_results_panel.add_theme_stylebox_override("panel", round_results_style)
+	var round_results_title_style := _create_flat_style(Color(0.15, 0.105, 0.035, 0.96), Color(0.86, 0.64, 0.2, 0.92), 1, 7, 1)
+	round_results_title_style.content_margin_left = 8.0
+	round_results_title_style.content_margin_right = 8.0
+	round_results_title_panel.add_theme_stylebox_override("panel", round_results_title_style)
 	_apply_table_text_button_style(round_history_toggle_button)
 	_apply_table_text_button_style(score_sheet_toggle_button)
 	_apply_table_text_button_style(pause_menu_button)
@@ -2767,7 +2777,7 @@ func _refresh_network_table_header(snapshot: Dictionary, round_data: Dictionary,
 		network_table_deck_label.text = "Открытый козырь: %s\nВ колоде: %d" % [trump_card.get_card_name(), int(snapshot.get("cards_left_in_deck", 0))]
 
 	if state == Round.State.FINISHED:
-		network_table_info_label.text = _get_network_table_result_text(snapshot)
+		network_table_info_label.text = _get_network_table_result_text(snapshot, true)
 		network_table_info_panel.visible = true
 	elif active_player_index >= 0:
 		network_table_info_panel.visible = false
@@ -3125,8 +3135,10 @@ func _get_network_table_joker_text(trick_data: Dictionary) -> String:
 	)
 
 
-func _get_network_table_result_text(snapshot: Dictionary) -> String:
-	var result_lines: PackedStringArray = ["Раздача завершена"]
+func _get_network_table_result_text(snapshot: Dictionary, include_completion_heading: bool = false) -> String:
+	var result_lines: PackedStringArray = []
+	if include_completion_heading:
+		result_lines.append("Раздача завершена")
 	var players_data: Array = snapshot.get("players", [])
 	for player_data_variant in players_data:
 		if not (player_data_variant is Dictionary):
@@ -7577,7 +7589,7 @@ func _refresh_round_results() -> void:
 		round_results_label.text = ""
 		return
 
-	round_results_label.text = "Итоги раздачи\n\n%s" % action_text.trim_prefix("Раздача завершена.\n")
+	round_results_label.text = action_text.trim_prefix("Раздача завершена.\n")
 
 
 func _scroll_round_history_to_bottom() -> void:
