@@ -68,6 +68,7 @@ const UNDO_REQUESTS_PER_DECISION_LIMIT := 2
 const LOCAL_UNDO_VOTE_INTERVAL_SECONDS := 0.28
 const LOCAL_UNDO_VOTE_RESULT_HOLD_SECONDS := 0.45
 const FIRST_TURN_ROLL_BOT_REROLL_DELAY_SECONDS := 1.8
+const TURN_REMINDER_DELAY_SECONDS := 10.0
 const DICE_FACE_TEXTS := ["⚀", "⚁", "⚂", "⚃", "⚄", "⚅"]
 const AVATAR_TURN_GLOW_SHADER_CODE := """
 shader_type canvas_item;
@@ -117,7 +118,8 @@ enum BotDifficulty {
 enum SoundEffect {
 	DEAL,
 	CARD,
-	TRICK
+	TRICK,
+	TURN_REMINDER
 }
 
 
@@ -157,7 +159,7 @@ enum UndoVoteState {
 @onready var music_add_button: Button = %MusicAddButton
 @onready var round_results_panel: PanelContainer = %RoundResultsPanel
 @onready var round_results_title_panel: PanelContainer = %RoundResultsTitlePanel
-@onready var round_results_label: Label = %RoundResultsLabel
+@onready var round_results_label: RichTextLabel = %RoundResultsLabel
 @onready var first_turn_roll_panel: PanelContainer = %FirstTurnRollPanel
 @onready var first_turn_roll_title: Label = %FirstTurnRollTitle
 @onready var first_turn_roll_subtitle: Label = %FirstTurnRollSubtitle
@@ -196,7 +198,7 @@ var steam_p2p_start_round_button: Button
 var steam_p2p_open_table_button: Button
 var steam_lobby_leave_button: Button
 var player_labels: Array[Label] = []
-var player_stats_labels: Array[Label] = []
+var player_stats_labels: Array[RichTextLabel] = []
 var player_score_labels: Array[Label] = []
 var player_panels: Array[PanelContainer] = []
 var avatar_badges: Array[PanelContainer] = []
@@ -431,7 +433,7 @@ var network_table_action_controls: VBoxContainer
 var network_table_close_button: Button
 var network_table_player_panels: Array[PanelContainer] = []
 var network_table_player_name_labels: Array[Label] = []
-var network_table_player_stats_labels: Array[Label] = []
+var network_table_player_stats_labels: Array[RichTextLabel] = []
 var network_table_player_score_labels: Array[Label] = []
 var network_table_avatar_panels: Array[PanelContainer] = []
 var network_table_avatar_images: Array[TextureRect] = []
@@ -443,6 +445,9 @@ var local_first_turn_roll_values: Array[int] = []
 var local_first_turn_roll_winner_index := -1
 var local_first_turn_roll_random := RandomNumberGenerator.new()
 var local_first_turn_roll_generation := 0
+var turn_reminder_decision_key := ""
+var turn_reminder_elapsed_seconds := 0.0
+var turn_reminder_was_played := false
 
 
 func _ready() -> void:
@@ -990,7 +995,8 @@ func _on_prepare_steam_p2p_pressed() -> void:
 	steam_p2p_match.start_from_current_lobby(
 		steam_bridge,
 		bool(lobby_state.get("fill_empty_seats_with_bots", false)),
-		int(lobby_state.get("bot_difficulty", bot_difficulty))
+		int(lobby_state.get("bot_difficulty", bot_difficulty)),
+		configured_player_names[HUMAN_PLAYER_INDEX]
 	)
 	_refresh_steam_lobby_status()
 
@@ -1472,6 +1478,8 @@ func _get_network_main_snapshot() -> Dictionary:
 func _refresh_network_main_table() -> void:
 	if not _is_steam_p2p_main_table_active():
 		return
+	if is_pause_menu_open and is_instance_valid(menu_overlay) and menu_overlay.visible:
+		return
 
 	if is_instance_valid(network_table_view):
 		network_table_view.visible = false
@@ -1714,6 +1722,8 @@ func _refresh_network_main_deck(snapshot: Dictionary, round_data: Dictionary) ->
 
 func _refresh_network_main_players(snapshot: Dictionary, viewer_index: int, active_player_index: int) -> void:
 	var players_by_index: Dictionary = _get_network_players_by_index(snapshot)
+	var network_round_data: Dictionary = snapshot.get("round", {})
+	var uses_bids := _round_type_uses_bids(int(network_round_data.get("round_type", Round.RoundType.NORMAL)))
 	for player_index in range(PLAYER_NAMES.size()):
 		var relative_slot: int = posmod(player_index - viewer_index, PLAYER_NAMES.size())
 		var player_data: Dictionary = players_by_index.get(player_index, {})
@@ -1732,11 +1742,11 @@ func _refresh_network_main_players(snapshot: Dictionary, viewer_index: int, acti
 		var bid_value: int = int(player_data.get("bid", -1))
 		var bid_text := "—" if bid_value < 0 else str(bid_value)
 		player_stats_labels[relative_slot].text = (
-			"Переподключается…"
+			"[center][color=#ffb34f][b]Переподключается…[/b][/color][/center]"
 			if is_reconnecting
-			else "Бот играет до возвращения игрока"
+			else "[center][color=#ffd45c][b]Бот играет до возвращения игрока[/b][/color][/center]"
 			if is_temporary_bot
-			else "Заказ: %s  ·  Взято: %d" % [bid_text, int(player_data.get("tricks_taken", 0))]
+			else _get_player_stats_bbcode(bid_text, int(player_data.get("tricks_taken", 0)), uses_bids)
 		)
 		var total_score: int = int(player_data.get("total_score", 0))
 		player_score_labels[relative_slot].text = "Счёт: %d" % total_score
@@ -2249,7 +2259,7 @@ func _refresh_network_main_results(snapshot: Dictionary, round_data: Dictionary)
 	var result_key := _get_network_round_result_key(snapshot, round_data)
 	if network_round_result_key == result_key:
 		round_results_panel.visible = true
-		round_results_label.text = _get_network_table_result_text(snapshot)
+		round_results_label.text = _get_network_table_result_bbcode(snapshot)
 		_refresh_network_main_next_round_button()
 		return
 
@@ -2695,9 +2705,12 @@ func _create_network_table_player_widgets() -> void:
 		content.add_child(name_label)
 		network_table_player_name_labels.append(name_label)
 
-		var stats_label := Label.new()
-		stats_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		stats_label.add_theme_font_size_override("font_size", 15)
+		var stats_label := RichTextLabel.new()
+		stats_label.bbcode_enabled = true
+		stats_label.fit_content = true
+		stats_label.scroll_active = false
+		stats_label.custom_minimum_size = Vector2(0.0, 32.0)
+		stats_label.add_theme_font_size_override("normal_font_size", 17)
 		stats_label.add_theme_color_override("font_color", Color(0.83, 0.89, 0.82, 1.0))
 		content.add_child(stats_label)
 		network_table_player_stats_labels.append(stats_label)
@@ -2737,16 +2750,16 @@ func _place_network_table_player_widgets(player_index: int, relative_slot: int) 
 	var avatar: PanelContainer = network_table_avatar_panels[player_index]
 	match relative_slot:
 		0:
-			_set_control_layout(panel, 0.5, 0.5, 0.5, 0.5, -150.0, 248.0, 150.0, 332.0)
+			_set_control_layout(panel, 0.5, 0.5, 0.5, 0.5, -150.0, 240.0, 150.0, 340.0)
 			_set_control_layout(avatar, 0.5, 0.5, 0.5, 0.5, -260.0, 238.0, -170.0, 328.0)
 		1:
-			_set_control_layout(panel, 0.5, 0.5, 0.5, 0.5, -640.0, -38.0, -340.0, 46.0)
+			_set_control_layout(panel, 0.5, 0.5, 0.5, 0.5, -640.0, -46.0, -340.0, 54.0)
 			_set_control_layout(avatar, 0.5, 0.5, 0.5, 0.5, -750.0, -48.0, -660.0, 42.0)
 		2:
-			_set_control_layout(panel, 0.5, 0.5, 0.5, 0.5, -150.0, -338.0, 150.0, -254.0)
+			_set_control_layout(panel, 0.5, 0.5, 0.5, 0.5, -150.0, -346.0, 150.0, -246.0)
 			_set_control_layout(avatar, 0.5, 0.5, 0.5, 0.5, -260.0, -348.0, -170.0, -258.0)
 		3:
-			_set_control_layout(panel, 0.5, 0.5, 0.5, 0.5, 340.0, -38.0, 640.0, 46.0)
+			_set_control_layout(panel, 0.5, 0.5, 0.5, 0.5, 340.0, -46.0, 640.0, 54.0)
 			_set_control_layout(avatar, 0.5, 0.5, 0.5, 0.5, 660.0, -48.0, 750.0, 42.0)
 
 
@@ -2896,6 +2909,8 @@ func _refresh_network_table_history(snapshot: Dictionary, round_data: Dictionary
 func _refresh_network_table_players(snapshot: Dictionary, viewer_index: int, active_player_index: int) -> void:
 	var players_data: Array = snapshot.get("players", [])
 	var players_by_index: Dictionary = {}
+	var network_round_data: Dictionary = snapshot.get("round", {})
+	var uses_bids := _round_type_uses_bids(int(network_round_data.get("round_type", Round.RoundType.NORMAL)))
 	for player_data_variant in players_data:
 		if not (player_data_variant is Dictionary):
 			continue
@@ -2917,11 +2932,11 @@ func _refresh_network_table_players(snapshot: Dictionary, viewer_index: int, act
 		var bid_value: int = int(player_data.get("bid", -1))
 		var bid_text := "—" if bid_value < 0 else str(bid_value)
 		network_table_player_stats_labels[player_index].text = (
-			"Переподключается…"
+			"[center][color=#ffb34f][b]Переподключается…[/b][/color][/center]"
 			if is_reconnecting
-			else "Бот играет до возвращения"
+			else "[center][color=#ffd45c][b]Бот играет до возвращения[/b][/color][/center]"
 			if is_temporary_bot
-			else "Заказ: %s · Взято: %d" % [bid_text, int(player_data.get("tricks_taken", 0))]
+			else _get_player_stats_bbcode(bid_text, int(player_data.get("tricks_taken", 0)), uses_bids)
 		)
 		var score: int = int(player_data.get("total_score", 0))
 		network_table_player_score_labels[player_index].text = "Счёт: %d" % score
@@ -3194,20 +3209,113 @@ func _get_network_table_result_text(snapshot: Dictionary, include_completion_hea
 	var result_lines: PackedStringArray = []
 	if include_completion_heading:
 		result_lines.append("Раздача завершена")
+	var round_data: Dictionary = snapshot.get("round", {})
+	var completed_round := _get_completed_round_data(snapshot.get("completed_rounds", []), int(round_data.get("number", 0)))
+	var uses_bids := bool(completed_round.get("uses_bids", true))
+	var completed_player_results: Array = completed_round.get("players", [])
 	var players_data: Array = snapshot.get("players", [])
 	for player_data_variant in players_data:
 		if not (player_data_variant is Dictionary):
 			continue
 		var player_data: Dictionary = player_data_variant
+		var player_index := int(player_data.get("player_index", -1))
 		var bid: int = int(player_data.get("bid", -1))
-		var bid_text := "—" if bid < 0 else str(bid)
-		result_lines.append("%s: заказ %s · взято %d · счёт %d" % [
+		var tricks_taken := int(player_data.get("tricks_taken", 0))
+		var total_score := int(player_data.get("total_score", 0))
+		var round_score := _get_completed_player_round_score(completed_player_results, player_index)
+		result_lines.append("%s: взято %d · %s · %s · счёт %d → %d" % [
 			str(player_data.get("display_name", "Игрок")),
-			bid_text,
-			int(player_data.get("tricks_taken", 0)),
-			int(player_data.get("total_score", 0))
+			tricks_taken,
+			_get_round_order_outcome_text(bid, tricks_taken, uses_bids),
+			_format_score(round_score),
+			total_score - round_score,
+			total_score
 		])
 	return "\n".join(result_lines)
+
+
+func _get_network_table_result_bbcode(snapshot: Dictionary) -> String:
+	var result_lines: PackedStringArray = []
+	var round_data: Dictionary = snapshot.get("round", {})
+	var completed_round := _get_completed_round_data(snapshot.get("completed_rounds", []), int(round_data.get("number", 0)))
+	var uses_bids := bool(completed_round.get("uses_bids", true))
+	var completed_player_results: Array = completed_round.get("players", [])
+	for player_data_variant in snapshot.get("players", []):
+		if not (player_data_variant is Dictionary):
+			continue
+		var player_data: Dictionary = player_data_variant
+		var player_index := int(player_data.get("player_index", -1))
+		var bid := int(player_data.get("bid", -1))
+		var tricks_taken := int(player_data.get("tricks_taken", 0))
+		var total_score := int(player_data.get("total_score", 0))
+		var round_score := _get_completed_player_round_score(completed_player_results, player_index)
+		result_lines.append(_format_round_result_bbcode(
+			str(player_data.get("display_name", "Игрок")),
+			bid,
+			tricks_taken,
+			round_score,
+			total_score,
+			uses_bids
+		))
+	return "\n".join(result_lines)
+
+
+func _get_completed_round_data(completed_rounds_variant: Variant, round_number: int) -> Dictionary:
+	if not (completed_rounds_variant is Array):
+		return {}
+	for completed_round_variant in completed_rounds_variant:
+		if completed_round_variant is Dictionary and int(completed_round_variant.get("round_number", -1)) == round_number:
+			return completed_round_variant
+	return {}
+
+
+func _get_completed_player_round_score(player_results: Array, player_index: int) -> int:
+	if player_index >= 0 and player_index < player_results.size() and player_results[player_index] is Dictionary:
+		return int((player_results[player_index] as Dictionary).get("round_score", 0))
+	return 0
+
+
+func _get_round_order_outcome_text(bid: int, tricks_taken: int, uses_bids: bool) -> String:
+	if not uses_bids or bid < 0:
+		return "без заказа"
+	var difference := tricks_taken - bid
+	if difference == 0:
+		return "заказ %d выполнен" % bid
+	if difference < 0:
+		return "недобор %d (заказ %d)" % [-difference, bid]
+	return "перебор %d (заказ %d)" % [difference, bid]
+
+
+func _format_round_result_bbcode(
+	player_name: String,
+	bid: int,
+	tricks_taken: int,
+	round_score: int,
+	total_score: int,
+	uses_bids: bool
+) -> String:
+	var outcome_text := _get_round_order_outcome_text(bid, tricks_taken, uses_bids)
+	var order_is_exact := uses_bids and bid >= 0 and bid == tricks_taken
+	var outcome_color := "#65e686" if order_is_exact else "#ff6b61" if uses_bids and bid >= 0 else "#d8c77c"
+	var score_color := "#65e686" if round_score > 0 else "#ff6b61" if round_score < 0 else "#d8c77c"
+	var previous_total := total_score - round_score
+	var safe_player_name := player_name.replace("[", "(").replace("]", ")")
+	return (
+		"[center][font_size=18][b][color=#ffffff]%s[/color][/b][/font_size]"
+		+ "  [color=#c9d8ca]взято[/color] [font_size=20][b][color=#ffffff]%d[/color][/b][/font_size]"
+		+ "  [color=#6f8d77]•[/color] [b][color=%s]%s[/color][/b]"
+		+ "  [color=#6f8d77]•[/color] [b][color=%s]%s[/color][/b]"
+		+ "  [color=#c9d8ca]счёт %d → [b]%d[/b][/color][/center]"
+	) % [
+		safe_player_name,
+		tricks_taken,
+		outcome_color,
+		outcome_text,
+		score_color,
+		_format_score(round_score),
+		previous_total,
+		total_score
+	]
 
 
 func _create_network_table_card(card_data: Dictionary) -> Card:
@@ -3622,6 +3730,8 @@ func _save_profile() -> void:
 	configured_avatar_indices[HUMAN_PLAYER_INDEX] = selected_avatar_index
 	custom_profile_avatar_path = pending_profile_avatar_path if selected_avatar_index == CUSTOM_AVATAR_INDEX else ""
 	_save_persistent_settings()
+	if steam_p2p_match != null and steam_p2p_match.is_running():
+		steam_p2p_match.update_local_display_name(configured_player_names[HUMAN_PLAYER_INDEX])
 
 	if game.current_round.state != Round.State.SETUP:
 		game.players[HUMAN_PLAYER_INDEX].display_name = configured_player_names[HUMAN_PLAYER_INDEX]
@@ -5620,6 +5730,7 @@ func _create_sound_players() -> void:
 	sound_streams[SoundEffect.DEAL] = _create_procedural_sound(310.0, 210.0, 0.09, 0.32, 0.22)
 	sound_streams[SoundEffect.CARD] = _create_procedural_sound(540.0, 360.0, 0.06, 0.24, 0.12)
 	sound_streams[SoundEffect.TRICK] = _create_procedural_sound(420.0, 720.0, 0.18, 0.34, 0.3)
+	sound_streams[SoundEffect.TURN_REMINDER] = _create_procedural_sound(660.0, 990.0, 0.22, 0.26, 0.34)
 
 	for player_number in 3:
 		var player := AudioStreamPlayer.new()
@@ -6332,6 +6443,7 @@ func _refresh_music_player() -> void:
 
 func _reset_game_session() -> void:
 	_stop_human_turn_timer()
+	_reset_turn_reminder()
 	local_first_turn_roll_generation += 1
 	local_first_turn_roll_active = false
 	local_first_turn_roll_round = 0
@@ -6820,19 +6932,25 @@ func _finish_round() -> void:
 
 	for player_index in game.players.size():
 		var player := game.players[player_index]
+		var round_score: int = round_scores[player_index]
+		var outcome_text := _get_round_order_outcome_text(player.bid, player.tricks_taken, _round_uses_bids())
 
 		if _round_uses_bids():
-			result_lines.append("%s: заказ %d, взято %d, очки %d" % [
+			result_lines.append("%s: взято %d, %s, %s, счёт %d → %d" % [
 				player.display_name,
-				player.bid,
 				player.tricks_taken,
-				round_scores[player_index]
+				outcome_text,
+				_format_score(round_score),
+				player.total_score - round_score,
+				player.total_score
 			])
 		else:
-			result_lines.append("%s: взято %d, очки %d" % [
+			result_lines.append("%s: взято %d, без заказа, %s, счёт %d → %d" % [
 				player.display_name,
 				player.tricks_taken,
-				round_scores[player_index]
+				_format_score(round_score),
+				player.total_score - round_score,
+				player.total_score
 			])
 
 	action_text = "Раздача завершена.\n%s" % "\n".join(result_lines)
@@ -7094,12 +7212,9 @@ func _refresh_player_panels() -> void:
 
 		if _round_uses_bids():
 			var bid_text := "—" if player.bid < 0 else str(player.bid)
-			player_stats_labels[player_index].text = "Заказ: %s  ·  Взято: %d" % [
-				bid_text,
-				player.tricks_taken
-			]
+			player_stats_labels[player_index].text = _get_player_stats_bbcode(bid_text, player.tricks_taken, true)
 		else:
-			player_stats_labels[player_index].text = "Взято: %d" % player.tricks_taken
+			player_stats_labels[player_index].text = _get_player_stats_bbcode("—", player.tricks_taken, false)
 		player_score_labels[player_index].text = "Счёт: %d" % player.total_score
 		player_score_labels[player_index].add_theme_color_override(
 			"font_color",
@@ -7110,6 +7225,20 @@ func _refresh_player_panels() -> void:
 	_refresh_player_avatar_badges()
 	_refresh_undo_vote_badges()
 	_refresh_table_markers()
+
+
+func _get_player_stats_bbcode(bid_text: String, tricks_taken: int, uses_bids: bool) -> String:
+	if uses_bids:
+		return (
+			"[center][color=#dce8dc]Заказ[/color] "
+			+ "[font_size=23][b][color=#ffd65a]%s[/color][/b][/font_size]"
+			+ "  [color=#77927f]•[/color]  [color=#dce8dc]Взято[/color] "
+			+ "[font_size=23][b][color=#ffffff]%d[/color][/b][/font_size][/center]"
+		) % [bid_text, tricks_taken]
+	return (
+		"[center][color=#dce8dc]Взято[/color] "
+		+ "[font_size=23][b][color=#ffffff]%d[/color][/b][/font_size][/center]"
+	) % tricks_taken
 
 
 func _get_player_panel_style(player_index: int, is_current: bool) -> StyleBoxFlat:
@@ -7896,7 +8025,29 @@ func _refresh_round_results() -> void:
 		round_results_label.text = ""
 		return
 
-	round_results_label.text = action_text.trim_prefix("Раздача завершена.\n")
+	round_results_label.text = _get_local_round_result_bbcode()
+
+
+func _get_local_round_result_bbcode() -> String:
+	if round_history.is_empty():
+		return action_text.trim_prefix("Раздача завершена.\n")
+	var completed_round: Dictionary = round_history.back()
+	var uses_bids := bool(completed_round.get("uses_bids", true))
+	var player_results: Array = completed_round.get("players", [])
+	var result_lines: PackedStringArray = []
+	for player_index in game.players.size():
+		var player := game.players[player_index]
+		var player_result: Dictionary = player_results[player_index] if player_index < player_results.size() and player_results[player_index] is Dictionary else {}
+		var round_score := int(player_result.get("round_score", 0))
+		result_lines.append(_format_round_result_bbcode(
+			player.display_name,
+			int(player_result.get("bid", player.bid)),
+			int(player_result.get("tricks_taken", player.tricks_taken)),
+			round_score,
+			player.total_score,
+			uses_bids
+		))
+	return "\n".join(result_lines)
 
 
 func _scroll_round_history_to_bottom() -> void:
@@ -8143,9 +8294,12 @@ func _create_player_panels() -> void:
 		name_label.add_theme_color_override("font_color", Color(0.95, 0.97, 0.93, 1.0))
 		content.add_child(name_label)
 
-		var stats_label := Label.new()
-		stats_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		stats_label.add_theme_font_size_override("font_size", 15)
+		var stats_label := RichTextLabel.new()
+		stats_label.bbcode_enabled = true
+		stats_label.fit_content = true
+		stats_label.scroll_active = false
+		stats_label.custom_minimum_size = Vector2(0.0, 32.0)
+		stats_label.add_theme_font_size_override("normal_font_size", 17)
 		stats_label.add_theme_color_override("font_color", Color(0.82, 0.88, 0.82, 1.0))
 		content.add_child(stats_label)
 
@@ -9374,13 +9528,13 @@ func _place_table_marker(marker: PanelContainer, player_index: int, is_dealer: b
 func _place_player_panel(panel: PanelContainer, player_index: int) -> void:
 	match player_index:
 		HUMAN_PLAYER_INDEX:
-			_set_control_layout(panel, 0.5, 1.0, 0.5, 1.0, -105.0, -396.0, 105.0, -314.0)
+			_set_control_layout(panel, 0.5, 1.0, 0.5, 1.0, -112.0, -406.0, 112.0, -304.0)
 		1:
-			_set_control_layout(panel, 0.0, 0.0, 0.0, 0.0, 300.0, 358.0, 490.0, 440.0)
+			_set_control_layout(panel, 0.0, 0.0, 0.0, 0.0, 298.0, 348.0, 500.0, 450.0)
 		2:
-			_set_control_layout(panel, 0.5, 0.0, 0.5, 0.0, -105.0, 82.0, 105.0, 164.0)
+			_set_control_layout(panel, 0.5, 0.0, 0.5, 0.0, -112.0, 72.0, 112.0, 174.0)
 		3:
-			_set_control_layout(panel, 1.0, 0.0, 1.0, 0.0, -490.0, 358.0, -300.0, 440.0)
+			_set_control_layout(panel, 1.0, 0.0, 1.0, 0.0, -500.0, 348.0, -298.0, 450.0)
 
 
 func _place_trick_slot(panel: Control, player_index: int) -> void:
@@ -9485,6 +9639,7 @@ func _is_human_turn() -> bool:
 func _process(delta: float) -> void:
 	steam_bridge.process_callbacks()
 	_refresh_social_action_buttons()
+	_process_turn_reminder(delta)
 
 	if not turn_timer_active or not auto_turn_enabled:
 		return
@@ -9501,6 +9656,68 @@ func _process(delta: float) -> void:
 
 	if is_zero_approx(turn_timer_remaining):
 		_resolve_human_turn_timeout()
+
+
+func _process_turn_reminder(delta: float) -> void:
+	var decision_key := _get_local_turn_reminder_decision_key()
+	if decision_key.is_empty():
+		_reset_turn_reminder()
+		return
+	if decision_key != turn_reminder_decision_key:
+		turn_reminder_decision_key = decision_key
+		turn_reminder_elapsed_seconds = 0.0
+		turn_reminder_was_played = false
+	if turn_reminder_was_played:
+		return
+	turn_reminder_elapsed_seconds += delta
+	if turn_reminder_elapsed_seconds < TURN_REMINDER_DELAY_SECONDS:
+		return
+	turn_reminder_was_played = true
+	_play_sound(SoundEffect.TURN_REMINDER)
+
+
+func _get_local_turn_reminder_decision_key() -> String:
+	if _is_steam_p2p_main_table_active():
+		if network_card_play_presentation_active or network_round_finish_presentation_active:
+			return ""
+		var snapshot := _get_network_main_snapshot()
+		if snapshot.is_empty():
+			return ""
+		var undo_state: Dictionary = snapshot.get("undo_state", {})
+		if bool(undo_state.get("pending", false)):
+			return ""
+		var round_data: Dictionary = snapshot.get("round", {})
+		var state := int(round_data.get("state", Round.State.SETUP))
+		if state != Round.State.BIDDING and state != Round.State.PLAYING:
+			return ""
+		var active_trick: Dictionary = snapshot.get("active_trick", {})
+		var recipient_player_index := int(snapshot.get("recipient_player_index", -1))
+		var active_player_index := _get_network_table_active_player_index(round_data, active_trick)
+		if recipient_player_index < 0 or active_player_index != recipient_player_index:
+			return ""
+		return "network:%d:%d:%d:%d" % [
+			int(snapshot.get("round_number", 0)),
+			int(snapshot.get("revision", -1)),
+			state,
+			active_player_index
+		]
+
+	if not _is_human_decision_pending() or local_first_turn_roll_active:
+		return ""
+	var active_trick_size := game.active_trick.played_cards.size() if game.active_trick != null else 0
+	return "local:%d:%d:%d:%d:%d" % [
+		game.current_round.number,
+		game.current_round.state,
+		game.current_round.bids_made,
+		game.current_round.tricks_played,
+		active_trick_size
+	]
+
+
+func _reset_turn_reminder() -> void:
+	turn_reminder_decision_key = ""
+	turn_reminder_elapsed_seconds = 0.0
+	turn_reminder_was_played = false
 
 
 func _is_human_decision_pending() -> bool:
@@ -10196,10 +10413,14 @@ func _get_phase_text(phase_name: String) -> String:
 
 
 func _round_uses_bids() -> bool:
+	return _round_type_uses_bids(game.current_round.round_type)
+
+
+func _round_type_uses_bids(round_type: int) -> bool:
 	return (
-		game.current_round.round_type == Round.RoundType.NORMAL
-		or game.current_round.round_type == Round.RoundType.DARK
-		or game.current_round.round_type == Round.RoundType.NO_TRUMP
+		round_type == Round.RoundType.NORMAL
+		or round_type == Round.RoundType.DARK
+		or round_type == Round.RoundType.NO_TRUMP
 	)
 
 

@@ -492,7 +492,7 @@ func _on_lobby_created(result: int, lobby_id: int) -> void:
 	var steam_api := _get_steam_api()
 	if steam_api != null:
 		steam_api.call(&"setLobbyData", _lobby_id, "project", "project_joker")
-		steam_api.call(&"setLobbyData", _lobby_id, "protocol", "3")
+		steam_api.call(&"setLobbyData", _lobby_id, "protocol", "4")
 		steam_api.call(&"setLobbyData", _lobby_id, "mode", "prototype")
 		steam_api.call(&"setLobbyData", _lobby_id, "max_seats", str(LOBBY_MEMBER_LIMIT))
 		steam_api.call(&"setLobbyData", _lobby_id, "pj_fill_bots", "0")

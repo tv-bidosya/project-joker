@@ -266,12 +266,13 @@ layout_mode = 1
 anchors_preset = 10
 anchor_left = 0.5
 anchor_right = 0.5
-offset_left = -180.0
-offset_top = 294.0
-offset_right = 180.0
-offset_bottom = 470.0
+offset_left = -320.0
+offset_top = 270.0
+offset_right = 320.0
+offset_bottom = 510.0
 grow_horizontal = 2
 visible = false
+z_index = 10
 
 [node name="RoundResultsContent" type="VBoxContainer" parent="Margin/TablePanel/TableContent/RoundResultsPanel"]
 layout_mode = 2
@@ -293,15 +294,15 @@ text = "ИТОГИ РАЗДАЧИ"
 horizontal_alignment = 1
 vertical_alignment = 1
 
-[node name="RoundResultsLabel" type="Label" parent="Margin/TablePanel/TableContent/RoundResultsPanel/RoundResultsContent"]
+[node name="RoundResultsLabel" type="RichTextLabel" parent="Margin/TablePanel/TableContent/RoundResultsPanel/RoundResultsContent"]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_vertical = 3
 theme_override_colors/font_color = Color(0.91, 0.96, 0.91, 1)
-theme_override_font_sizes/font_size = 16
-horizontal_alignment = 1
-vertical_alignment = 1
-autowrap_mode = 2
+theme_override_font_sizes/normal_font_size = 17
+bbcode_enabled = true
+fit_content = true
+scroll_active = false
 
 [node name="FirstTurnRollPanel" type="PanelContainer" parent="Margin/TablePanel/TableContent"]
 unique_name_in_owner = true
@@ -385,9 +386,9 @@ anchors_preset = 10
 anchor_left = 0.5
 anchor_right = 0.5
 offset_left = -150.0
-offset_top = 482.0
+offset_top = 522.0
 offset_right = 150.0
-offset_bottom = 530.0
+offset_bottom = 570.0
 grow_horizontal = 2
 visible = false
 theme_override_font_sizes/font_size = 18

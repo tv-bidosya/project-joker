@@ -16,10 +16,11 @@ const NO_TRUMP_ROUND_COUNT := 4
 const GOLDEN_ROUND_COUNT := 5
 const MISERE_ROUND_COUNT := 5
 const TOTAL_ROUND_COUNT := NORMAL_ROUND_COUNT + DARK_ROUND_COUNT + NO_TRUMP_ROUND_COUNT + GOLDEN_ROUND_COUNT + MISERE_ROUND_COUNT
-const PROTOCOL_VERSION := 3
+const PROTOCOL_VERSION := 4
 const SNAPSHOT_DELIVERY_INTERVAL_SECONDS := 0.15
 const SNAPSHOT_RETRY_INTERVAL_SECONDS := 1.0
 const FIRST_TURN_ROLL_REVEAL_SECONDS := 2.4
+const MAX_NETWORK_DISPLAY_NAME_LENGTH := 16
 const NetworkHost = preload("res://Scripts/core/LocalMatchHost.gd")
 const NetworkSnapshot = preload("res://Scripts/core/MatchStateSnapshot.gd")
 const NetworkCommand = preload("res://Scripts/core/MatchCommand.gd")
@@ -267,6 +268,28 @@ func submit_first_turn_roll() -> bool:
 	return was_sent
 
 
+func update_local_display_name(display_name: String) -> bool:
+	var sanitized_name := _sanitize_network_display_name(display_name)
+	if sanitized_name.is_empty():
+		return false
+	if is_host():
+		if match_host == null or match_host.game.players.is_empty():
+			return false
+		match_host.game.players[HOST_PLAYER_INDEX].display_name = sanitized_name
+		_rebuild_host_lobby_seats()
+		_broadcast_lobby_state()
+		if lobby_round_started:
+			_queue_player_snapshots_for_delivery()
+		return true
+	if not is_client() or client_player_index < FIRST_CLIENT_PLAYER_INDEX:
+		return false
+	return _send_message({
+		"type": "profile_name",
+		"player_index": client_player_index,
+		"display_name": sanitized_name
+	}, 1)
+
+
 func can_start_first_real_round() -> bool:
 	return can_start_test_round() and is_first_turn_roll_complete()
 
@@ -500,6 +523,9 @@ func _handle_message(message: Dictionary, sender_peer_id: int) -> void:
 	if mode == Mode.HOST and message_type == "first_turn_roll":
 		_handle_host_first_turn_roll(message, sender_peer_id)
 		return
+	if mode == Mode.HOST and message_type == "profile_name":
+		_handle_host_profile_name(message, sender_peer_id)
+		return
 	if mode == Mode.HOST and message_type == "match_command":
 		_handle_host_match_command(message, sender_peer_id)
 		return
@@ -549,6 +575,9 @@ func _handle_host_join_request(message: Dictionary, sender_peer_id: int) -> void
 			"reason": "seat_unavailable"
 		}, sender_peer_id)
 		return
+	var requested_display_name := _sanitize_network_display_name(str(message.get("display_name", "")))
+	if not requested_display_name.is_empty() and assigned_player_index < match_host.game.players.size():
+		match_host.game.players[assigned_player_index].display_name = requested_display_name
 
 	_rebuild_host_lobby_seats()
 	_send_message({
@@ -632,6 +661,27 @@ func _handle_host_first_turn_roll(message: Dictionary, sender_peer_id: int) -> v
 	if int(message.get("roll_round", -1)) != first_turn_roll_round:
 		return
 	_record_first_turn_roll(assigned_player_index)
+
+
+func _handle_host_profile_name(message: Dictionary, sender_peer_id: int) -> void:
+	var assigned_player_index := int(_connected_player_by_peer.get(sender_peer_id, -1))
+	if assigned_player_index < FIRST_CLIENT_PLAYER_INDEX:
+		return
+	if int(message.get("player_index", -1)) != assigned_player_index:
+		return
+	var display_name := _sanitize_network_display_name(str(message.get("display_name", "")))
+	if display_name.is_empty() or match_host == null or assigned_player_index >= match_host.game.players.size():
+		return
+	match_host.game.players[assigned_player_index].display_name = display_name
+	_rebuild_host_lobby_seats()
+	_broadcast_lobby_state()
+	if lobby_round_started:
+		_queue_player_snapshots_for_delivery()
+	_set_status("Место %d теперь отображается как %s." % [assigned_player_index + 1, display_name])
+
+
+func _sanitize_network_display_name(display_name: String) -> String:
+	return display_name.replace("\n", " ").replace("\r", " ").strip_edges().left(MAX_NETWORK_DISPLAY_NAME_LENGTH)
 
 
 func _handle_host_match_command(message: Dictionary, sender_peer_id: int) -> void:
@@ -1719,9 +1769,15 @@ func _rebuild_host_lobby_seats() -> void:
 		var is_host_player := player_index == HOST_PLAYER_INDEX
 		var is_assigned := is_host_player or _connected_client_peers_by_player.has(player_index)
 		var is_confirmed := is_host_player or _confirmed_client_peers_by_player.has(player_index)
+		var fallback_name := "Хост" if is_host_player else "Игрок %d" % (player_index + 1)
+		var display_name: String = (
+			match_host.game.players[player_index].display_name
+			if match_host != null and player_index < match_host.game.players.size()
+			else fallback_name
+		)
 		lobby_seats.append({
 			"player_index": player_index,
-			"display_name": "Хост" if is_host_player else "Игрок %d" % (player_index + 1),
+			"display_name": display_name,
 			"is_host": is_host_player,
 			"assigned": is_assigned,
 			"confirmed": is_confirmed

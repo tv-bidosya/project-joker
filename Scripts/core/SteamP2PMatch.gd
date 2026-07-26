@@ -36,6 +36,7 @@ var _outbound_flush_pending := false
 var _steam_id_by_peer_id: Dictionary = {}
 var _player_index_by_steam_id: Dictionary = {}
 var _reconnecting_player_indices: Dictionary = {}
+var _local_display_name := "Игрок"
 
 
 func start_first_real_round() -> bool:
@@ -55,10 +56,14 @@ func start_next_scheduled_round() -> bool:
 func start_from_current_lobby(
 	bridge: RefCounted,
 	fill_empty_seats_with_bots: bool = false,
-	bot_difficulty: int = BOT_DIFFICULTY_NORMAL
+	bot_difficulty: int = BOT_DIFFICULTY_NORMAL,
+	local_display_name: String = "Игрок"
 ) -> bool:
 	stop()
 	steam_bridge = bridge
+	_local_display_name = _sanitize_network_display_name(local_display_name)
+	if _local_display_name.is_empty():
+		_local_display_name = "Игрок"
 	if steam_bridge == null:
 		_set_status("Steam P2P недоступен: мост Steam не создан.")
 		return false
@@ -122,6 +127,7 @@ func stop() -> void:
 	_reconnecting_player_indices.clear()
 	_steam_peer_wait_seconds = 0.0
 	_outbound_flush_pending = false
+	_local_display_name = "Игрок"
 	steam_bridge = null
 	super.stop()
 
@@ -160,6 +166,14 @@ func get_temporary_bot_player_indices() -> Array[int]:
 
 func set_bot_difficulty(difficulty: int) -> void:
 	_bot_difficulty = clampi(difficulty, BOT_DIFFICULTY_EASY, BOT_DIFFICULTY_HARD)
+
+
+func update_local_display_name(display_name: String) -> bool:
+	var sanitized_name := _sanitize_network_display_name(display_name)
+	if sanitized_name.is_empty():
+		return false
+	_local_display_name = sanitized_name
+	return super.update_local_display_name(sanitized_name)
 
 
 func _process(delta: float) -> void:
@@ -425,7 +439,7 @@ func _start_as_host() -> void:
 		_transport_active = false
 		return
 
-	var player_names := ["Хост", "Игрок 2", "Игрок 3", "Игрок 4"]
+	var player_names := [_local_display_name, "Игрок 2", "Игрок 3", "Игрок 4"]
 	for bot_offset in _local_bot_player_indices.size():
 		var player_index := _local_bot_player_indices[bot_offset]
 		player_names[player_index] = "Бот %d" % (bot_offset + 1)
@@ -466,7 +480,8 @@ func _process_client_join_request(delta: float) -> void:
 	var join_request_was_sent := _send_message({
 		"type": "join_request",
 		"protocol_version": PROTOCOL_VERSION,
-		"requested_player_index": client_requested_player_index
+		"requested_player_index": client_requested_player_index,
+		"display_name": _local_display_name
 	}, 1)
 	_join_request_attempt_count += 1
 	if join_request_was_sent:
@@ -635,14 +650,17 @@ func _rebuild_host_lobby_seats() -> void:
 		var is_assigned := is_host_player or is_local_bot or _connected_client_peers_by_player.has(player_index) or seat_reserved_for_reconnect
 		var is_confirmed := is_host_player or is_local_bot or _confirmed_client_peers_by_player.has(player_index)
 		var bot_number := _local_bot_player_indices.find(player_index) + 1
-		var display_name := (
-			"Хост"
-			if is_host_player
-			else "Игрок %d · временный бот" % (player_index + 1)
+		var stored_player_name: String = (
+			match_host.game.players[player_index].display_name
+			if match_host != null and player_index < match_host.game.players.size()
+			else _local_display_name if is_host_player else "Игрок %d" % (player_index + 1)
+		)
+		var display_name: String = (
+			"%s · временный бот" % stored_player_name
 			if is_temporary_bot
 			else "Бот %d" % bot_number
 			if is_local_bot
-			else "Игрок %d" % (player_index + 1)
+			else stored_player_name
 		)
 		lobby_seats.append({
 			"player_index": player_index,
