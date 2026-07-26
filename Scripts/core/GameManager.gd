@@ -7997,12 +7997,12 @@ func _create_reaction_controls() -> void:
 		"panel",
 		_create_flat_style(Color(0.012, 0.075, 0.045, 0.96), Color(0.64, 0.47, 0.14, 0.96), 2, 10, 5)
 	)
-	_set_control_layout(reaction_picker, 0.5, 1.0, 0.5, 1.0, 128.0, -456.0, 380.0, -402.0)
+	_set_control_layout(reaction_picker, 0.5, 1.0, 0.5, 1.0, 128.0, -456.0, 456.0, -402.0)
 
 	var reaction_row := HBoxContainer.new()
 	reaction_row.add_theme_constant_override("separation", 4)
 	reaction_picker.add_child(reaction_row)
-	for reaction in PackedStringArray(["😄", "👏", "😮", "😢"]):
+	for reaction in PackedStringArray(["😄", "👏", "😮", "😢", "🖕"]):
 		var reaction_button := Button.new()
 		reaction_button.text = reaction
 		reaction_button.tooltip_text = "Отправить реакцию"
@@ -8122,7 +8122,7 @@ func _create_sticker_controls() -> void:
 		"panel",
 		_create_flat_style(Color(0.03, 0.045, 0.1, 0.97), Color(0.65, 0.54, 0.92, 0.96), 2, 10, 5)
 	)
-	_set_control_layout(sticker_picker, 0.5, 1.0, 0.5, 1.0, 128.0, -500.0, 414.0, -408.0)
+	_set_control_layout(sticker_picker, 0.5, 1.0, 0.5, 1.0, 128.0, -500.0, 470.0, -408.0)
 
 	var sticker_layout := VBoxContainer.new()
 	sticker_layout.add_theme_constant_override("separation", 6)
@@ -8195,7 +8195,7 @@ func _build_sticker_target_picker() -> void:
 	_clear_children(sticker_picker_content)
 	sticker_picker_back_button.visible = false
 	sticker_picker_title.text = "Кому отправить стикер?"
-	_set_control_layout(sticker_picker, 0.5, 1.0, 0.5, 1.0, 128.0, -500.0, 414.0, -408.0)
+	_set_control_layout(sticker_picker, 0.5, 1.0, 0.5, 1.0, 128.0, -500.0, 470.0, -408.0)
 
 	var target_row := HBoxContainer.new()
 	target_row.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -8242,7 +8242,7 @@ func _build_sticker_choice_picker() -> void:
 		if players_by_index.has(sticker_selected_target_index):
 			target_name = str((players_by_index[sticker_selected_target_index] as Dictionary).get("display_name", target_name))
 	sticker_picker_title.text = "Что отправить %s?" % target_name.left(12)
-	_set_control_layout(sticker_picker, 0.5, 1.0, 0.5, 1.0, 128.0, -558.0, 414.0, -408.0)
+	_set_control_layout(sticker_picker, 0.5, 1.0, 0.5, 1.0, 128.0, -558.0, 470.0, -408.0)
 
 	var sticker_scroll := ScrollContainer.new()
 	sticker_scroll.custom_minimum_size = Vector2(0.0, 88.0)
@@ -8250,7 +8250,7 @@ func _build_sticker_choice_picker() -> void:
 	sticker_picker_content.add_child(sticker_scroll)
 
 	var sticker_grid := GridContainer.new()
-	sticker_grid.columns = 3
+	sticker_grid.columns = 5
 	sticker_grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	sticker_grid.add_theme_constant_override("h_separation", 4)
 	sticker_grid.add_theme_constant_override("v_separation", 4)
@@ -8275,7 +8275,12 @@ func _get_available_stickers() -> Array[Dictionary]:
 		{"symbol": "☕", "tooltip": "Кофе"},
 		{"symbol": "🍺", "tooltip": "Пиво"},
 		{"symbol": "💋", "tooltip": "Поцелуй"},
-		{"symbol": "♥", "tooltip": "Сердечко"}
+		{"symbol": "♥", "tooltip": "Сердечко"},
+		{"symbol": "🌹", "tooltip": "Роза"},
+		{"symbol": "🍰", "tooltip": "Тортик"},
+		{"symbol": "🧸", "tooltip": "Мишка"},
+		{"symbol": "🏆", "tooltip": "Кубок"},
+		{"symbol": "💩", "tooltip": "Сюрприз"}
 	]
 	var sticker_directory: DirAccess = DirAccess.open("res://Assets/Stickers")
 	if sticker_directory == null:
@@ -8306,7 +8311,12 @@ func _get_network_available_stickers() -> Array[Dictionary]:
 		{"symbol": "☕", "tooltip": "Кофе"},
 		{"symbol": "🍺", "tooltip": "Пиво"},
 		{"symbol": "💋", "tooltip": "Поцелуй"},
-		{"symbol": "♥", "tooltip": "Сердечко"}
+		{"symbol": "♥", "tooltip": "Сердечко"},
+		{"symbol": "🌹", "tooltip": "Роза"},
+		{"symbol": "🍰", "tooltip": "Тортик"},
+		{"symbol": "🧸", "tooltip": "Мишка"},
+		{"symbol": "🏆", "tooltip": "Кубок"},
+		{"symbol": "💩", "tooltip": "Сюрприз"}
 	]
 
 

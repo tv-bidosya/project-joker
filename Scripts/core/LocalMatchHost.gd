@@ -12,8 +12,8 @@ const SoundpadManifest = preload("res://Assets/Soundboard/soundpad_manifest.gd")
 const MAX_PUBLIC_TABLE_EVENTS := 48
 const SOCIAL_ACTION_USE_LIMIT := 3
 const SOCIAL_ACTION_COOLDOWN_MILLISECONDS := 120000
-const NETWORK_REACTIONS := ["😄", "👏", "😮", "😢"]
-const NETWORK_STICKERS := ["🍫", "☕", "🍺", "💋", "♥"]
+const NETWORK_REACTIONS := ["😄", "👏", "😮", "😢", "🖕"]
+const NETWORK_STICKERS := ["🍫", "☕", "🍺", "💋", "♥", "🌹", "🍰", "🧸", "🏆", "💩"]
 const UNDO_REQUESTS_PER_DECISION_LIMIT := 2
 const UNDO_VOTE_TIMEOUT_MILLISECONDS := 45000
 
