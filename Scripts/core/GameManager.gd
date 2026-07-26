@@ -10,7 +10,7 @@ const GOLDEN_ROUND_COUNT := 5
 const MISERE_ROUND_COUNT := 5
 const TOTAL_ROUND_COUNT := NORMAL_ROUND_COUNT + DARK_ROUND_COUNT + NO_TRUMP_ROUND_COUNT + GOLDEN_ROUND_COUNT + MISERE_ROUND_COUNT
 const CARD_FLY_DURATION := 0.32
-const TRICK_WINNER_HOLD_DURATION := 0.7
+const TRICK_WINNER_HOLD_DURATION := 1.2
 const TRICK_COLLECTION_DURATION := 0.3
 const BOT_SPEED_COUNT := 3
 const BOT_DIFFICULTY_COUNT := 3
@@ -1684,7 +1684,13 @@ func _present_next_network_card_event(viewer_index: int) -> void:
 	var relative_slot := posmod(actor_player_index - viewer_index, PLAYER_NAMES.size())
 	if relative_slot >= 0 and relative_slot < trick_card_views.size():
 		var card_view: CardView = trick_card_views[relative_slot]
-		if card_view.visible:
+		var played_card: Card = _create_network_table_card(event.get("card", {}))
+		if played_card != null:
+			_place_trick_slot(card_view, relative_slot)
+			card_view.set_card(played_card)
+			card_view.set_status("")
+			card_view.set_winner_highlight(false)
+			card_view.visible = true
 			await get_tree().process_frame
 			var target_position := card_view.global_position
 			card_view.pivot_offset = card_view.size * 0.5
