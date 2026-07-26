@@ -6,6 +6,8 @@
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `Assets/...` | PNG / OGG / шрифт / код |  |  | да / нет / проверить | да / нет | да / нет | титры / README / нет | ссылка, чек или файл лицензии | проверить |
 | `Assets/Cards/JumboIndex/*.png` | card faces and backs (PNG) | saul / OpenGameArt | CC0 — https://opengameart.org/content/jumbo-index-playing-cards | да | нет | нет | не требуется | страница источника и `Assets/Cards/JumboIndex/README.md` | готово |
+| `Assets/Cards/ClassicFourColor/*.svg` | card faces (SVG) | Heratexx / OpenGameArt | CC0 — https://opengameart.org/content/classic-4-color-poker-deck-svg | да | нет | нет | не требуется | страница источника и `Assets/Cards/ClassicFourColor/README.md` | готово |
+| `Assets/Cards/CompactFourColor/*.png` | card faces (PNG) | scl / OpenGameArt | CC0 — https://opengameart.org/content/4-color-playing-cards | да | нет | нет | не требуется | страница источника и `Assets/Cards/CompactFourColor/README.md` | готово |
 
 ## Правила заполнения
 

@@ -243,6 +243,7 @@ var menu_panel: PanelContainer
 var menu_scroll: ScrollContainer
 var menu_content: VBoxContainer
 var bot_speed_index := 1
+var card_deck_style := CardArtworkResource.DeckStyle.JUMBO_FOUR_COLOR
 var bot_difficulty: BotDifficulty = BotDifficulty.NORMAL
 var tutorial_enabled := false
 var auto_turn_enabled := false
@@ -411,6 +412,7 @@ func _ready() -> void:
 	_run_local_match_host_checks()
 	_run_network_special_round_checks()
 	_load_persistent_settings()
+	CardArtworkResource.set_deck_style(card_deck_style)
 	_create_table_visual_styles()
 	_create_score_sheet_overlay()
 	_create_table_surface()
@@ -3929,6 +3931,29 @@ func _show_settings_menu() -> void:
 	fullscreen_toggle.toggled.connect(_on_fullscreen_toggled)
 	menu_content.add_child(fullscreen_toggle)
 
+	var deck_style_label := Label.new()
+	deck_style_label.text = "Оформление карт"
+	deck_style_label.add_theme_font_size_override("font_size", 18)
+	deck_style_label.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
+	menu_content.add_child(deck_style_label)
+
+	var deck_style_selector := OptionButton.new()
+	deck_style_selector.add_item("Jumbo · четыре цвета")
+	deck_style_selector.add_item("Классическая · четыре цвета")
+	deck_style_selector.add_item("Компактная · четыре цвета")
+	deck_style_selector.selected = card_deck_style
+	deck_style_selector.custom_minimum_size = Vector2(0.0, 42.0)
+	deck_style_selector.add_theme_font_size_override("font_size", 17)
+	deck_style_selector.item_selected.connect(_on_card_deck_style_selected)
+	menu_content.add_child(deck_style_selector)
+
+	var deck_style_hint := Label.new()
+	deck_style_hint.text = "Выбор сохраняется только на этом устройстве и не меняет карты у других игроков."
+	deck_style_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	deck_style_hint.add_theme_font_size_override("font_size", 14)
+	deck_style_hint.add_theme_color_override("font_color", Color(0.72, 0.85, 0.76, 1.0))
+	menu_content.add_child(deck_style_hint)
+
 	var speed_label := Label.new()
 	speed_label.text = "Скорость ходов ботов"
 	speed_label.add_theme_font_size_override("font_size", 18)
@@ -4304,6 +4329,17 @@ func _on_bot_speed_selected(selected_index: int) -> void:
 	_save_persistent_settings()
 
 
+func _on_card_deck_style_selected(selected_index: int) -> void:
+	card_deck_style = clampi(
+		selected_index,
+		CardArtworkResource.DeckStyle.JUMBO_FOUR_COLOR,
+		CardArtworkResource.DeckStyle.COMPACT_FOUR_COLOR
+	)
+	CardArtworkResource.set_deck_style(card_deck_style)
+	_save_persistent_settings()
+	_refresh_ui()
+
+
 func _on_sound_volume_selected(selected_index: int) -> void:
 	sound_volume_index = clampi(selected_index, 0, SOUND_VOLUME_COUNT - 1)
 	_apply_sound_volume()
@@ -4470,6 +4506,12 @@ func _load_persistent_settings() -> void:
 	bot_difficulty = clampi(saved_difficulty, 0, BOT_DIFFICULTY_COUNT - 1)
 	var saved_speed: int = int(config.get_value("game", "bot_speed", bot_speed_index))
 	bot_speed_index = clampi(saved_speed, 0, BOT_SPEED_COUNT - 1)
+	var saved_card_deck_style: int = int(config.get_value("display", "card_deck_style", card_deck_style))
+	card_deck_style = clampi(
+		saved_card_deck_style,
+		CardArtworkResource.DeckStyle.JUMBO_FOUR_COLOR,
+		CardArtworkResource.DeckStyle.COMPACT_FOUR_COLOR
+	)
 	tutorial_enabled = bool(config.get_value("game", "tutorial_enabled", tutorial_enabled))
 	auto_turn_enabled = bool(config.get_value("game", "auto_turn_enabled", auto_turn_enabled))
 	var saved_sound_volume: int = int(config.get_value("audio", "sound_volume", sound_volume_index))
@@ -4523,6 +4565,7 @@ func _save_persistent_settings() -> void:
 	config.set_value("game", "bot_speed", bot_speed_index)
 	config.set_value("game", "tutorial_enabled", tutorial_enabled)
 	config.set_value("game", "auto_turn_enabled", auto_turn_enabled)
+	config.set_value("display", "card_deck_style", card_deck_style)
 	config.set_value("audio", "sound_volume", sound_volume_index)
 	config.set_value("audio", "music_volume", music_volume_index)
 	config.set_value("audio", "music_volume_percent", music_volume_percent)
