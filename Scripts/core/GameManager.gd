@@ -7606,8 +7606,8 @@ func _create_deck_visual() -> void:
 		deck_back_panels.append(card_back)
 
 	deck_trump_panel = PanelContainer.new()
-	deck_trump_panel.position = Vector2(48.0, 20.0)
-	deck_trump_panel.size = Vector2(76.0, 96.0)
+	deck_trump_panel.position = Vector2(54.0, 20.0)
+	deck_trump_panel.size = Vector2(64.0, 96.0)
 	deck_trump_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	deck_trump_panel.add_theme_stylebox_override("panel", deck_trump_card_style)
 
@@ -7618,7 +7618,7 @@ func _create_deck_visual() -> void:
 	deck_trump_artwork.offset_right = -4.0
 	deck_trump_artwork.offset_bottom = -4.0
 	deck_trump_artwork.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	deck_trump_artwork.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+	deck_trump_artwork.stretch_mode = TextureRect.STRETCH_SCALE
 	deck_trump_artwork.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
 	deck_trump_artwork.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	deck_trump_artwork.visible = false
@@ -7695,7 +7695,7 @@ func _add_card_back_artwork(card_back: Control) -> bool:
 	texture_rect.offset_right = -2.0
 	texture_rect.offset_bottom = -2.0
 	texture_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	texture_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+	texture_rect.stretch_mode = TextureRect.STRETCH_SCALE
 	texture_rect.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
 	texture_rect.texture = back_texture
 	texture_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE

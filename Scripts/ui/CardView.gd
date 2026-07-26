@@ -107,7 +107,7 @@ func _create_visuals() -> void:
 	artwork_texture.offset_right = -4.0
 	artwork_texture.offset_bottom = -4.0
 	artwork_texture.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	artwork_texture.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+	artwork_texture.stretch_mode = TextureRect.STRETCH_SCALE
 	artwork_texture.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
 	artwork_texture.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	artwork_texture.visible = false
