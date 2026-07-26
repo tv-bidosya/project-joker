@@ -145,7 +145,9 @@ var steam_bridge: RefCounted = SteamBridge.new()
 var steam_lobby_status_label: Label
 var steam_lobby_details_label: Label
 var steam_lobby_members_label: Label
+var steam_lobby_bot_difficulty_selector: OptionButton
 var steam_p2p_status_label: Label
+var steam_reconnect_controls: VBoxContainer
 var steam_lobby_create_button: Button
 var steam_lobby_invite_button: Button
 var steam_lobby_ready_button: Button
@@ -841,6 +843,26 @@ func _show_steam_lobby_menu() -> void:
 	steam_p2p_status_label.add_theme_color_override("font_color", Color(0.76, 0.87, 0.82, 1.0))
 	menu_content.add_child(steam_p2p_status_label)
 
+	steam_reconnect_controls = VBoxContainer.new()
+	steam_reconnect_controls.add_theme_constant_override("separation", 8)
+	menu_content.add_child(steam_reconnect_controls)
+
+	var bot_difficulty_label := Label.new()
+	bot_difficulty_label.text = "Сложность ботов за сетевым столом"
+	bot_difficulty_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	bot_difficulty_label.add_theme_font_size_override("font_size", 16)
+	bot_difficulty_label.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
+	menu_content.add_child(bot_difficulty_label)
+
+	steam_lobby_bot_difficulty_selector = OptionButton.new()
+	for difficulty in BOT_DIFFICULTY_COUNT:
+		steam_lobby_bot_difficulty_selector.add_item(_get_bot_difficulty_label(difficulty))
+	steam_lobby_bot_difficulty_selector.selected = bot_difficulty
+	steam_lobby_bot_difficulty_selector.custom_minimum_size = Vector2(0.0, 42.0)
+	steam_lobby_bot_difficulty_selector.add_theme_font_size_override("font_size", 16)
+	steam_lobby_bot_difficulty_selector.item_selected.connect(_on_steam_lobby_bot_difficulty_selected)
+	menu_content.add_child(steam_lobby_bot_difficulty_selector)
+
 	_add_menu_spacer(14.0)
 	steam_lobby_create_button = _add_menu_button("Создать закрытую комнату", _on_create_steam_lobby_pressed, true)
 	steam_lobby_invite_button = _add_menu_button("Пригласить друга через Steam", _on_open_steam_lobby_invite_pressed)
@@ -900,13 +922,26 @@ func _on_toggle_steam_lobby_ready_pressed() -> void:
 func _on_prepare_steam_p2p_pressed() -> void:
 	_reset_loopback_network_joker_selection()
 	var lobby_state: Dictionary = steam_bridge.get_lobby_state()
-	steam_p2p_match.start_from_current_lobby(steam_bridge, bool(lobby_state.get("fill_empty_seats_with_bots", false)))
+	steam_p2p_match.start_from_current_lobby(
+		steam_bridge,
+		bool(lobby_state.get("fill_empty_seats_with_bots", false)),
+		int(lobby_state.get("bot_difficulty", bot_difficulty))
+	)
 	_refresh_steam_lobby_status()
 
 
 func _on_toggle_steam_lobby_bots_pressed() -> void:
 	var lobby_state: Dictionary = steam_bridge.get_lobby_state()
 	steam_bridge.set_fill_empty_seats_with_bots(not bool(lobby_state.get("fill_empty_seats_with_bots", false)))
+	_refresh_steam_lobby_status()
+
+
+func _on_steam_lobby_bot_difficulty_selected(selected_index: int) -> void:
+	bot_difficulty = clampi(selected_index, 0, BOT_DIFFICULTY_COUNT - 1)
+	steam_bridge.set_lobby_bot_difficulty(bot_difficulty)
+	if steam_p2p_match != null and steam_p2p_match.is_host():
+		steam_p2p_match.set_bot_difficulty(bot_difficulty)
+	_save_persistent_settings()
 	_refresh_steam_lobby_status()
 
 
@@ -942,9 +977,12 @@ func _refresh_steam_lobby_status() -> void:
 	var lobby_status := str(lobby_state.get("status", "Статус Steam-комнаты не получен."))
 	var local_ready := bool(lobby_state.get("local_ready", false))
 	var fill_empty_seats_with_bots := bool(lobby_state.get("fill_empty_seats_with_bots", false))
+	var lobby_bot_difficulty := clampi(int(lobby_state.get("bot_difficulty", bot_difficulty)), 0, BOT_DIFFICULTY_COUNT - 1)
 	var bot_count := int(lobby_state.get("bot_count", 0))
 	var local_is_host: bool = int(lobby_state.get("lobby_owner", 0)) == steam_bridge.get_local_steam_id()
 	var members: Array = lobby_state.get("members", [])
+	bot_difficulty = lobby_bot_difficulty
+	var network_bot_difficulty_name: String = ["лёгкий", "обычный", "сложный"][lobby_bot_difficulty]
 
 	steam_lobby_status_label.text = lobby_status
 	if lobby_id > 0:
@@ -960,7 +998,7 @@ func _refresh_steam_lobby_status() -> void:
 		var member_ready := "✓ готов" if bool(member.get("ready", false)) else "… ждём"
 		member_lines.append("%s%s — %s" % [member_name, member_role, member_ready])
 	for bot_index in bot_count:
-		member_lines.append("Бот %d — ✓ готов" % (bot_index + 1))
+		member_lines.append("Бот %d — ✓ готов · %s" % [bot_index + 1, network_bot_difficulty_name])
 	for empty_index in maxi(0, member_limit - member_count - bot_count):
 		member_lines.append("Свободное место %d" % (member_count + bot_count + empty_index + 1))
 	steam_lobby_members_label.text = "Участники комнаты\n%s" % "\n".join(member_lines) if not member_lines.is_empty() else ""
@@ -972,6 +1010,9 @@ func _refresh_steam_lobby_status() -> void:
 	if is_instance_valid(steam_lobby_ready_button):
 		steam_lobby_ready_button.disabled = lobby_id <= 0
 		steam_lobby_ready_button.text = "Готов ✓ (отменить)" if local_ready else "Отметиться готовым"
+	if is_instance_valid(steam_lobby_bot_difficulty_selector):
+		steam_lobby_bot_difficulty_selector.selected = lobby_bot_difficulty
+		steam_lobby_bot_difficulty_selector.disabled = lobby_id <= 0 or not local_is_host
 	var all_members_ready := member_count > 0
 	for member_variant in members:
 		if not (member_variant is Dictionary) or not bool(member_variant.get("ready", false)):
@@ -1007,6 +1048,7 @@ func _refresh_steam_p2p_status() -> void:
 		steam_p2p_status_label.text = "Steam P2P ещё не подключён. После готовности всех четырёх игроков каждый нажимает «Подготовить Steam P2P»."
 	else:
 		steam_p2p_status_label.text = "Steam P2P: %s" % steam_p2p_match.status_text
+	_refresh_steam_reconnect_controls()
 	if is_instance_valid(steam_p2p_prepare_button) and steam_p2p_match != null and steam_p2p_match.is_running():
 		steam_p2p_prepare_button.disabled = true
 	if is_instance_valid(steam_p2p_prepare_with_bots_button) and steam_p2p_match != null and steam_p2p_match.is_running():
@@ -1019,6 +1061,35 @@ func _refresh_steam_p2p_status() -> void:
 		_refresh_network_main_table()
 	elif steam_p2p_table_presentation and is_instance_valid(network_table_view) and network_table_view.visible:
 		_refresh_network_table_view()
+
+
+func _refresh_steam_reconnect_controls() -> void:
+	if not is_instance_valid(steam_reconnect_controls):
+		return
+	_clear_children(steam_reconnect_controls)
+	if steam_p2p_match == null or not steam_p2p_match.is_host():
+		return
+	for player_index_variant in steam_p2p_match.get_reconnecting_player_indices():
+		var player_index := int(player_index_variant)
+		var label := Label.new()
+		label.text = "Место %d: игрок отключился. Можно подождать или временно передать место боту." % (player_index + 1)
+		label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		label.add_theme_font_size_override("font_size", 15)
+		label.add_theme_color_override("font_color", Color(1.0, 0.72, 0.32, 1.0))
+		steam_reconnect_controls.add_child(label)
+		steam_reconnect_controls.add_child(_create_menu_button(
+			"Заполнить место %d ботом" % (player_index + 1),
+			_on_replace_disconnected_player_with_bot_pressed.bind(player_index),
+			true
+		))
+
+
+func _on_replace_disconnected_player_with_bot_pressed(player_index: int) -> void:
+	if steam_p2p_match == null:
+		return
+	steam_p2p_match.replace_reconnecting_player_with_bot(player_index)
+	_refresh_steam_p2p_status()
 
 
 func _on_network_public_table_event_received() -> void:
@@ -1393,7 +1464,12 @@ func _refresh_network_main_header(snapshot: Dictionary, round_data: Dictionary, 
 	elif round_type == Round.RoundType.GOLDEN:
 		trump_label.text = "Золотая: козырей нет"
 	elif trump_card == null:
-		trump_label.text = "Козырь: не определён"
+		var scheduled_trump := int(round_data.get("trump", Round.TrumpSuit.RANDOM))
+		trump_label.text = (
+			"Козырь: не определён"
+			if scheduled_trump == Round.TrumpSuit.RANDOM
+			else "Козырь: %s (по расписанию)" % _get_trump_name_from_suit(scheduled_trump)
+		)
 	elif trump_card.is_joker:
 		trump_label.text = "Открыт Джокер · бескозырка"
 	else:
@@ -1444,6 +1520,16 @@ func _is_network_player_reconnecting(snapshot: Dictionary, player_index: int) ->
 		return false
 	for reconnecting_player_index in reconnecting_data:
 		if int(reconnecting_player_index) == player_index:
+			return true
+	return false
+
+
+func _is_network_player_temporary_bot(snapshot: Dictionary, player_index: int) -> bool:
+	var temporary_bot_data: Variant = snapshot.get("temporary_bot_player_indices", [])
+	if not (temporary_bot_data is Array):
+		return false
+	for temporary_bot_player_index in temporary_bot_data:
+		if int(temporary_bot_player_index) == player_index:
 			return true
 	return false
 
@@ -1510,11 +1596,23 @@ func _refresh_network_main_deck(snapshot: Dictionary, round_data: Dictionary) ->
 	deck_trump_artwork.texture = null
 	deck_trump_artwork.visible = false
 	deck_trump_label.visible = true
-	deck_trump_label.text = "—"
+	var scheduled_trump := int(round_data.get("trump", Round.TrumpSuit.RANDOM))
+	deck_trump_label.text = (
+		"—"
+		if scheduled_trump == Round.TrumpSuit.NONE or scheduled_trump == Round.TrumpSuit.RANDOM
+		else _get_trump_name_from_suit(scheduled_trump)
+	)
 	deck_trump_label.add_theme_font_size_override("font_size", 32)
 	deck_trump_label.add_theme_color_override("font_color", Color(0.08, 0.08, 0.07, 1.0))
-	deck_trump_panel.tooltip_text = "Козырь ещё не открыт."
-	deck_caption_label.text = "Козырь будет определён хостом"
+	if scheduled_trump == Round.TrumpSuit.RANDOM:
+		deck_trump_panel.tooltip_text = "Козырь определится открытой картой после раздачи."
+		deck_caption_label.text = "Козырь ещё не открыт"
+	elif scheduled_trump == Round.TrumpSuit.NONE:
+		deck_trump_panel.tooltip_text = "В этой раздаче козырей нет."
+		deck_caption_label.text = "Без козыря"
+	else:
+		deck_trump_panel.tooltip_text = "Козырь задан расписанием раздач."
+		deck_caption_label.text = "Козырь по расписанию: %s" % _get_trump_name_from_suit(scheduled_trump)
 
 
 func _refresh_network_main_players(snapshot: Dictionary, viewer_index: int, active_player_index: int) -> void:
@@ -1528,11 +1626,21 @@ func _refresh_network_main_players(snapshot: Dictionary, viewer_index: int, acti
 		panel.add_theme_stylebox_override("panel", active_human_player_panel_style if is_current and relative_slot == HUMAN_PLAYER_INDEX else active_player_panel_style if is_current else human_player_panel_style if relative_slot == HUMAN_PLAYER_INDEX else player_panel_style)
 
 		var is_reconnecting := _is_network_player_reconnecting(snapshot, player_index)
+		var is_temporary_bot := _is_network_player_temporary_bot(snapshot, player_index)
 		var player_name := str(player_data.get("display_name", "Игрок %d" % (player_index + 1)))
-		player_labels[relative_slot].text = ("Переподключается · " if is_reconnecting else "Ход · " if is_current else "") + player_name
+		player_labels[relative_slot].text = (
+			("Переподключается · " if is_reconnecting else "Временный бот · " if is_temporary_bot else "Ход · " if is_current else "")
+			+ player_name
+		)
 		var bid_value: int = int(player_data.get("bid", -1))
 		var bid_text := "—" if bid_value < 0 else str(bid_value)
-		player_stats_labels[relative_slot].text = "Переподключается…" if is_reconnecting else "Заказ: %s  ·  Взято: %d" % [bid_text, int(player_data.get("tricks_taken", 0))]
+		player_stats_labels[relative_slot].text = (
+			"Переподключается…"
+			if is_reconnecting
+			else "Бот играет до возвращения игрока"
+			if is_temporary_bot
+			else "Заказ: %s  ·  Взято: %d" % [bid_text, int(player_data.get("tricks_taken", 0))]
+		)
 		var total_score: int = int(player_data.get("total_score", 0))
 		player_score_labels[relative_slot].text = "Счёт: %d" % total_score
 		player_score_labels[relative_slot].add_theme_color_override("font_color", Color(0.97, 0.84, 0.38, 1.0) if total_score >= 0 else Color(0.96, 0.42, 0.34, 1.0))
@@ -1851,6 +1959,18 @@ func _refresh_network_main_action_controls(snapshot: Dictionary, round_data: Dic
 	_clear_children(bid_controls)
 	_clear_children(joker_controls)
 	joker_controls.visible = false
+	var network_match = _get_active_network_match()
+	if network_match == steam_p2p_match and steam_p2p_match.is_host():
+		var reconnecting_players: Array[int] = steam_p2p_match.get_reconnecting_player_indices()
+		if not reconnecting_players.is_empty():
+			for player_index in reconnecting_players:
+				var replace_button := Button.new()
+				replace_button.text = "Место %d → временный бот" % (player_index + 1)
+				replace_button.custom_minimum_size = Vector2(190.0, 40.0)
+				_apply_table_action_button_style(replace_button)
+				replace_button.pressed.connect(_on_replace_disconnected_player_with_bot_pressed.bind(player_index))
+				bid_controls.add_child(replace_button)
+			return
 	var undo_state: Dictionary = snapshot.get("undo_state", {})
 	if bool(undo_state.get("pending", false)):
 		_reset_loopback_network_joker_selection()
@@ -1867,7 +1987,6 @@ func _refresh_network_main_action_controls(snapshot: Dictionary, round_data: Dic
 	if state != Round.State.BIDDING:
 		return
 	var available_bids: Array[int] = []
-	var network_match = _get_active_network_match()
 	if network_match != null and network_match.is_host() and network_match.can_submit_host_test_bid():
 		available_bids = network_match.get_available_host_test_bids()
 	elif network_match != null and network_match.is_client() and network_match.can_submit_test_bid():
@@ -2615,7 +2734,14 @@ func _refresh_network_table_header(snapshot: Dictionary, round_data: Dictionary,
 	var trump_card: Card = _create_network_table_card(trump_data)
 	_refresh_network_table_deck_visual(trump_data)
 	if trump_card == null:
-		network_table_deck_label.text = "Колода ещё не открыта"
+		var scheduled_trump := int(round_data.get("trump", Round.TrumpSuit.RANDOM))
+		network_table_deck_label.text = (
+			"Колода ещё не открыта"
+			if scheduled_trump == Round.TrumpSuit.RANDOM
+			else "Без козыря"
+			if scheduled_trump == Round.TrumpSuit.NONE
+			else "Козырь по расписанию: %s" % _get_trump_name_from_suit(scheduled_trump)
+		)
 	elif trump_card.is_joker:
 		network_table_deck_label.text = "Открытый Джокер · без козыря\nВ колоде: %d" % int(snapshot.get("cards_left_in_deck", 0))
 	else:
@@ -2697,11 +2823,22 @@ func _refresh_network_table_players(snapshot: Dictionary, viewer_index: int, act
 		var relative_slot: int = (player_index - viewer_index + PLAYER_NAMES.size()) % PLAYER_NAMES.size()
 		_place_network_table_player_widgets(player_index, relative_slot)
 		var is_current := player_index == active_player_index
+		var is_reconnecting := _is_network_player_reconnecting(snapshot, player_index)
+		var is_temporary_bot := _is_network_player_temporary_bot(snapshot, player_index)
 		network_table_player_panels[player_index].add_theme_stylebox_override("panel", active_player_panel_style if is_current else player_panel_style)
-		network_table_player_name_labels[player_index].text = str(player_data.get("display_name", "Игрок %d" % (player_index + 1)))
+		network_table_player_name_labels[player_index].text = (
+			("Переподключается · " if is_reconnecting else "Временный бот · " if is_temporary_bot else "")
+			+ str(player_data.get("display_name", "Игрок %d" % (player_index + 1)))
+		)
 		var bid_value: int = int(player_data.get("bid", -1))
 		var bid_text := "—" if bid_value < 0 else str(bid_value)
-		network_table_player_stats_labels[player_index].text = "Заказ: %s · Взято: %d" % [bid_text, int(player_data.get("tricks_taken", 0))]
+		network_table_player_stats_labels[player_index].text = (
+			"Переподключается…"
+			if is_reconnecting
+			else "Бот играет до возвращения"
+			if is_temporary_bot
+			else "Заказ: %s · Взято: %d" % [bid_text, int(player_data.get("tricks_taken", 0))]
+		)
 		var score: int = int(player_data.get("total_score", 0))
 		network_table_player_score_labels[player_index].text = "Счёт: %d" % score
 		network_table_player_score_labels[player_index].add_theme_color_override("font_color", Color(0.97, 0.84, 0.38, 1.0) if score >= 0 else Color(0.96, 0.42, 0.34, 1.0))
@@ -2814,6 +2951,17 @@ func _refresh_network_table_action_controls(snapshot: Dictionary) -> void:
 		network_table_action_panel.visible = false
 		return
 	network_table_action_panel.visible = true
+	if steam_p2p_match != null and _get_active_network_match() == steam_p2p_match and steam_p2p_match.is_host():
+		var reconnecting_players: Array[int] = steam_p2p_match.get_reconnecting_player_indices()
+		if not reconnecting_players.is_empty():
+			_place_network_table_action_panel(false)
+			for player_index in reconnecting_players:
+				network_table_action_controls.add_child(_create_network_table_action_button(
+					"Место %d → временный бот" % (player_index + 1),
+					_on_replace_disconnected_player_with_bot_pressed.bind(player_index),
+					true
+				))
+			return
 	if loopback_network_joker_selection_open:
 		_place_network_table_action_panel(true)
 		_create_network_table_joker_choice_controls()

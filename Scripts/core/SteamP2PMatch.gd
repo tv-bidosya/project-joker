@@ -11,6 +11,9 @@ const MatchCommand = preload("res://Scripts/core/MatchCommand.gd")
 
 
 const BOT_ACTION_DELAY_SECONDS := 0.65
+const BOT_DIFFICULTY_EASY := 0
+const BOT_DIFFICULTY_NORMAL := 1
+const BOT_DIFFICULTY_HARD := 2
 
 
 var steam_bridge: RefCounted
@@ -21,6 +24,8 @@ var steam_multiplayer_peer: Object
 var _transport_active := false
 var _fill_empty_seats_with_bots := false
 var _local_bot_player_indices: Array[int] = []
+var _temporary_bot_player_indices: Dictionary = {}
+var _bot_difficulty := BOT_DIFFICULTY_NORMAL
 var _expected_remote_player_count := 0
 var _bot_action_delay_seconds := 0.0
 var _join_request_attempt_count := 0
@@ -47,7 +52,11 @@ func start_next_scheduled_round() -> bool:
 	return true
 
 
-func start_from_current_lobby(bridge: RefCounted, fill_empty_seats_with_bots: bool = false) -> bool:
+func start_from_current_lobby(
+	bridge: RefCounted,
+	fill_empty_seats_with_bots: bool = false,
+	bot_difficulty: int = BOT_DIFFICULTY_NORMAL
+) -> bool:
 	stop()
 	steam_bridge = bridge
 	if steam_bridge == null:
@@ -75,8 +84,10 @@ func start_from_current_lobby(bridge: RefCounted, fill_empty_seats_with_bots: bo
 		return false
 
 	_fill_empty_seats_with_bots = fill_empty_seats_with_bots
+	_bot_difficulty = clampi(bot_difficulty, BOT_DIFFICULTY_EASY, BOT_DIFFICULTY_HARD)
 	_expected_remote_player_count = members.size() - 1
 	_local_bot_player_indices.clear()
+	_temporary_bot_player_indices.clear()
 	if _fill_empty_seats_with_bots:
 		for player_index in range(members.size(), PLAYER_COUNT):
 			_local_bot_player_indices.append(player_index)
@@ -99,6 +110,8 @@ func stop() -> void:
 	lobby_id = 0
 	_fill_empty_seats_with_bots = false
 	_local_bot_player_indices.clear()
+	_temporary_bot_player_indices.clear()
+	_bot_difficulty = BOT_DIFFICULTY_NORMAL
 	_expected_remote_player_count = 0
 	_bot_action_delay_seconds = 0.0
 	_join_request_attempt_count = 0
@@ -128,6 +141,25 @@ func is_match_paused_for_reconnect() -> bool:
 	if is_client():
 		return not _get_snapshot_reconnecting_player_indices().is_empty()
 	return false
+
+
+func get_reconnecting_player_indices() -> Array[int]:
+	return _get_reconnecting_player_indices() if is_host() else _get_snapshot_reconnecting_player_indices()
+
+
+func get_temporary_bot_player_indices() -> Array[int]:
+	if is_host():
+		return _get_temporary_bot_player_indices()
+	var player_indices: Array[int] = []
+	if not client_snapshot_is_safe:
+		return player_indices
+	for player_index_variant in client_snapshot.get("temporary_bot_player_indices", []):
+		player_indices.append(int(player_index_variant))
+	return player_indices
+
+
+func set_bot_difficulty(difficulty: int) -> void:
+	_bot_difficulty = clampi(difficulty, BOT_DIFFICULTY_EASY, BOT_DIFFICULTY_HARD)
 
 
 func _process(delta: float) -> void:
@@ -251,6 +283,7 @@ func _assign_client_player_index(sender_peer_id: int, requested_player_index: in
 			return -1
 		_connected_client_peers_by_player[assigned_player_index] = sender_peer_id
 		_connected_player_by_peer[sender_peer_id] = assigned_player_index
+		_restore_temporary_bot_for_reconnect(assigned_player_index)
 		_reconnecting_player_indices.erase(assigned_player_index)
 		return assigned_player_index
 
@@ -275,6 +308,7 @@ func _append_reconnect_state(snapshot: Dictionary) -> Dictionary:
 	if snapshot.is_empty():
 		return snapshot
 	snapshot["reconnecting_player_indices"] = _get_reconnecting_player_indices()
+	snapshot["temporary_bot_player_indices"] = _get_temporary_bot_player_indices()
 	return snapshot
 
 
@@ -284,6 +318,42 @@ func _get_reconnecting_player_indices() -> Array[int]:
 		player_indices.append(int(player_index_variant))
 	player_indices.sort()
 	return player_indices
+
+
+func _get_temporary_bot_player_indices() -> Array[int]:
+	var player_indices: Array[int] = []
+	for player_index_variant in _temporary_bot_player_indices.keys():
+		player_indices.append(int(player_index_variant))
+	player_indices.sort()
+	return player_indices
+
+
+func replace_reconnecting_player_with_bot(player_index: int) -> bool:
+	if not is_host() or match_host == null or not _reconnecting_player_indices.has(player_index):
+		return false
+	if player_index < FIRST_CLIENT_PLAYER_INDEX or player_index >= PLAYER_COUNT:
+		return false
+
+	if not _local_bot_player_indices.has(player_index):
+		_local_bot_player_indices.append(player_index)
+		_local_bot_player_indices.sort()
+	_temporary_bot_player_indices[player_index] = true
+	_reconnecting_player_indices.erase(player_index)
+	match_host.set_automatic_undo_approver_indices(_local_bot_player_indices)
+	_rebuild_host_lobby_seats()
+	_broadcast_lobby_state()
+	_send_current_player_snapshots()
+	_set_status("Steam P2P: место %d временно занял бот. Игрок вернётся на своё место после переподключения." % (player_index + 1))
+	return true
+
+
+func _restore_temporary_bot_for_reconnect(player_index: int) -> void:
+	if not _temporary_bot_player_indices.has(player_index):
+		return
+	_temporary_bot_player_indices.erase(player_index)
+	_local_bot_player_indices.erase(player_index)
+	if match_host != null:
+		match_host.set_automatic_undo_approver_indices(_local_bot_player_indices)
 
 
 func _get_snapshot_reconnecting_player_indices() -> Array[int]:
@@ -553,17 +623,27 @@ func _rebuild_host_lobby_seats() -> void:
 	for player_index in PLAYER_COUNT:
 		var is_host_player := player_index == HOST_PLAYER_INDEX
 		var is_local_bot := _local_bot_player_indices.has(player_index)
+		var is_temporary_bot := _temporary_bot_player_indices.has(player_index)
 		var seat_reserved_for_reconnect := _player_index_by_steam_id.values().has(player_index)
 		var is_reconnecting := _reconnecting_player_indices.has(player_index)
 		var is_assigned := is_host_player or is_local_bot or _connected_client_peers_by_player.has(player_index) or seat_reserved_for_reconnect
 		var is_confirmed := is_host_player or is_local_bot or _confirmed_client_peers_by_player.has(player_index)
 		var bot_number := _local_bot_player_indices.find(player_index) + 1
-		var display_name := "Хост" if is_host_player else ("Бот %d" % bot_number if is_local_bot else "Игрок %d" % (player_index + 1))
+		var display_name := (
+			"Хост"
+			if is_host_player
+			else "Игрок %d · временный бот" % (player_index + 1)
+			if is_temporary_bot
+			else "Бот %d" % bot_number
+			if is_local_bot
+			else "Игрок %d" % (player_index + 1)
+		)
 		lobby_seats.append({
 			"player_index": player_index,
 			"display_name": display_name,
 			"is_host": is_host_player,
 			"is_bot": is_local_bot,
+			"is_temporary_bot": is_temporary_bot,
 			"assigned": is_assigned,
 			"confirmed": is_confirmed,
 			"reconnecting": is_reconnecting
@@ -571,7 +651,7 @@ func _rebuild_host_lobby_seats() -> void:
 
 
 func _process_local_bots(delta: float) -> void:
-	if not _fill_empty_seats_with_bots or not lobby_round_started or match_host == null or is_match_paused_for_reconnect() or match_host.is_undo_vote_pending():
+	if _local_bot_player_indices.is_empty() or not lobby_round_started or match_host == null or is_match_paused_for_reconnect() or match_host.is_undo_vote_pending():
 		return
 
 	_bot_action_delay_seconds = maxf(0.0, _bot_action_delay_seconds - delta)
@@ -641,10 +721,32 @@ func _submit_local_bot_action(player_index: int) -> bool:
 
 
 func _get_local_bot_bid(player_index: int, round: Round) -> int:
+	var valid_bids: Array[int] = []
 	for bid in range(round.cards_per_player + 1):
 		if round.can_place_bid(player_index, bid):
-			return bid
-	return -1
+			valid_bids.append(bid)
+	if valid_bids.is_empty():
+		return -1
+	if _bot_difficulty == BOT_DIFFICULTY_EASY:
+		return valid_bids[0]
+
+	var player: Player = match_host.game.players[player_index]
+	var estimate := 0
+	for card in player.hand:
+		if card.is_joker:
+			estimate += 1
+		elif card.suit == round.trump and card.rank >= Card.Rank.TEN:
+			estimate += 1
+		elif card.rank == Card.Rank.ACE:
+			estimate += 1
+		elif _bot_difficulty == BOT_DIFFICULTY_HARD and card.rank == Card.Rank.KING:
+			estimate += 1
+	estimate = clampi(estimate, 0, round.cards_per_player)
+	var selected_bid := valid_bids[0]
+	for valid_bid in valid_bids:
+		if absi(valid_bid - estimate) < absi(selected_bid - estimate):
+			selected_bid = valid_bid
+	return selected_bid
 
 
 func _get_local_bot_card_payload(player_index: int) -> Dictionary:
@@ -652,12 +754,24 @@ func _get_local_bot_card_payload(player_index: int) -> Dictionary:
 		return {}
 
 	var player: Player = match_host.game.players[player_index]
+	var playable_regular_cards: Array[Card] = []
 	for card in player.hand:
 		if card.is_joker:
 			continue
 		if match_host.game.active_trick != null and not match_host.game.active_trick.can_play_card(player, card):
 			continue
-		return {"card_key": _get_card_key(card)}
+		playable_regular_cards.append(card)
+
+	if not playable_regular_cards.is_empty():
+		var selected_card: Card = playable_regular_cards[0]
+		if _bot_difficulty != BOT_DIFFICULTY_EASY:
+			var needs_trick := player.bid < 0 or player.tricks_taken < player.bid
+			for card in playable_regular_cards:
+				var selected_strength := _get_local_bot_card_strength(selected_card)
+				var card_strength := _get_local_bot_card_strength(card)
+				if (needs_trick and card_strength > selected_strength) or (not needs_trick and card_strength < selected_strength):
+					selected_card = card
+		return {"card_key": _get_card_key(selected_card)}
 
 	for card in player.hand:
 		if not card.is_joker:
@@ -672,3 +786,10 @@ func _get_local_bot_card_payload(player_index: int) -> Dictionary:
 			"forced_card_rank": Trick.ForcedCardRank.NONE
 		}
 	return {}
+
+
+func _get_local_bot_card_strength(card: Card) -> int:
+	var strength := int(card.rank)
+	if match_host != null and match_host.game.current_round != null and card.suit == match_host.game.current_round.trump:
+		strength += Card.Rank.ACE + 1
+	return strength
