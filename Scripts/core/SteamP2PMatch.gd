@@ -36,7 +36,12 @@ var _outbound_flush_pending := false
 var _steam_id_by_peer_id: Dictionary = {}
 var _player_index_by_steam_id: Dictionary = {}
 var _reconnecting_player_indices: Dictionary = {}
+var _bot_random := RandomNumberGenerator.new()
 var _local_display_name := "Игрок"
+
+
+func _init() -> void:
+	_bot_random.randomize()
 
 
 func start_first_real_round() -> bool:
@@ -761,21 +766,24 @@ func _get_local_bot_bid(player_index: int, round: Round) -> int:
 			valid_bids.append(bid)
 	if valid_bids.is_empty():
 		return -1
+
+	if round.round_type == Round.RoundType.DARK:
+		var valid_dark_bids: Array[int] = []
+		for valid_bid in valid_bids:
+			if valid_bid >= 2 and valid_bid <= 4:
+				valid_dark_bids.append(valid_bid)
+		if not valid_dark_bids.is_empty():
+			if _bot_difficulty == BOT_DIFFICULTY_EASY:
+				return valid_dark_bids[0]
+			return valid_dark_bids[_bot_random.randi_range(0, valid_dark_bids.size() - 1)]
+
 	if _bot_difficulty == BOT_DIFFICULTY_EASY:
 		return valid_bids[0]
 
 	var player: Player = match_host.game.players[player_index]
-	var estimate := 0
-	for card in player.hand:
-		if card.is_joker:
-			estimate += 1
-		elif card.suit == round.trump and card.rank >= Card.Rank.TEN:
-			estimate += 1
-		elif card.rank == Card.Rank.ACE:
-			estimate += 1
-		elif _bot_difficulty == BOT_DIFFICULTY_HARD and card.rank == Card.Rank.KING:
-			estimate += 1
-	estimate = clampi(estimate, 0, round.cards_per_player)
+	var estimate := _estimate_local_bot_bid(player, round)
+	if _bot_difficulty == BOT_DIFFICULTY_HARD:
+		estimate = _estimate_hard_local_bot_bid(player, round, estimate)
 	var selected_bid := valid_bids[0]
 	for valid_bid in valid_bids:
 		if absi(valid_bid - estimate) < absi(selected_bid - estimate):
@@ -783,47 +791,265 @@ func _get_local_bot_bid(player_index: int, round: Round) -> int:
 	return selected_bid
 
 
+func _estimate_local_bot_bid(player: Player, round: Round) -> int:
+	var estimate := 0
+	var trump_cards := 0
+	var high_non_trump_cards := 0
+
+	for card in player.hand:
+		if card.is_joker:
+			estimate += 1
+			continue
+		if round.trump != Round.TrumpSuit.NONE and card.suit == round.trump:
+			trump_cards += 1
+			if card.rank >= Card.Rank.TEN:
+				estimate += 1
+		elif card.rank == Card.Rank.ACE or card.rank == Card.Rank.KING:
+			high_non_trump_cards += 1
+
+	estimate += floori(float(high_non_trump_cards) / 2.0)
+	if trump_cards >= 3 and estimate == 0:
+		estimate = 1
+	return clampi(estimate, 0, round.cards_per_player)
+
+
+func _estimate_hard_local_bot_bid(player: Player, round: Round, base_estimate: int) -> int:
+	var estimate := base_estimate
+	var aces := 0
+	var high_trumps := 0
+
+	for card in player.hand:
+		if card.is_joker:
+			continue
+		if card.rank == Card.Rank.ACE:
+			aces += 1
+		if round.trump != Round.TrumpSuit.NONE and card.suit == round.trump and card.rank >= Card.Rank.JACK:
+			high_trumps += 1
+
+	if aces >= 2:
+		estimate += 1
+	if high_trumps >= 2:
+		estimate += 1
+	return clampi(estimate, 0, round.cards_per_player)
+
+
 func _get_local_bot_card_payload(player_index: int) -> Dictionary:
 	if match_host == null or player_index < 0 or player_index >= match_host.game.players.size():
 		return {}
 
 	var player: Player = match_host.game.players[player_index]
-	var playable_regular_cards: Array[Card] = []
+	var legal_cards: Array[Card] = []
 	for card in player.hand:
-		if card.is_joker:
-			continue
 		if match_host.game.active_trick != null and not match_host.game.active_trick.can_play_card(player, card):
 			continue
-		playable_regular_cards.append(card)
+		legal_cards.append(card)
+	if legal_cards.is_empty():
+		return {}
 
-	if not playable_regular_cards.is_empty():
-		var selected_card: Card = playable_regular_cards[0]
-		if _bot_difficulty != BOT_DIFFICULTY_EASY:
-			var needs_trick := player.bid < 0 or player.tricks_taken < player.bid
-			for card in playable_regular_cards:
-				var selected_strength := _get_local_bot_card_strength(selected_card)
-				var card_strength := _get_local_bot_card_strength(card)
-				if (needs_trick and card_strength > selected_strength) or (not needs_trick and card_strength < selected_strength):
-					selected_card = card
+	var selected_card := _choose_local_bot_card(player, legal_cards)
+	if selected_card == null:
+		return {}
+	if not selected_card.is_joker:
 		return {"card_key": _get_card_key(selected_card)}
 
-	for card in player.hand:
+	var joker_mode := _choose_local_bot_joker_mode(player)
+	var is_leading := match_host.game.active_trick == null
+	return {
+		"card_key": "joker",
+		"joker_mode": joker_mode,
+		"declared_suit": _choose_local_bot_joker_suit(player, joker_mode == Trick.JokerMode.NORMAL_CARD_WINS) if is_leading else -1,
+		"forced_card_rank": Trick.ForcedCardRank.NONE
+	}
+
+
+func _choose_local_bot_card(player: Player, legal_cards: Array[Card]) -> Card:
+	if _bot_difficulty == BOT_DIFFICULTY_EASY:
+		return legal_cards[_bot_random.randi_range(0, legal_cards.size() - 1)]
+	if _bot_difficulty == BOT_DIFFICULTY_HARD:
+		return _choose_hard_local_bot_card(player, legal_cards)
+
+	var wants_trick := _local_bot_wants_trick(player)
+	if match_host.game.active_trick == null:
+		if wants_trick:
+			var leading_joker := _get_local_bot_joker(legal_cards)
+			if leading_joker != null:
+				return leading_joker
+			return _select_local_bot_card_by_strength(legal_cards, true)
+		var low_lead_card := _select_local_bot_non_joker_by_strength(legal_cards, false)
+		return low_lead_card if low_lead_card != null else legal_cards[0]
+
+	if wants_trick:
+		var weakest_winner := _select_local_bot_weakest_winner(legal_cards)
+		if weakest_winner != null:
+			return weakest_winner
+		var taking_joker := _get_local_bot_joker(legal_cards)
+		if taking_joker != null:
+			return taking_joker
+		var weakest_loser := _select_local_bot_weakest_loser(legal_cards)
+		if weakest_loser != null:
+			return weakest_loser
+		return _select_local_bot_card_by_strength(legal_cards, true)
+
+	if _should_local_bot_shed_high_card_in_misere(legal_cards):
+		return _select_local_bot_non_joker_by_strength(legal_cards, true)
+	var discarding_joker := _get_local_bot_joker(legal_cards)
+	if discarding_joker != null:
+		return discarding_joker
+	return _select_local_bot_card_by_strength(legal_cards, false)
+
+
+func _choose_hard_local_bot_card(player: Player, legal_cards: Array[Card]) -> Card:
+	var wants_trick := _local_bot_wants_trick(player)
+	if match_host.game.active_trick == null:
+		var regular_lead := _select_local_bot_non_joker_by_strength(legal_cards, wants_trick)
+		return regular_lead if regular_lead != null else _get_local_bot_joker(legal_cards)
+
+	if wants_trick:
+		var weakest_winner := _select_local_bot_weakest_winner(legal_cards)
+		if weakest_winner != null:
+			return weakest_winner
+		var taking_joker := _get_local_bot_joker(legal_cards)
+		if taking_joker != null:
+			return taking_joker
+		var weakest_loser := _select_local_bot_weakest_loser(legal_cards)
+		if weakest_loser != null:
+			return weakest_loser
+		return _select_local_bot_card_by_strength(legal_cards, true)
+
+	if _should_local_bot_shed_high_card_in_misere(legal_cards):
+		return _select_local_bot_non_joker_by_strength(legal_cards, true)
+	var weakest_loser := _select_local_bot_weakest_loser(legal_cards)
+	if weakest_loser != null:
+		return weakest_loser
+	var discarding_joker := _get_local_bot_joker(legal_cards)
+	if discarding_joker != null:
+		return discarding_joker
+	return _select_local_bot_card_by_strength(legal_cards, false)
+
+
+func _local_bot_wants_trick(player: Player) -> bool:
+	match match_host.game.current_round.round_type:
+		Round.RoundType.GOLDEN:
+			return true
+		Round.RoundType.MISERE:
+			return false
+	return player.bid > player.tricks_taken
+
+
+func _select_local_bot_weakest_winner(legal_cards: Array[Card]) -> Card:
+	var winning_cards: Array[Card] = []
+	for card in legal_cards:
+		if not card.is_joker and _would_local_bot_card_win(card):
+			winning_cards.append(card)
+	return _select_local_bot_card_by_strength(winning_cards, false)
+
+
+func _select_local_bot_weakest_loser(legal_cards: Array[Card]) -> Card:
+	var losing_cards: Array[Card] = []
+	for card in legal_cards:
+		if not card.is_joker and not _would_local_bot_card_win(card):
+			losing_cards.append(card)
+	return _select_local_bot_card_by_strength(losing_cards, false)
+
+
+func _would_local_bot_card_win(card: Card) -> bool:
+	if card.is_joker or match_host.game.active_trick == null:
+		return false
+
+	var active_trick: Trick = match_host.game.active_trick
+	var simulated_trick := Trick.new()
+	simulated_trick.player_count = active_trick.played_cards.size() + 1
+	simulated_trick.trump = active_trick.trump
+	simulated_trick.lead_suit = active_trick.lead_suit
+	simulated_trick.joker_mode = active_trick.joker_mode
+	simulated_trick.declared_suit = active_trick.declared_suit
+	simulated_trick.forced_card_rank = active_trick.forced_card_rank
+	simulated_trick.played_cards.assign(active_trick.played_cards)
+	simulated_trick.played_by.assign(active_trick.played_by)
+	simulated_trick.played_cards.append(card)
+	simulated_trick.played_by.append(-1)
+	return simulated_trick.get_winner_index() == -1
+
+
+func _should_local_bot_shed_high_card_in_misere(legal_cards: Array[Card]) -> bool:
+	if (
+		match_host.game.current_round.round_type != Round.RoundType.MISERE
+		or match_host.game.active_trick == null
+		or match_host.game.active_trick.played_cards.size() != match_host.game.players.size() - 1
+		or _get_local_bot_joker(legal_cards) != null
+	):
+		return false
+
+	var has_regular_card := false
+	for card in legal_cards:
+		if card.is_joker:
+			continue
+		has_regular_card = true
+		if not _would_local_bot_card_win(card):
+			return false
+	return has_regular_card
+
+
+func _get_local_bot_joker(cards: Array[Card]) -> Card:
+	for card in cards:
+		if card.is_joker:
+			return card
+	return null
+
+
+func _select_local_bot_non_joker_by_strength(cards: Array[Card], choose_highest: bool) -> Card:
+	var regular_cards: Array[Card] = []
+	for card in cards:
 		if not card.is_joker:
+			regular_cards.append(card)
+	return _select_local_bot_card_by_strength(regular_cards, choose_highest)
+
+
+func _select_local_bot_card_by_strength(cards: Array[Card], choose_highest: bool) -> Card:
+	var selected_card: Card
+	for card in cards:
+		if selected_card == null:
+			selected_card = card
 			continue
-		if match_host.game.active_trick != null and not match_host.game.active_trick.can_play_card(player, card):
-			continue
-		var is_leading := match_host.game.active_trick == null
-		return {
-			"card_key": "joker",
-			"joker_mode": Trick.JokerMode.JOKER_WINS,
-			"declared_suit": Card.Suit.CLUBS if is_leading else -1,
-			"forced_card_rank": Trick.ForcedCardRank.NONE
-		}
-	return {}
+		var card_strength := _get_local_bot_card_strength(card)
+		var selected_strength := _get_local_bot_card_strength(selected_card)
+		var replaces_selected := card_strength > selected_strength if choose_highest else card_strength < selected_strength
+		if replaces_selected:
+			selected_card = card
+	return selected_card
 
 
 func _get_local_bot_card_strength(card: Card) -> int:
+	if card.is_joker:
+		return 100
 	var strength := int(card.rank)
-	if match_host != null and match_host.game.current_round != null and card.suit == match_host.game.current_round.trump:
-		strength += Card.Rank.ACE + 1
+	if match_host.game.current_round.trump != Round.TrumpSuit.NONE and card.suit == match_host.game.current_round.trump:
+		strength += 20
+	if match_host.game.active_trick != null and card.suit == match_host.game.active_trick.lead_suit:
+		strength += 10
 	return strength
+
+
+func _choose_local_bot_joker_mode(player: Player) -> Trick.JokerMode:
+	if _bot_difficulty == BOT_DIFFICULTY_EASY:
+		return Trick.JokerMode.JOKER_WINS if _bot_random.randi_range(0, 1) == 0 else Trick.JokerMode.NORMAL_CARD_WINS
+	return Trick.JokerMode.JOKER_WINS if _local_bot_wants_trick(player) else Trick.JokerMode.NORMAL_CARD_WINS
+
+
+func _choose_local_bot_joker_suit(player: Player, prefer_rare_suit: bool) -> int:
+	if _bot_difficulty == BOT_DIFFICULTY_EASY:
+		return _bot_random.randi_range(Card.Suit.CLUBS, Card.Suit.DIAMONDS)
+
+	var suit_counts: Array[int] = [0, 0, 0, 0]
+	for card in player.hand:
+		if not card.is_joker:
+			suit_counts[card.suit] += 1
+
+	var selected_suit := Card.Suit.CLUBS
+	for suit in Card.Suit.values():
+		if prefer_rare_suit:
+			if suit_counts[suit] < suit_counts[selected_suit]:
+				selected_suit = suit
+		elif suit_counts[suit] > suit_counts[selected_suit]:
+			selected_suit = suit
+	return selected_suit

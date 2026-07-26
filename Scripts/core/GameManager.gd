@@ -207,6 +207,7 @@ var avatar_labels: Array[Label] = []
 var avatar_turn_labels: Array[Label] = []
 var avatar_turn_glows: Array[ColorRect] = []
 var turn_timer_indicator: TurnTimerIndicator
+var social_controls_container: HBoxContainer
 var reaction_toggle_button: Button
 var reaction_picker: PanelContainer
 var reaction_bubble: PanelContainer
@@ -477,6 +478,7 @@ func _ready() -> void:
 	_create_bot_card_backs()
 	_create_deck_visual()
 	_create_table_markers()
+	_create_social_controls_container()
 	_create_reaction_controls()
 	_create_sticker_controls()
 	_create_soundpad_controls()
@@ -8500,20 +8502,42 @@ func _create_table_markers() -> void:
 	players_container.add_child(lead_marker)
 
 
+func _create_social_controls_container() -> void:
+	social_controls_container = HBoxContainer.new()
+	social_controls_container.name = "SocialControls"
+	social_controls_container.alignment = BoxContainer.ALIGNMENT_CENTER
+	social_controls_container.add_theme_constant_override("separation", 6)
+	social_controls_container.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	social_controls_container.z_index = 30
+	_set_control_layout(
+		social_controls_container,
+		0.5,
+		1.0,
+		0.5,
+		1.0,
+		112.0,
+		-380.0,
+		316.0,
+		-330.0
+	)
+	players_container.add_child(social_controls_container)
+
+
 func _create_reaction_controls() -> void:
 	reaction_toggle_button = Button.new()
 	reaction_toggle_button.text = "☺"
 	reaction_toggle_button.tooltip_text = "Реакции за столом"
 	reaction_toggle_button.visible = false
 	reaction_toggle_button.z_index = 30
+	reaction_toggle_button.mouse_filter = Control.MOUSE_FILTER_STOP
+	reaction_toggle_button.custom_minimum_size = Vector2(64.0, 50.0)
 	reaction_toggle_button.add_theme_font_size_override("font_size", 17)
 	reaction_toggle_button.add_theme_stylebox_override(
 		"normal",
 		_create_flat_style(Color(0.035, 0.12, 0.075, 0.98), Color(0.88, 0.68, 0.24, 1.0), 2, 8, 3)
 	)
-	_set_control_layout(reaction_toggle_button, 0.5, 1.0, 0.5, 1.0, 112.0, -380.0, 176.0, -330.0)
 	reaction_toggle_button.pressed.connect(_on_reaction_toggle_pressed)
-	players_container.add_child(reaction_toggle_button)
+	social_controls_container.add_child(reaction_toggle_button)
 
 	reaction_picker = PanelContainer.new()
 	reaction_picker.visible = false
@@ -8631,14 +8655,15 @@ func _create_sticker_controls() -> void:
 	sticker_toggle_button.tooltip_text = "Стикеры игрокам"
 	sticker_toggle_button.visible = false
 	sticker_toggle_button.z_index = 30
+	sticker_toggle_button.mouse_filter = Control.MOUSE_FILTER_STOP
+	sticker_toggle_button.custom_minimum_size = Vector2(64.0, 50.0)
 	sticker_toggle_button.add_theme_font_size_override("font_size", 16)
 	sticker_toggle_button.add_theme_stylebox_override(
 		"normal",
 		_create_flat_style(Color(0.08, 0.085, 0.15, 0.98), Color(0.65, 0.54, 0.92, 1.0), 2, 8, 3)
 	)
-	_set_control_layout(sticker_toggle_button, 0.5, 1.0, 0.5, 1.0, 182.0, -380.0, 246.0, -330.0)
 	sticker_toggle_button.pressed.connect(_on_sticker_toggle_pressed)
-	players_container.add_child(sticker_toggle_button)
+	social_controls_container.add_child(sticker_toggle_button)
 
 	sticker_picker = PanelContainer.new()
 	sticker_picker.visible = false
@@ -8948,14 +8973,15 @@ func _create_soundpad_controls() -> void:
 	soundpad_toggle_button.tooltip_text = "Саундпад"
 	soundpad_toggle_button.visible = false
 	soundpad_toggle_button.z_index = 30
+	soundpad_toggle_button.mouse_filter = Control.MOUSE_FILTER_STOP
+	soundpad_toggle_button.custom_minimum_size = Vector2(64.0, 50.0)
 	soundpad_toggle_button.add_theme_font_size_override("font_size", 16)
 	soundpad_toggle_button.add_theme_stylebox_override(
 		"normal",
 		_create_flat_style(Color(0.1, 0.07, 0.12, 0.98), Color(0.89, 0.51, 0.82, 1.0), 2, 8, 3)
 	)
-	_set_control_layout(soundpad_toggle_button, 0.5, 1.0, 0.5, 1.0, 252.0, -380.0, 316.0, -330.0)
 	soundpad_toggle_button.pressed.connect(_on_soundpad_toggle_pressed)
-	players_container.add_child(soundpad_toggle_button)
+	social_controls_container.add_child(soundpad_toggle_button)
 
 	soundpad_picker = PanelContainer.new()
 	soundpad_picker.visible = false
@@ -9528,11 +9554,11 @@ func _place_table_marker(marker: PanelContainer, player_index: int, is_dealer: b
 func _place_player_panel(panel: PanelContainer, player_index: int) -> void:
 	match player_index:
 		HUMAN_PLAYER_INDEX:
-			_set_control_layout(panel, 0.5, 1.0, 0.5, 1.0, -112.0, -406.0, 112.0, -304.0)
+			_set_control_layout(panel, 0.5, 1.0, 0.5, 1.0, -107.0, -406.0, 105.0, -304.0)
 		1:
 			_set_control_layout(panel, 0.0, 0.0, 0.0, 0.0, 298.0, 348.0, 500.0, 450.0)
 		2:
-			_set_control_layout(panel, 0.5, 0.0, 0.5, 0.0, -112.0, 72.0, 112.0, 174.0)
+			_set_control_layout(panel, 0.5, 0.0, 0.5, 0.0, -106.0, 72.0, 106.0, 174.0)
 		3:
 			_set_control_layout(panel, 1.0, 0.0, 1.0, 0.0, -500.0, 348.0, -298.0, 450.0)
 
@@ -9540,7 +9566,7 @@ func _place_player_panel(panel: PanelContainer, player_index: int) -> void:
 func _place_trick_slot(panel: Control, player_index: int) -> void:
 	match player_index:
 		HUMAN_PLAYER_INDEX:
-			_set_control_layout(panel, 0.5, 0.0, 0.5, 0.0, -54.0, 455.0, 54.0, 587.0)
+			_set_control_layout(panel, 0.5, 0.0, 0.5, 0.0, -54.0, 430.0, 54.0, 562.0)
 		1:
 			_set_control_layout(panel, 0.5, 0.0, 0.5, 0.0, -265.0, 365.0, -157.0, 497.0)
 		2:

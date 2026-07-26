@@ -1,0 +1,19 @@
+[remap]
+
+importer="mp3"
+type="AudioStreamMP3"
+uid="uid://biw6r5mt1v86w"
+path="res://.godot/imported/20.31 Годжу Сатору прибув.mp3-3d815ad98b346d64b91fbae7fa244be6.mp3str"
+
+[deps]
+
+source_file="res://Assets/Soundboard/ua/20.31 Годжу Сатору прибув.mp3"
+dest_files=["res://.godot/imported/20.31 Годжу Сатору прибув.mp3-3d815ad98b346d64b91fbae7fa244be6.mp3str"]
+
+[params]
+
+loop=false
+loop_offset=0
+bpm=0
+beat_count=0
+bar_beats=4

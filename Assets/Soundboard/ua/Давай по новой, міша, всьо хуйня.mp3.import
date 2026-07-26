@@ -1,0 +1,19 @@
+[remap]
+
+importer="mp3"
+type="AudioStreamMP3"
+uid="uid://degfjbvkcd5n6"
+path="res://.godot/imported/Давай по новой, міша, всьо хуйня.mp3-af9176f441947836aa35dc8c067393ea.mp3str"
+
+[deps]
+
+source_file="res://Assets/Soundboard/ua/Давай по новой, міша, всьо хуйня.mp3"
+dest_files=["res://.godot/imported/Давай по новой, міша, всьо хуйня.mp3-af9176f441947836aa35dc8c067393ea.mp3str"]
+
+[params]
+
+loop=false
+loop_offset=0
+bpm=0
+beat_count=0
+bar_beats=4

@@ -4,3 +4,7 @@
 /Builds/
 /Godot/
 steam_appid.txt
+*.gd.uid
+/ProjectJokerDebug*.exe
+/ProjectJokerDebug*.pck
+/Assets/Soundboard/**/*.m4a

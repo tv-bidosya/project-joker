@@ -1,0 +1,19 @@
+[remap]
+
+importer="mp3"
+type="AudioStreamMP3"
+uid="uid://7uqk5u2hb7j0"
+path="res://.godot/imported/Бачиш по всьому світу розкидано так багато огидних людей.mp3-8cab8f63193b5cfc2cc1ac08c6f27566.mp3str"
+
+[deps]
+
+source_file="res://Assets/Soundboard/ua/Бачиш по всьому світу розкидано так багато огидних людей.mp3"
+dest_files=["res://.godot/imported/Бачиш по всьому світу розкидано так багато огидних людей.mp3-8cab8f63193b5cfc2cc1ac08c6f27566.mp3str"]
+
+[params]
+
+loop=false
+loop_offset=0
+bpm=0
+beat_count=0
+bar_beats=4
