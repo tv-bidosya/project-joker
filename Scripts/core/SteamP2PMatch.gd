@@ -11,6 +11,8 @@ const MatchCommand = preload("res://Scripts/core/MatchCommand.gd")
 
 
 const BOT_ACTION_DELAY_SECONDS := 0.65
+const HUMAN_AUTO_TURN_INACTIVITY_SECONDS := 120.0
+const HUMAN_AUTO_TURN_COUNTDOWN_SECONDS := 60.0
 const BOT_DIFFICULTY_EASY := 0
 const BOT_DIFFICULTY_NORMAL := 1
 const BOT_DIFFICULTY_HARD := 2
@@ -28,6 +30,9 @@ var _temporary_bot_player_indices: Dictionary = {}
 var _bot_difficulty := BOT_DIFFICULTY_NORMAL
 var _expected_remote_player_count := 0
 var _bot_action_delay_seconds := 0.0
+var _human_auto_turn_decision_key := ""
+var _human_auto_turn_elapsed_seconds := 0.0
+var _human_auto_turn_enabled_by_player: Dictionary = {}
 var _join_request_attempt_count := 0
 var _steam_peer_connection_reported := false
 var _connected_remote_peer_ids: Dictionary = {}
@@ -38,6 +43,7 @@ var _player_index_by_steam_id: Dictionary = {}
 var _reconnecting_player_indices: Dictionary = {}
 var _bot_random := RandomNumberGenerator.new()
 var _local_display_name := "Игрок"
+var _local_auto_turn_enabled := false
 
 
 func _init() -> void:
@@ -62,10 +68,12 @@ func start_from_current_lobby(
 	bridge: RefCounted,
 	fill_empty_seats_with_bots: bool = false,
 	bot_difficulty: int = BOT_DIFFICULTY_NORMAL,
-	local_display_name: String = "Игрок"
+	local_display_name: String = "Игрок",
+	local_auto_turn_enabled: bool = false
 ) -> bool:
 	stop()
 	steam_bridge = bridge
+	_local_auto_turn_enabled = local_auto_turn_enabled
 	_local_display_name = _sanitize_network_display_name(local_display_name)
 	if _local_display_name.is_empty():
 		_local_display_name = "Игрок"
@@ -104,6 +112,7 @@ func start_from_current_lobby(
 	_transport_active = true
 	if local_steam_id == host_steam_id:
 		_start_as_host()
+		_set_player_auto_turn_enabled(HOST_PLAYER_INDEX, _local_auto_turn_enabled, false)
 	else:
 		_start_as_client()
 	return _transport_active
@@ -124,6 +133,9 @@ func stop() -> void:
 	_bot_difficulty = BOT_DIFFICULTY_NORMAL
 	_expected_remote_player_count = 0
 	_bot_action_delay_seconds = 0.0
+	_human_auto_turn_decision_key = ""
+	_human_auto_turn_elapsed_seconds = 0.0
+	_human_auto_turn_enabled_by_player.clear()
 	_join_request_attempt_count = 0
 	_steam_peer_connection_reported = false
 	_connected_remote_peer_ids.clear()
@@ -133,6 +145,7 @@ func stop() -> void:
 	_steam_peer_wait_seconds = 0.0
 	_outbound_flush_pending = false
 	_local_display_name = "Игрок"
+	_local_auto_turn_enabled = false
 	steam_bridge = null
 	super.stop()
 
@@ -181,6 +194,21 @@ func update_local_display_name(display_name: String) -> bool:
 	return super.update_local_display_name(sanitized_name)
 
 
+func set_local_auto_turn_enabled(enabled: bool) -> bool:
+	_local_auto_turn_enabled = enabled
+	if is_host():
+		_set_player_auto_turn_enabled(HOST_PLAYER_INDEX, enabled, false)
+		return true
+	if not is_client() or client_player_index < FIRST_CLIENT_PLAYER_INDEX:
+		return false
+	client_snapshot["recipient_auto_turn_enabled"] = enabled
+	return _send_message({
+		"type": "auto_turn_preference",
+		"player_index": client_player_index,
+		"enabled": enabled
+	}, 1)
+
+
 func _process(delta: float) -> void:
 	if not is_running() or steam_bridge == null or steam_multiplayer_peer == null:
 		return
@@ -206,6 +234,7 @@ func _process(delta: float) -> void:
 
 	if mode == Mode.HOST:
 		_process_local_bots(delta)
+		_process_human_auto_turn(delta)
 
 
 func is_lobby_full() -> bool:
@@ -270,6 +299,23 @@ func _handle_host_join_request(message: Dictionary, sender_peer_id: int) -> void
 		return
 	_set_status("Steam P2P-хост получил запрос места через SteamMultiplayerPeer.")
 	super._handle_host_join_request(message, sender_peer_id)
+	var player_index := int(_connected_player_by_peer.get(sender_peer_id, -1))
+	if player_index >= FIRST_CLIENT_PLAYER_INDEX:
+		_set_player_auto_turn_enabled(player_index, bool(message.get("auto_turn_enabled", false)), false)
+
+
+func _handle_message(message: Dictionary, sender_peer_id: int) -> void:
+	if mode == Mode.HOST and str(message.get("type", "")) == "auto_turn_preference":
+		_handle_host_auto_turn_preference(message, sender_peer_id)
+		return
+	super._handle_message(message, sender_peer_id)
+
+
+func _handle_host_auto_turn_preference(message: Dictionary, sender_peer_id: int) -> void:
+	var player_index := int(_connected_player_by_peer.get(sender_peer_id, -1))
+	if player_index < FIRST_CLIENT_PLAYER_INDEX or int(message.get("player_index", -1)) != player_index:
+		return
+	_set_player_auto_turn_enabled(player_index, bool(message.get("enabled", false)), true)
 
 
 func _handle_host_seat_ack(message: Dictionary, sender_peer_id: int) -> void:
@@ -329,6 +375,11 @@ func _append_reconnect_state(snapshot: Dictionary) -> Dictionary:
 		return snapshot
 	snapshot["reconnecting_player_indices"] = _get_reconnecting_player_indices()
 	snapshot["temporary_bot_player_indices"] = _get_temporary_bot_player_indices()
+	var recipient_player_index := int(snapshot.get("recipient_player_index", -1))
+	if is_host():
+		snapshot["recipient_auto_turn_enabled"] = _human_auto_turn_enabled_by_player.has(recipient_player_index)
+	elif not snapshot.has("recipient_auto_turn_enabled"):
+		snapshot["recipient_auto_turn_enabled"] = _local_auto_turn_enabled
 	return snapshot
 
 
@@ -486,7 +537,8 @@ func _process_client_join_request(delta: float) -> void:
 		"type": "join_request",
 		"protocol_version": PROTOCOL_VERSION,
 		"requested_player_index": client_requested_player_index,
-		"display_name": _local_display_name
+		"display_name": _local_display_name,
+		"auto_turn_enabled": _local_auto_turn_enabled
 	}, 1)
 	_join_request_attempt_count += 1
 	if join_request_was_sent:
@@ -719,7 +771,94 @@ func _get_active_local_bot_player_index() -> int:
 	return -1
 
 
-func _submit_local_bot_action(player_index: int) -> bool:
+func _process_human_auto_turn(delta: float) -> void:
+	var player_index := _get_active_human_player_index()
+	if player_index < 0:
+		_reset_human_auto_turn()
+		return
+
+	var decision_key := _get_human_auto_turn_decision_key(player_index)
+	if decision_key != _human_auto_turn_decision_key:
+		_human_auto_turn_decision_key = decision_key
+		_human_auto_turn_elapsed_seconds = 0.0
+		return
+
+	_human_auto_turn_elapsed_seconds += delta
+	var auto_turn_is_enabled := _human_auto_turn_enabled_by_player.has(player_index)
+	var timeout_seconds := HUMAN_AUTO_TURN_COUNTDOWN_SECONDS if auto_turn_is_enabled else HUMAN_AUTO_TURN_INACTIVITY_SECONDS
+	if _human_auto_turn_elapsed_seconds < timeout_seconds:
+		return
+
+	if not auto_turn_is_enabled:
+		_set_player_auto_turn_enabled(player_index, true, true)
+		_human_auto_turn_decision_key = decision_key
+		return
+
+	if _submit_local_bot_action(player_index, true):
+		_reset_human_auto_turn()
+
+
+func _get_active_human_player_index() -> int:
+	if (
+		not is_host()
+		or not lobby_round_started
+		or match_host == null
+		or match_host.game.current_round == null
+		or is_match_paused_for_reconnect()
+		or match_host.is_undo_vote_pending()
+	):
+		return -1
+
+	var round: Round = match_host.game.current_round
+	var player_index := -1
+	if round.state == Round.State.BIDDING:
+		player_index = round.current_player_index
+	elif round.state == Round.State.PLAYING:
+		player_index = _get_host_current_playing_player_index()
+	if player_index < 0:
+		return -1
+
+	var automatic_players := _get_automatic_first_turn_roll_player_indices()
+	return -1 if automatic_players.has(player_index) else player_index
+
+
+func _get_human_auto_turn_decision_key(player_index: int) -> String:
+	var round: Round = match_host.game.current_round
+	var active_trick_size: int = match_host.game.active_trick.played_cards.size() if match_host.game.active_trick != null else 0
+	return "%d:%d:%d:%d:%d:%d" % [
+		match_host.game.round_number,
+		round.state,
+		player_index,
+		round.bids_made,
+		round.tricks_played,
+		active_trick_size
+	]
+
+
+func _reset_human_auto_turn() -> void:
+	_human_auto_turn_decision_key = ""
+	_human_auto_turn_elapsed_seconds = 0.0
+
+
+func _set_player_auto_turn_enabled(player_index: int, enabled: bool, announce: bool) -> void:
+	if player_index < 0 or player_index >= PLAYER_COUNT:
+		return
+	if enabled:
+		_human_auto_turn_enabled_by_player[player_index] = true
+	else:
+		_human_auto_turn_enabled_by_player.erase(player_index)
+	_reset_human_auto_turn()
+	if lobby_round_started:
+		_queue_player_snapshots_for_delivery()
+	if announce and match_host != null and player_index < match_host.game.players.size():
+		var player_name: String = str(match_host.game.players[player_index].display_name)
+		if enabled:
+			_set_status("У игрока %s включён автоход на 60 секунд." % player_name)
+		else:
+			_set_status("Игрок %s отключил автоход. Следующая AFK-проверка начнётся с 2 минут." % player_name)
+
+
+func _submit_local_bot_action(player_index: int, is_human_timeout: bool = false) -> bool:
 	if match_host == null or match_host.game.current_round == null:
 		return false
 
@@ -755,7 +894,11 @@ func _submit_local_bot_action(player_index: int) -> bool:
 
 	_queue_player_snapshots_for_delivery()
 	var action_text := "заказал %d" % int(command.payload.get("bid", 0)) if command.type == MatchCommand.Type.BID else "сыграл карту"
-	_set_status("Бот %d %s. Ревизия %d отправляется подключённому игроку." % [player_index - 1, action_text, match_host.revision])
+	if is_human_timeout:
+		var player_name: String = str(match_host.game.players[player_index].display_name)
+		_set_status("У игрока %s закончился 60-секундный таймер — выполнен автоход: %s." % [player_name, action_text])
+	else:
+		_set_status("Бот %d %s. Ревизия %d отправляется подключённому игроку." % [player_index - 1, action_text, match_host.revision])
 	return true
 
 

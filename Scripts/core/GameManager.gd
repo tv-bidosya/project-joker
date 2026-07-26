@@ -42,6 +42,13 @@ const SCORE_SHEET_BID_COLUMN_WIDTH := 82.0
 const SCORE_SHEET_TRICKS_COLUMN_WIDTH := 72.0
 const SCORE_SHEET_SCORE_COLUMN_WIDTH := 102.0
 const SCORE_SHEET_PLAYER_GROUP_WIDTH := 264.0
+const ROUND_RESULTS_PANEL_MIN_WIDTH := 420.0
+const ROUND_RESULTS_PANEL_MAX_WIDTH := 760.0
+const ROUND_RESULTS_PANEL_HORIZONTAL_PADDING := 56.0
+const ROUND_RESULTS_PANEL_TOP := 270.0
+const ROUND_RESULTS_PANEL_FIXED_HEIGHT := 82.0
+const ROUND_RESULTS_PANEL_ROW_HEIGHT := 26.0
+const INACTIVITY_AUTO_TURN_DELAY_SECONDS := 120.0
 const AUTO_TURN_DURATION_SECONDS := 60.0
 const REACTION_DISPLAY_DURATION := 1.25
 const SOUNDPAD_BUBBLE_DISPLAY_DURATION := 1.6
@@ -449,6 +456,8 @@ var local_first_turn_roll_generation := 0
 var turn_reminder_decision_key := ""
 var turn_reminder_elapsed_seconds := 0.0
 var turn_reminder_was_played := false
+var turn_reminder_play_count := 0
+var turn_reminder_next_sound_seconds := TURN_REMINDER_DELAY_SECONDS
 
 
 func _ready() -> void:
@@ -998,7 +1007,8 @@ func _on_prepare_steam_p2p_pressed() -> void:
 		steam_bridge,
 		bool(lobby_state.get("fill_empty_seats_with_bots", false)),
 		int(lobby_state.get("bot_difficulty", bot_difficulty)),
-		configured_player_names[HUMAN_PLAYER_INDEX]
+		configured_player_names[HUMAN_PLAYER_INDEX],
+		auto_turn_enabled
 	)
 	_refresh_steam_lobby_status()
 
@@ -1477,6 +1487,17 @@ func _get_network_main_snapshot() -> Dictionary:
 	return network_match.get_test_table_snapshot()
 
 
+func _sync_network_auto_turn_setting(snapshot: Dictionary) -> void:
+	if not snapshot.has("recipient_auto_turn_enabled"):
+		return
+	var host_enabled := bool(snapshot.get("recipient_auto_turn_enabled", false))
+	if host_enabled == auto_turn_enabled:
+		return
+	auto_turn_enabled = host_enabled
+	_save_persistent_settings()
+	_reset_turn_reminder()
+
+
 func _refresh_network_main_table() -> void:
 	if not _is_steam_p2p_main_table_active():
 		return
@@ -1499,6 +1520,7 @@ func _refresh_network_main_table() -> void:
 	if snapshot.is_empty():
 		_refresh_network_main_waiting_state()
 		return
+	_sync_network_auto_turn_setting(snapshot)
 	var table_state_reset_id := int(snapshot.get("table_state_reset_id", 0))
 	if table_state_reset_id != network_table_state_reset_id:
 		network_table_state_reset_id = table_state_reset_id
@@ -1665,9 +1687,7 @@ func _refresh_network_main_common_controls(snapshot: Dictionary = {}) -> void:
 		undo_button.tooltip_text = "Запросить у всех игроков возврат своего последнего решения."
 	else:
 		undo_button.tooltip_text = "Возврат доступен только для своего последнего решения и не более двух запросов."
-	turn_timer_active = false
-	if is_instance_valid(turn_timer_indicator):
-		turn_timer_indicator.visible = false
+	_refresh_turn_timer_indicator()
 	_refresh_reaction_controls()
 	_refresh_sticker_controls()
 	_refresh_soundpad_controls()
@@ -2262,6 +2282,7 @@ func _refresh_network_main_results(snapshot: Dictionary, round_data: Dictionary)
 	if network_round_result_key == result_key:
 		round_results_panel.visible = true
 		round_results_label.text = _get_network_table_result_bbcode(snapshot)
+		_fit_round_results_panel(_get_network_table_result_text(snapshot))
 		_refresh_network_main_next_round_button()
 		return
 
@@ -4375,13 +4396,13 @@ func _show_settings_menu() -> void:
 	menu_content.add_child(tutorial_toggle)
 
 	var auto_turn_toggle := CheckButton.new()
-	auto_turn_toggle.text = "Автоход по таймеру: 60 секунд"
+	auto_turn_toggle.text = "Автоход: 60 секунд"
 	auto_turn_toggle.button_pressed = auto_turn_enabled
 	auto_turn_toggle.add_theme_font_size_override("font_size", 18)
 	auto_turn_toggle.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
 	auto_turn_toggle.toggled.connect(_on_auto_turn_toggled)
 	menu_content.add_child(auto_turn_toggle)
-	_add_menu_label("Если время твоего решения выйдет, игра выберет корректный заказ, карту или условие Джокера по уровню ботов.", 14, Color(0.72, 0.85, 0.76, 1.0))
+	_add_menu_label("После 2 минут бездействия автоход включится сам и останется активным на следующих ходах. Отключить его можно здесь вручную. В сетевой партии персональные таймеры контролирует хост.", 14, Color(0.72, 0.85, 0.76, 1.0))
 
 	_add_menu_button("Начать обучение заново", _on_tutorial_enable_pressed)
 	_add_menu_label("Подсказки не мешают игре и всегда доступны из настроек или меню паузы.", 14, Color(0.72, 0.85, 0.76, 1.0))
@@ -4899,6 +4920,13 @@ func _on_tutorial_toggled(enabled: bool) -> void:
 func _on_auto_turn_toggled(enabled: bool) -> void:
 	auto_turn_enabled = enabled
 	_save_persistent_settings()
+
+	var network_match = _get_active_network_match()
+	if _is_steam_p2p_main_table_active() and network_match != null and network_match.has_method(&"set_local_auto_turn_enabled"):
+		network_match.call(&"set_local_auto_turn_enabled", enabled)
+		_reset_turn_reminder()
+		_refresh_ui()
+		return
 
 	if auto_turn_enabled:
 		_start_human_turn_timer()
@@ -8028,6 +8056,50 @@ func _refresh_round_results() -> void:
 		return
 
 	round_results_label.text = _get_local_round_result_bbcode()
+	_fit_round_results_panel(round_results_label.get_parsed_text())
+
+
+func _fit_round_results_panel(plain_text: String) -> void:
+	var result_lines := plain_text.split("\n", false)
+	var content_font: Font = round_results_label.get_theme_font("normal_font")
+	var widest_line := 0.0
+	for result_line in result_lines:
+		widest_line = maxf(
+			widest_line,
+			content_font.get_string_size(
+				str(result_line),
+				HORIZONTAL_ALIGNMENT_LEFT,
+				-1.0,
+				20
+			).x
+		)
+
+	var parent_width := ROUND_RESULTS_PANEL_MAX_WIDTH + 80.0
+	var parent_control := round_results_panel.get_parent_control()
+	if is_instance_valid(parent_control) and parent_control.size.x > 0.0:
+		parent_width = parent_control.size.x
+	var maximum_width := minf(
+		ROUND_RESULTS_PANEL_MAX_WIDTH,
+		maxf(ROUND_RESULTS_PANEL_MIN_WIDTH, parent_width - 80.0)
+	)
+	var panel_width := clampf(
+		ceilf(widest_line + ROUND_RESULTS_PANEL_HORIZONTAL_PADDING),
+		ROUND_RESULTS_PANEL_MIN_WIDTH,
+		maximum_width
+	)
+	var row_count := maxi(1, result_lines.size())
+	var panel_height := ROUND_RESULTS_PANEL_FIXED_HEIGHT + row_count * ROUND_RESULTS_PANEL_ROW_HEIGHT
+	_set_control_layout(
+		round_results_panel,
+		0.5,
+		0.0,
+		0.5,
+		0.0,
+		-panel_width * 0.5,
+		ROUND_RESULTS_PANEL_TOP,
+		panel_width * 0.5,
+		ROUND_RESULTS_PANEL_TOP + panel_height
+	)
 
 
 func _get_local_round_result_bbcode() -> String:
@@ -9533,11 +9605,11 @@ func _place_table_marker(marker: PanelContainer, player_index: int, is_dealer: b
 			HUMAN_PLAYER_INDEX:
 				_set_control_layout(marker, 0.5, 1.0, 0.5, 1.0, -286.0, -408.0, -250.0, -372.0)
 			1:
-				_set_control_layout(marker, 0.0, 0.0, 0.0, 0.0, 514.0, 338.0, 550.0, 374.0)
+				_set_control_layout(marker, 0.0, 0.0, 0.0, 0.0, 514.0, 360.0, 550.0, 396.0)
 			2:
-				_set_control_layout(marker, 0.5, 0.0, 0.5, 0.0, -218.0, 174.0, -182.0, 210.0)
+				_set_control_layout(marker, 0.5, 0.0, 0.5, 0.0, -218.0, 196.0, -182.0, 232.0)
 			3:
-				_set_control_layout(marker, 1.0, 0.0, 1.0, 0.0, -542.0, 338.0, -506.0, 374.0)
+				_set_control_layout(marker, 1.0, 0.0, 1.0, 0.0, -542.0, 360.0, -506.0, 396.0)
 		return
 
 	match player_index:
@@ -9670,9 +9742,6 @@ func _process(delta: float) -> void:
 	if not turn_timer_active or not auto_turn_enabled:
 		return
 
-	if menu_overlay != null and menu_overlay.visible:
-		return
-
 	if not _is_human_decision_pending():
 		_stop_human_turn_timer()
 		return
@@ -9693,12 +9762,25 @@ func _process_turn_reminder(delta: float) -> void:
 		turn_reminder_decision_key = decision_key
 		turn_reminder_elapsed_seconds = 0.0
 		turn_reminder_was_played = false
-	if turn_reminder_was_played:
-		return
+		turn_reminder_play_count = 0
+		turn_reminder_next_sound_seconds = TURN_REMINDER_DELAY_SECONDS
 	turn_reminder_elapsed_seconds += delta
-	if turn_reminder_elapsed_seconds < TURN_REMINDER_DELAY_SECONDS:
+	_refresh_turn_timer_indicator()
+	if (
+		not _is_steam_p2p_main_table_active()
+		and turn_reminder_elapsed_seconds >= INACTIVITY_AUTO_TURN_DELAY_SECONDS
+		and not turn_timer_active
+	):
+		auto_turn_enabled = true
+		_save_persistent_settings()
+		_start_human_turn_timer()
+	if turn_reminder_elapsed_seconds < turn_reminder_next_sound_seconds:
 		return
 	turn_reminder_was_played = true
+	turn_reminder_play_count += 1
+	turn_reminder_next_sound_seconds = (
+		floorf(turn_reminder_elapsed_seconds / TURN_REMINDER_DELAY_SECONDS) + 1.0
+	) * TURN_REMINDER_DELAY_SECONDS
 	_play_sound(SoundEffect.TURN_REMINDER)
 
 
@@ -9721,11 +9803,14 @@ func _get_local_turn_reminder_decision_key() -> String:
 		var active_player_index := _get_network_table_active_player_index(round_data, active_trick)
 		if recipient_player_index < 0 or active_player_index != recipient_player_index:
 			return ""
-		return "network:%d:%d:%d:%d" % [
+		var played_cards: Array = active_trick.get("played_cards", [])
+		return "network:%d:%d:%d:%d:%d:%d" % [
 			int(snapshot.get("round_number", 0)),
-			int(snapshot.get("revision", -1)),
 			state,
-			active_player_index
+			active_player_index,
+			int(round_data.get("bids_made", 0)),
+			int(round_data.get("tricks_played", 0)),
+			played_cards.size()
 		]
 
 	if not _is_human_decision_pending() or local_first_turn_roll_active:
@@ -9744,6 +9829,10 @@ func _reset_turn_reminder() -> void:
 	turn_reminder_decision_key = ""
 	turn_reminder_elapsed_seconds = 0.0
 	turn_reminder_was_played = false
+	turn_reminder_play_count = 0
+	turn_reminder_next_sound_seconds = TURN_REMINDER_DELAY_SECONDS
+	if _is_steam_p2p_main_table_active() and is_instance_valid(turn_timer_indicator):
+		turn_timer_indicator.visible = false
 
 
 func _is_human_decision_pending() -> bool:
@@ -9772,6 +9861,26 @@ func _stop_human_turn_timer() -> void:
 
 func _refresh_turn_timer_indicator() -> void:
 	if not is_instance_valid(turn_timer_indicator):
+		return
+
+	if _is_steam_p2p_main_table_active():
+		var current_decision_key := _get_local_turn_reminder_decision_key()
+		var network_countdown_delay := 0.0 if auto_turn_enabled else INACTIVITY_AUTO_TURN_DELAY_SECONDS
+		var should_show_network_timer := (
+			not current_decision_key.is_empty()
+			and current_decision_key == turn_reminder_decision_key
+			and turn_reminder_elapsed_seconds >= network_countdown_delay
+		)
+		turn_timer_indicator.visible = should_show_network_timer
+		if should_show_network_timer:
+			turn_timer_indicator.set_time_remaining(
+				maxf(
+					0.0,
+					AUTO_TURN_DURATION_SECONDS
+					- (turn_reminder_elapsed_seconds - network_countdown_delay)
+				),
+				AUTO_TURN_DURATION_SECONDS
+			)
 		return
 
 	var should_show_timer := auto_turn_enabled and turn_timer_active and _is_human_decision_pending()
