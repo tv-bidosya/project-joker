@@ -313,9 +313,9 @@ func record_current_round_started() -> void:
 	public_history.append("%s. Сдающий: %s." % [_get_round_label(round), dealer_name])
 	public_history.append("Козырь: %s." % round.get_trump_name())
 	if _round_uses_bids(round.round_type):
-		public_history.append("Заказы: ходят по кругу после сдающего.")
+		public_history.append("Первым заказывает: %s." % _get_player_name(round.current_player_index))
 	else:
-		public_history.append("Раздача без заказов: начинаем розыгрыш взяток.")
+		public_history.append("Раздача без заказов. Первым ходит: %s." % _get_player_name(round.lead_player_index))
 
 
 func start_next_round(

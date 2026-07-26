@@ -181,6 +181,7 @@ func _process(delta: float) -> void:
 	if mode == Mode.CLIENT:
 		_process_client_join_request(delta)
 	elif mode == Mode.HOST:
+		_process_first_turn_roll(delta)
 		_process_snapshot_delivery(delta)
 		_process_host_undo_vote()
 
@@ -340,6 +341,12 @@ func replace_reconnecting_player_with_bot(player_index: int) -> bool:
 	_temporary_bot_player_indices[player_index] = true
 	_reconnecting_player_indices.erase(player_index)
 	match_host.set_automatic_undo_approver_indices(_local_bot_player_indices)
+	if (
+		first_turn_roll_phase == FirstTurnRollPhase.WAITING
+		and first_turn_roll_contenders.has(player_index)
+		and not first_turn_roll_submitted[player_index]
+	):
+		_record_first_turn_roll(player_index, false)
 	_rebuild_host_lobby_seats()
 	_broadcast_lobby_state()
 	_send_current_player_snapshots()
@@ -423,7 +430,6 @@ func _start_as_host() -> void:
 		var player_index := _local_bot_player_indices[bot_offset]
 		player_names[player_index] = "Бот %d" % (bot_offset + 1)
 	var test_game := Game.new(player_names)
-	test_game.dealer_index = HOST_PLAYER_INDEX
 	match_host = MatchHost.new(test_game)
 	match_host.set_automatic_undo_approver_indices(_local_bot_player_indices)
 	mode = Mode.HOST
@@ -664,6 +670,16 @@ func _process_local_bots(delta: float) -> void:
 
 	if _submit_local_bot_action(bot_player_index):
 		_bot_action_delay_seconds = BOT_ACTION_DELAY_SECONDS
+
+
+func _get_automatic_first_turn_roll_player_indices() -> Array[int]:
+	var automatic_players: Array[int] = []
+	automatic_players.assign(_local_bot_player_indices)
+	for player_index_variant in _temporary_bot_player_indices:
+		var player_index := int(player_index_variant)
+		if not automatic_players.has(player_index):
+			automatic_players.append(player_index)
+	return automatic_players
 
 
 func _get_active_local_bot_player_index() -> int:

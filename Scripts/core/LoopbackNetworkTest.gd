@@ -16,9 +16,10 @@ const NO_TRUMP_ROUND_COUNT := 4
 const GOLDEN_ROUND_COUNT := 5
 const MISERE_ROUND_COUNT := 5
 const TOTAL_ROUND_COUNT := NORMAL_ROUND_COUNT + DARK_ROUND_COUNT + NO_TRUMP_ROUND_COUNT + GOLDEN_ROUND_COUNT + MISERE_ROUND_COUNT
-const PROTOCOL_VERSION := 2
+const PROTOCOL_VERSION := 3
 const SNAPSHOT_DELIVERY_INTERVAL_SECONDS := 0.15
 const SNAPSHOT_RETRY_INTERVAL_SECONDS := 1.0
+const FIRST_TURN_ROLL_REVEAL_SECONDS := 2.4
 const NetworkHost = preload("res://Scripts/core/LocalMatchHost.gd")
 const NetworkSnapshot = preload("res://Scripts/core/MatchStateSnapshot.gd")
 const NetworkCommand = preload("res://Scripts/core/MatchCommand.gd")
@@ -35,6 +36,14 @@ enum TestJokerScenario {
 	NONE,
 	LEADING,
 	RESPONSE
+}
+
+
+enum FirstTurnRollPhase {
+	INACTIVE,
+	WAITING,
+	REVEAL,
+	COMPLETE
 }
 
 
@@ -69,6 +78,15 @@ var _snapshot_acknowledged_by_player: Dictionary = {}
 var _snapshot_delivery_queue: Array[int] = []
 var _snapshot_delivery_elapsed_seconds := 0.0
 var _snapshot_retry_elapsed_seconds := 0.0
+var first_turn_roll_phase: FirstTurnRollPhase = FirstTurnRollPhase.INACTIVE
+var first_turn_roll_round := 0
+var first_turn_roll_contenders: Array[int] = []
+var first_turn_roll_submitted: Array[bool] = []
+var first_turn_roll_values: Array[int] = []
+var first_turn_roll_winner_index := -1
+var first_turn_roll_state: Dictionary = {}
+var _first_turn_roll_reveal_seconds_remaining := 0.0
+var _first_turn_roll_random := RandomNumberGenerator.new()
 
 
 func start_host(local_port: int = HOST_PORT) -> bool:
@@ -135,6 +153,14 @@ func stop() -> void:
 	_snapshot_delivery_queue.clear()
 	_snapshot_delivery_elapsed_seconds = 0.0
 	_snapshot_retry_elapsed_seconds = 0.0
+	first_turn_roll_phase = FirstTurnRollPhase.INACTIVE
+	first_turn_roll_round = 0
+	first_turn_roll_contenders.clear()
+	first_turn_roll_submitted.clear()
+	first_turn_roll_values.clear()
+	first_turn_roll_winner_index = -1
+	first_turn_roll_state.clear()
+	_first_turn_roll_reveal_seconds_remaining = 0.0
 	_set_status("Сеть остановлена.")
 
 
@@ -172,6 +198,79 @@ func can_start_test_round() -> bool:
 	return is_lobby_full() and not lobby_round_started and match_host != null
 
 
+func can_begin_first_turn_roll() -> bool:
+	return can_start_test_round() and first_turn_roll_phase == FirstTurnRollPhase.INACTIVE
+
+
+func begin_first_turn_roll() -> bool:
+	if not can_begin_first_turn_roll():
+		_set_status("Розыгрыш первого хода можно начать после подготовки всех мест.")
+		return false
+
+	_first_turn_roll_random.randomize()
+	first_turn_roll_winner_index = -1
+	first_turn_roll_round = 0
+	_start_first_turn_roll_round([0, 1, 2, 3])
+	return true
+
+
+func is_first_turn_roll_active() -> bool:
+	if is_host():
+		return first_turn_roll_phase != FirstTurnRollPhase.INACTIVE and not lobby_round_started
+	return not first_turn_roll_state.is_empty() and int(first_turn_roll_state.get("phase", FirstTurnRollPhase.INACTIVE)) != FirstTurnRollPhase.INACTIVE and not lobby_round_started
+
+
+func is_first_turn_roll_complete() -> bool:
+	if is_host():
+		return first_turn_roll_phase == FirstTurnRollPhase.COMPLETE and first_turn_roll_winner_index >= 0
+	return int(first_turn_roll_state.get("phase", FirstTurnRollPhase.INACTIVE)) == FirstTurnRollPhase.COMPLETE and int(first_turn_roll_state.get("winner_player_index", -1)) >= 0
+
+
+func get_first_turn_roll_state() -> Dictionary:
+	if is_host():
+		return _create_first_turn_roll_state()
+	return first_turn_roll_state.duplicate(true)
+
+
+func can_submit_first_turn_roll() -> bool:
+	if not is_first_turn_roll_active() or is_first_turn_roll_complete():
+		return false
+	var player_index := HOST_PLAYER_INDEX if is_host() else client_player_index
+	var state := get_first_turn_roll_state()
+	var contenders: Array = state.get("contenders", [])
+	var submitted: Array = state.get("submitted", [])
+	return (
+		contenders.has(player_index)
+		and player_index >= 0
+		and player_index < submitted.size()
+		and not bool(submitted[player_index])
+	)
+
+
+func submit_first_turn_roll() -> bool:
+	if not can_submit_first_turn_roll():
+		return false
+	if is_host():
+		return _record_first_turn_roll(HOST_PLAYER_INDEX)
+
+	var was_sent := _send_message({
+		"type": "first_turn_roll",
+		"player_index": client_player_index,
+		"roll_round": int(first_turn_roll_state.get("roll_round", -1))
+	}, 1)
+	if was_sent:
+		var submitted: Array = first_turn_roll_state.get("submitted", []).duplicate()
+		if client_player_index >= 0 and client_player_index < submitted.size():
+			submitted[client_player_index] = true
+			first_turn_roll_state["submitted"] = submitted
+		_set_status("Кубик брошен. Ждём остальных участников…")
+	return was_sent
+
+
+func can_start_first_real_round() -> bool:
+	return can_start_test_round() and is_first_turn_roll_complete()
+
+
 func start_test_round(force_leading_joker: bool = false) -> bool:
 	var joker_scenario := TestJokerScenario.LEADING if force_leading_joker else TestJokerScenario.NONE
 	return _start_test_round(joker_scenario)
@@ -182,6 +281,9 @@ func start_test_round_with_response_joker() -> bool:
 
 
 func start_first_real_round() -> bool:
+	if not can_start_first_real_round():
+		_set_status("Сначала завершите розыгрыш первого хода.")
+		return false
 	if not _prepare_network_round(1, Round.RoundType.NORMAL, Round.TrumpSuit.RANDOM):
 		return false
 	_finish_network_round_start("Первая обычная раздача начата. Ждём подтверждение получения личных рук от клиентов.")
@@ -346,6 +448,7 @@ func _process(delta: float) -> void:
 	if mode == Mode.CLIENT:
 		_process_client_connection(delta)
 	elif mode == Mode.HOST:
+		_process_first_turn_roll(delta)
 		_process_snapshot_delivery(delta)
 		_process_host_undo_vote()
 
@@ -393,6 +496,9 @@ func _handle_message(message: Dictionary, sender_peer_id: int) -> void:
 		return
 	if mode == Mode.HOST and message_type == "snapshot_ack":
 		_handle_host_snapshot_ack(message, sender_peer_id)
+		return
+	if mode == Mode.HOST and message_type == "first_turn_roll":
+		_handle_host_first_turn_roll(message, sender_peer_id)
 		return
 	if mode == Mode.HOST and message_type == "match_command":
 		_handle_host_match_command(message, sender_peer_id)
@@ -450,7 +556,8 @@ func _handle_host_join_request(message: Dictionary, sender_peer_id: int) -> void
 		"protocol_version": PROTOCOL_VERSION,
 		"player_index": assigned_player_index,
 		"lobby_seats": lobby_seats,
-		"round_started": lobby_round_started
+		"round_started": lobby_round_started,
+		"first_turn_roll": _create_first_turn_roll_state()
 	}, sender_peer_id)
 	_broadcast_lobby_state()
 	_set_status(_get_host_lobby_status())
@@ -490,7 +597,8 @@ func _handle_host_seat_ack(message: Dictionary, sender_peer_id: int) -> void:
 		"type": "seat_confirmed",
 		"player_index": assigned_player_index,
 		"lobby_seats": lobby_seats,
-		"round_started": lobby_round_started
+		"round_started": lobby_round_started,
+		"first_turn_roll": _create_first_turn_roll_state()
 	}, sender_peer_id)
 	_broadcast_lobby_state()
 	_set_status(_get_host_lobby_status())
@@ -513,6 +621,17 @@ func _handle_host_snapshot_ack(message: Dictionary, sender_peer_id: int) -> void
 
 	_snapshot_acknowledged_by_player[assigned_player_index] = true
 	_set_status(_get_host_lobby_status())
+
+
+func _handle_host_first_turn_roll(message: Dictionary, sender_peer_id: int) -> void:
+	var assigned_player_index := int(_connected_player_by_peer.get(sender_peer_id, -1))
+	if assigned_player_index < FIRST_CLIENT_PLAYER_INDEX:
+		return
+	if int(message.get("player_index", -1)) != assigned_player_index:
+		return
+	if int(message.get("roll_round", -1)) != first_turn_roll_round:
+		return
+	_record_first_turn_roll(assigned_player_index)
 
 
 func _handle_host_match_command(message: Dictionary, sender_peer_id: int) -> void:
@@ -575,6 +694,7 @@ func _handle_client_seat_assigned(message: Dictionary) -> void:
 	client_player_index = int(message.get("player_index", -1))
 	lobby_round_started = bool(message.get("round_started", false))
 	_store_lobby_seats(message.get("lobby_seats", []))
+	_store_first_turn_roll_state(message.get("first_turn_roll", {}))
 	if client_player_index < FIRST_CLIENT_PLAYER_INDEX:
 		_set_status("Хост прислал некорректное место.")
 		return
@@ -596,12 +716,14 @@ func _handle_client_seat_confirmed(message: Dictionary) -> void:
 	client_seat_confirmed = true
 	lobby_round_started = bool(message.get("round_started", false))
 	_store_lobby_seats(message.get("lobby_seats", []))
+	_store_first_turn_roll_state(message.get("first_turn_roll", {}))
 	_set_status(_get_client_lobby_status())
 
 
 func _handle_lobby_state(message: Dictionary) -> void:
 	lobby_round_started = bool(message.get("round_started", false))
 	_store_lobby_seats(message.get("lobby_seats", []))
+	_store_first_turn_roll_state(message.get("first_turn_roll", {}))
 	_update_client_confirmation_from_seats()
 	_set_status(_get_client_lobby_status())
 
@@ -1579,13 +1701,15 @@ func _broadcast_lobby_state() -> void:
 	if not is_host():
 		return
 	_rebuild_host_lobby_seats()
+	var roll_state := _create_first_turn_roll_state()
 	for player_index_variant in _connected_client_peers_by_player:
 		var player_index := int(player_index_variant)
 		var client_peer_id := int(_connected_client_peers_by_player[player_index])
 		_send_message({
 			"type": "lobby_state",
 			"lobby_seats": lobby_seats,
-			"round_started": lobby_round_started
+			"round_started": lobby_round_started,
+			"first_turn_roll": roll_state
 		}, client_peer_id)
 
 
@@ -1611,6 +1735,111 @@ func _store_lobby_seats(seat_data: Variant) -> void:
 	for seat_variant in seat_data:
 		if seat_variant is Dictionary:
 			lobby_seats.append(seat_variant.duplicate(true))
+
+
+func _store_first_turn_roll_state(state_data: Variant) -> void:
+	first_turn_roll_state.clear()
+	if state_data is Dictionary:
+		first_turn_roll_state = state_data.duplicate(true)
+
+
+func _create_first_turn_roll_state() -> Dictionary:
+	if first_turn_roll_phase == FirstTurnRollPhase.INACTIVE:
+		return {}
+	var visible_values: Array[int] = []
+	visible_values.resize(PLAYER_COUNT)
+	visible_values.fill(-1)
+	if first_turn_roll_phase == FirstTurnRollPhase.REVEAL or first_turn_roll_phase == FirstTurnRollPhase.COMPLETE:
+		visible_values.assign(first_turn_roll_values)
+	return {
+		"phase": first_turn_roll_phase,
+		"roll_round": first_turn_roll_round,
+		"contenders": first_turn_roll_contenders.duplicate(),
+		"submitted": first_turn_roll_submitted.duplicate(),
+		"values": visible_values,
+		"winner_player_index": first_turn_roll_winner_index
+	}
+
+
+func _start_first_turn_roll_round(contenders: Array) -> void:
+	first_turn_roll_round += 1
+	first_turn_roll_phase = FirstTurnRollPhase.WAITING
+	first_turn_roll_contenders.clear()
+	for contender_variant in contenders:
+		first_turn_roll_contenders.append(int(contender_variant))
+	first_turn_roll_submitted.resize(PLAYER_COUNT)
+	first_turn_roll_submitted.fill(false)
+	first_turn_roll_values.resize(PLAYER_COUNT)
+	first_turn_roll_values.fill(-1)
+	_first_turn_roll_reveal_seconds_remaining = 0.0
+
+	for automatic_player_index in _get_automatic_first_turn_roll_player_indices():
+		if first_turn_roll_contenders.has(automatic_player_index):
+			_record_first_turn_roll(automatic_player_index, false)
+	_broadcast_lobby_state()
+	_set_status(_get_host_lobby_status())
+
+
+func _get_automatic_first_turn_roll_player_indices() -> Array[int]:
+	return []
+
+
+func _record_first_turn_roll(player_index: int, broadcast_update: bool = true) -> bool:
+	if (
+		not is_host()
+		or first_turn_roll_phase != FirstTurnRollPhase.WAITING
+		or not first_turn_roll_contenders.has(player_index)
+		or first_turn_roll_submitted[player_index]
+	):
+		return false
+
+	first_turn_roll_submitted[player_index] = true
+	first_turn_roll_values[player_index] = _first_turn_roll_random.randi_range(1, 6)
+	if _all_first_turn_roll_contenders_submitted():
+		_reveal_first_turn_roll()
+	if broadcast_update:
+		_broadcast_lobby_state()
+		_set_status(_get_host_lobby_status())
+	return true
+
+
+func _all_first_turn_roll_contenders_submitted() -> bool:
+	for player_index in first_turn_roll_contenders:
+		if not first_turn_roll_submitted[player_index]:
+			return false
+	return true
+
+
+func _reveal_first_turn_roll() -> void:
+	var highest_value := -1
+	var leaders: Array[int] = []
+	for player_index in first_turn_roll_contenders:
+		var roll_value := first_turn_roll_values[player_index]
+		if roll_value > highest_value:
+			highest_value = roll_value
+			leaders.assign([player_index])
+		elif roll_value == highest_value:
+			leaders.append(player_index)
+
+	if leaders.size() == 1:
+		first_turn_roll_winner_index = leaders[0]
+		first_turn_roll_phase = FirstTurnRollPhase.COMPLETE
+		if match_host != null and not match_host.game.players.is_empty():
+			match_host.game.dealer_index = posmod(first_turn_roll_winner_index - 1, match_host.game.players.size())
+		return
+
+	first_turn_roll_contenders.assign(leaders)
+	first_turn_roll_phase = FirstTurnRollPhase.REVEAL
+	_first_turn_roll_reveal_seconds_remaining = FIRST_TURN_ROLL_REVEAL_SECONDS
+
+
+func _process_first_turn_roll(delta: float) -> void:
+	if not is_host() or first_turn_roll_phase != FirstTurnRollPhase.REVEAL:
+		return
+	_first_turn_roll_reveal_seconds_remaining = maxf(0.0, _first_turn_roll_reveal_seconds_remaining - delta)
+	if _first_turn_roll_reveal_seconds_remaining > 0.0:
+		return
+	_start_first_turn_roll_round(first_turn_roll_contenders.duplicate())
 
 
 func _store_client_snapshot(snapshot_data: Variant) -> bool:
@@ -1686,8 +1915,19 @@ func _get_host_lobby_status() -> String:
 			var public_trick_text := _get_host_public_trick_text()
 			if not public_trick_text.is_empty():
 				lines.append(public_trick_text)
+	elif is_first_turn_roll_complete():
+		lines.append("Первый ход разыгран. Можно начинать первую раздачу.")
+	elif is_first_turn_roll_active():
+		if first_turn_roll_phase == FirstTurnRollPhase.REVEAL:
+			lines.append("У лидеров ничья. Готовим переброс.")
+		else:
+			var submitted_count := 0
+			for player_index in first_turn_roll_contenders:
+				if first_turn_roll_submitted[player_index]:
+					submitted_count += 1
+			lines.append("Розыгрыш первого хода: бросили %d из %d участников." % [submitted_count, first_turn_roll_contenders.size()])
 	elif is_lobby_full():
-		lines.append("Все четыре места готовы. Можно начать тестовую раздачу.")
+		lines.append("Все четыре места готовы. Можно разыграть первый ход.")
 	else:
 		lines.append("Открой окна для оставшихся мест.")
 	return "\n".join(lines)
@@ -1734,8 +1974,19 @@ func _get_client_lobby_status() -> String:
 		lines.append("Подтверждение руки хосту: %s." % ("отправлено" if client_snapshot_acknowledged else "не отправилось"))
 		if not client_last_command_message.is_empty():
 			lines.append(client_last_command_message)
+	elif is_first_turn_roll_complete():
+		lines.append("Первый ход разыгран. Ждём запуска первой раздачи хостом.")
+	elif is_first_turn_roll_active():
+		var state := get_first_turn_roll_state()
+		var phase := int(state.get("phase", FirstTurnRollPhase.WAITING))
+		if phase == FirstTurnRollPhase.REVEAL:
+			lines.append("У лидеров ничья. Готовим переброс.")
+		elif can_submit_first_turn_roll():
+			lines.append("Розыгрыш первого хода: брось свой кубик на игровом столе.")
+		else:
+			lines.append("Твой кубик брошен. Ждём остальных участников.")
 	else:
-		lines.append("Ждём, пока хост соберёт четыре места и начнёт раздачу.")
+		lines.append("Ждём, пока хост соберёт четыре места и запустит розыгрыш первого хода.")
 	return "\n".join(lines)
 
 

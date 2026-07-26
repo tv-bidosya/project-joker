@@ -67,6 +67,8 @@ const BUG_REPORT_TIMELINE_LIMIT := 8
 const UNDO_REQUESTS_PER_DECISION_LIMIT := 2
 const LOCAL_UNDO_VOTE_INTERVAL_SECONDS := 0.28
 const LOCAL_UNDO_VOTE_RESULT_HOLD_SECONDS := 0.45
+const FIRST_TURN_ROLL_BOT_REROLL_DELAY_SECONDS := 1.8
+const DICE_FACE_TEXTS := ["⚀", "⚁", "⚂", "⚃", "⚄", "⚅"]
 const AVATAR_TURN_GLOW_SHADER_CODE := """
 shader_type canvas_item;
 render_mode unshaded;
@@ -156,6 +158,12 @@ enum UndoVoteState {
 @onready var round_results_panel: PanelContainer = %RoundResultsPanel
 @onready var round_results_title_panel: PanelContainer = %RoundResultsTitlePanel
 @onready var round_results_label: Label = %RoundResultsLabel
+@onready var first_turn_roll_panel: PanelContainer = %FirstTurnRollPanel
+@onready var first_turn_roll_title: Label = %FirstTurnRollTitle
+@onready var first_turn_roll_subtitle: Label = %FirstTurnRollSubtitle
+@onready var first_turn_roll_grid: GridContainer = %FirstTurnRollGrid
+@onready var first_turn_roll_status: Label = %FirstTurnRollStatus
+@onready var first_turn_roll_button: Button = %FirstTurnRollButton
 @onready var bid_controls: HBoxContainer = %BidControls
 @onready var joker_controls: GridContainer = %JokerControls
 @onready var hand_container: HBoxContainer = %HandContainer
@@ -428,6 +436,13 @@ var network_table_player_score_labels: Array[Label] = []
 var network_table_avatar_panels: Array[PanelContainer] = []
 var network_table_avatar_images: Array[TextureRect] = []
 var network_table_avatar_symbols: Array[Label] = []
+var local_first_turn_roll_active := false
+var local_first_turn_roll_round := 0
+var local_first_turn_roll_contenders: Array[int] = []
+var local_first_turn_roll_values: Array[int] = []
+var local_first_turn_roll_winner_index := -1
+var local_first_turn_roll_random := RandomNumberGenerator.new()
+var local_first_turn_roll_generation := 0
 
 
 func _ready() -> void:
@@ -499,6 +514,7 @@ func _ready() -> void:
 	music_playlist_button.pressed.connect(_on_music_playlist_pressed)
 	music_add_button.pressed.connect(_on_music_add_pressed)
 	next_round_button.pressed.connect(_on_next_round_pressed)
+	first_turn_roll_button.pressed.connect(_on_first_turn_roll_action_pressed)
 	pause_menu_button.pressed.connect(_on_pause_menu_pressed)
 	if _is_loopback_network_client_launch():
 		if _is_loopback_network_party_client_launch():
@@ -543,6 +559,13 @@ func _create_table_visual_styles() -> void:
 	round_results_title_style.content_margin_left = 8.0
 	round_results_title_style.content_margin_right = 8.0
 	round_results_title_panel.add_theme_stylebox_override("panel", round_results_title_style)
+	var first_turn_roll_style := _create_flat_style(Color(0.012, 0.065, 0.04, 0.99), Color(0.91, 0.67, 0.2, 0.96), 2, 14, 8)
+	first_turn_roll_style.content_margin_left = 24.0
+	first_turn_roll_style.content_margin_top = 20.0
+	first_turn_roll_style.content_margin_right = 24.0
+	first_turn_roll_style.content_margin_bottom = 20.0
+	first_turn_roll_panel.add_theme_stylebox_override("panel", first_turn_roll_style)
+	_apply_table_action_button_style(first_turn_roll_button)
 	_apply_table_text_button_style(round_history_toggle_button)
 	_apply_table_text_button_style(score_sheet_toggle_button)
 	_apply_table_text_button_style(pause_menu_button)
@@ -911,7 +934,7 @@ func _show_steam_lobby_menu() -> void:
 	steam_lobby_ready_button = _add_menu_button("Отметиться готовым", _on_toggle_steam_lobby_ready_pressed)
 	steam_p2p_prepare_button = _add_menu_button("Подключиться к игровому столу", _on_prepare_steam_p2p_pressed)
 	steam_p2p_prepare_with_bots_button = _add_menu_button("Заполнить свободные места ботами", _on_toggle_steam_lobby_bots_pressed)
-	steam_p2p_start_round_button = _add_menu_button("Начать партию", _on_start_steam_p2p_round_pressed, true)
+	steam_p2p_start_round_button = _add_menu_button("Разыграть первый ход", _on_start_steam_p2p_round_pressed, true)
 	steam_p2p_open_table_button = _add_menu_button("Открыть Steam P2P-стол", _on_open_steam_p2p_table_pressed)
 	steam_lobby_leave_button = _add_menu_button("Выйти из комнаты", _on_leave_steam_lobby_pressed)
 	_add_menu_spacer(10.0)
@@ -991,7 +1014,11 @@ func _on_start_steam_p2p_round_pressed() -> void:
 	if steam_p2p_match == null or not steam_p2p_match.is_host():
 		return
 	_reset_loopback_network_joker_selection()
-	steam_p2p_match.start_first_real_round()
+	if steam_p2p_match.can_begin_first_turn_roll():
+		if steam_p2p_match.begin_first_turn_roll():
+			_on_open_steam_p2p_table_pressed()
+	elif steam_p2p_match.can_start_first_real_round():
+		steam_p2p_match.start_first_real_round()
 	_refresh_steam_lobby_status()
 
 
@@ -1028,7 +1055,7 @@ func _refresh_steam_lobby_status() -> void:
 
 	steam_lobby_status_label.text = lobby_status
 	if lobby_id > 0:
-		steam_lobby_details_label.text = "Комната: %d\nУчастники: %d из %d\nТип: закрытая для друзей · Project Joker · протокол 1" % [lobby_id, member_count, member_limit]
+		steam_lobby_details_label.text = "Комната: %d\nУчастники: %d из %d\nТип: закрытая для друзей · Project Joker · протокол %d" % [lobby_id, member_count, member_limit, LoopbackNetwork.PROTOCOL_VERSION]
 	else:
 		steam_lobby_details_label.text = "Steam: %s\nПосле создания появятся ID комнаты и число участников." % ("подключён" if initialized else "ещё не подключён")
 
@@ -1068,7 +1095,7 @@ func _refresh_steam_lobby_status() -> void:
 		steam_p2p_prepare_with_bots_button.disabled = lobby_id <= 0 or not local_is_host or (member_count >= member_limit and not fill_empty_seats_with_bots) or (steam_p2p_match != null and steam_p2p_match.is_running())
 		steam_p2p_prepare_with_bots_button.text = "Убрать ботов" if fill_empty_seats_with_bots else "Заполнить свободные места ботами"
 	if is_instance_valid(steam_p2p_start_round_button):
-		steam_p2p_start_round_button.disabled = steam_p2p_match == null or not steam_p2p_match.is_host() or not steam_p2p_match.can_start_test_round()
+		_refresh_steam_first_turn_roll_button()
 	if is_instance_valid(steam_p2p_open_table_button):
 		steam_p2p_open_table_button.disabled = steam_p2p_match == null or not steam_p2p_match.is_running()
 	if is_instance_valid(steam_lobby_leave_button):
@@ -1096,13 +1123,34 @@ func _refresh_steam_p2p_status() -> void:
 	if is_instance_valid(steam_p2p_prepare_with_bots_button) and steam_p2p_match != null and steam_p2p_match.is_running():
 		steam_p2p_prepare_with_bots_button.disabled = true
 	if is_instance_valid(steam_p2p_start_round_button):
-		steam_p2p_start_round_button.disabled = steam_p2p_match == null or not steam_p2p_match.is_host() or not steam_p2p_match.can_start_test_round()
+		_refresh_steam_first_turn_roll_button()
 	if is_instance_valid(steam_p2p_open_table_button):
 		steam_p2p_open_table_button.disabled = steam_p2p_match == null or not steam_p2p_match.is_running()
 	if steam_p2p_main_table_presentation:
 		_refresh_network_main_table()
 	elif steam_p2p_table_presentation and is_instance_valid(network_table_view) and network_table_view.visible:
 		_refresh_network_table_view()
+
+
+func _refresh_steam_first_turn_roll_button() -> void:
+	if not is_instance_valid(steam_p2p_start_round_button):
+		return
+	var host_can_act: bool = steam_p2p_match != null and steam_p2p_match.is_host()
+	if steam_p2p_match == null or not steam_p2p_match.is_running():
+		steam_p2p_start_round_button.text = "Разыграть первый ход"
+		steam_p2p_start_round_button.disabled = true
+	elif steam_p2p_match.lobby_round_started:
+		steam_p2p_start_round_button.text = "Партия начата"
+		steam_p2p_start_round_button.disabled = true
+	elif steam_p2p_match.can_start_first_real_round():
+		steam_p2p_start_round_button.text = "Начать первую раздачу"
+		steam_p2p_start_round_button.disabled = not host_can_act
+	elif steam_p2p_match.is_first_turn_roll_active():
+		steam_p2p_start_round_button.text = "Розыгрыш первого хода идёт"
+		steam_p2p_start_round_button.disabled = true
+	else:
+		steam_p2p_start_round_button.text = "Разыграть первый ход"
+		steam_p2p_start_round_button.disabled = not host_can_act or not steam_p2p_match.can_begin_first_turn_roll()
 
 
 func _refresh_steam_reconnect_controls() -> void:
@@ -1429,6 +1477,13 @@ func _refresh_network_main_table() -> void:
 		network_table_view.visible = false
 	if is_instance_valid(menu_overlay):
 		menu_overlay.visible = false
+
+	first_turn_roll_panel.visible = false
+	var network_match = _get_active_network_match()
+	if network_match != null and network_match.is_first_turn_roll_active():
+		_refresh_network_main_waiting_state()
+		_refresh_first_turn_roll_panel(network_match.get_first_turn_roll_state(), network_match.lobby_seats)
+		return
 
 	var snapshot: Dictionary = _get_network_main_snapshot()
 	if snapshot.is_empty():
@@ -4346,7 +4401,248 @@ func _on_new_game_pressed() -> void:
 	_delete_saved_session()
 	_reset_game_session()
 	_hide_main_menu()
-	_start_round()
+	_begin_local_first_turn_roll()
+
+
+func _begin_local_first_turn_roll() -> void:
+	local_first_turn_roll_random.randomize()
+	local_first_turn_roll_active = true
+	local_first_turn_roll_round = 0
+	local_first_turn_roll_contenders.assign([0, 1, 2, 3])
+	local_first_turn_roll_values.resize(PLAYER_NAMES.size())
+	local_first_turn_roll_values.fill(-1)
+	local_first_turn_roll_winner_index = -1
+	local_first_turn_roll_generation += 1
+	_refresh_ui()
+
+
+func _on_first_turn_roll_action_pressed() -> void:
+	if _is_steam_p2p_main_table_active():
+		var network_match = _get_active_network_match()
+		if network_match == null:
+			return
+		if network_match.can_start_first_real_round():
+			if network_match.start_first_real_round():
+				first_turn_roll_panel.visible = false
+				_refresh_steam_p2p_status()
+			return
+		if network_match.can_submit_first_turn_roll():
+			network_match.submit_first_turn_roll()
+			_refresh_network_main_table()
+		return
+
+	if not local_first_turn_roll_active:
+		return
+	if local_first_turn_roll_winner_index >= 0:
+		local_first_turn_roll_active = false
+		first_turn_roll_panel.visible = false
+		_start_round()
+		return
+	if local_first_turn_roll_contenders.has(HUMAN_PLAYER_INDEX):
+		_perform_local_first_turn_roll()
+
+
+func _perform_local_first_turn_roll() -> void:
+	if not local_first_turn_roll_active or local_first_turn_roll_winner_index >= 0:
+		return
+	local_first_turn_roll_round += 1
+	local_first_turn_roll_values.fill(-1)
+	var highest_value := -1
+	var leaders: Array[int] = []
+	for player_index in local_first_turn_roll_contenders:
+		var roll_value := local_first_turn_roll_random.randi_range(1, 6)
+		local_first_turn_roll_values[player_index] = roll_value
+		if roll_value > highest_value:
+			highest_value = roll_value
+			leaders.assign([player_index])
+		elif roll_value == highest_value:
+			leaders.append(player_index)
+
+	if leaders.size() == 1:
+		local_first_turn_roll_winner_index = leaders[0]
+		game.dealer_index = posmod(local_first_turn_roll_winner_index - 1, game.players.size())
+	else:
+		local_first_turn_roll_contenders.assign(leaders)
+		if not local_first_turn_roll_contenders.has(HUMAN_PLAYER_INDEX):
+			var current_generation := local_first_turn_roll_generation
+			call_deferred("_continue_local_bot_first_turn_roll", current_generation)
+	_refresh_first_turn_roll_panel()
+
+
+func _continue_local_bot_first_turn_roll(expected_generation: int) -> void:
+	await get_tree().create_timer(FIRST_TURN_ROLL_BOT_REROLL_DELAY_SECONDS).timeout
+	if (
+		expected_generation == local_first_turn_roll_generation
+		and local_first_turn_roll_active
+		and local_first_turn_roll_winner_index < 0
+		and not local_first_turn_roll_contenders.has(HUMAN_PLAYER_INDEX)
+	):
+		_perform_local_first_turn_roll()
+
+
+func _refresh_first_turn_roll_panel(network_state: Dictionary = {}, network_seats: Array = []) -> void:
+	var is_network_roll := not network_state.is_empty()
+	if not is_network_roll and not local_first_turn_roll_active:
+		first_turn_roll_panel.visible = false
+		return
+
+	first_turn_roll_panel.visible = true
+	round_results_panel.visible = false
+	next_round_button.visible = false
+	_clear_children(first_turn_roll_grid)
+
+	var roll_round := int(network_state.get("roll_round", 0)) if is_network_roll else local_first_turn_roll_round
+	var phase := int(network_state.get("phase", LoopbackNetwork.FirstTurnRollPhase.WAITING)) if is_network_roll else (
+		LoopbackNetwork.FirstTurnRollPhase.COMPLETE
+		if local_first_turn_roll_winner_index >= 0
+		else LoopbackNetwork.FirstTurnRollPhase.WAITING
+	)
+	var contenders: Array = network_state.get("contenders", []) if is_network_roll else local_first_turn_roll_contenders
+	var values: Array = network_state.get("values", []) if is_network_roll else local_first_turn_roll_values
+	var submitted: Array = network_state.get("submitted", []) if is_network_roll else []
+	var winner_player_index := int(network_state.get("winner_player_index", -1)) if is_network_roll else local_first_turn_roll_winner_index
+	var player_names := _get_first_turn_roll_player_names(network_seats if is_network_roll else [])
+
+	first_turn_roll_title.text = "ПЕРЕБРОС ЛИДЕРОВ" if roll_round > 1 and winner_player_index < 0 else "РОЗЫГРЫШ ПЕРВОГО ХОДА"
+	first_turn_roll_subtitle.text = "Победитель первым заказывает и начинает игру"
+	for player_index in PLAYER_NAMES.size():
+		var is_contender := contenders.has(player_index)
+		var roll_value := int(values[player_index]) if player_index < values.size() else -1
+		var has_submitted := bool(submitted[player_index]) if player_index < submitted.size() else roll_value > 0
+		var is_winner := player_index == winner_player_index
+		_add_first_turn_roll_player_slot(
+			player_names[player_index],
+			roll_value,
+			is_contender,
+			has_submitted,
+			is_winner,
+			phase
+		)
+
+	if winner_player_index >= 0:
+		first_turn_roll_status.text = "%s выигрывает и будет первым заказывать и ходить" % player_names[winner_player_index]
+	elif phase == LoopbackNetwork.FirstTurnRollPhase.REVEAL:
+		first_turn_roll_status.text = "Ничья у лидеров — сейчас будет переброс"
+	elif is_network_roll:
+		var submitted_count := 0
+		for player_index in contenders:
+			if player_index < submitted.size() and bool(submitted[player_index]):
+				submitted_count += 1
+		first_turn_roll_status.text = "Кубики готовы: %d из %d · значения откроются одновременно" % [submitted_count, contenders.size()]
+	elif roll_round > 0:
+		first_turn_roll_status.text = "Ничья у лидеров — нужен переброс"
+	else:
+		first_turn_roll_status.text = "Все участники бросают кубики одновременно"
+
+	if is_network_roll:
+		var network_match = _get_active_network_match()
+		if winner_player_index >= 0:
+			first_turn_roll_button.text = "Начать первую раздачу" if network_match != null and network_match.is_host() else "Ждём запуска раздачи хостом"
+			first_turn_roll_button.disabled = network_match == null or not network_match.can_start_first_real_round()
+		elif phase == LoopbackNetwork.FirstTurnRollPhase.REVEAL:
+			first_turn_roll_button.text = "Готовим переброс…"
+			first_turn_roll_button.disabled = true
+		elif network_match != null and not contenders.has(network_match.get_test_table_viewer_index()):
+			first_turn_roll_button.text = "Перебрасывают лидеры · ждём"
+			first_turn_roll_button.disabled = true
+		elif network_match != null and network_match.can_submit_first_turn_roll():
+			first_turn_roll_button.text = "Перебросить кубик" if roll_round > 1 else "Бросить кубик"
+			first_turn_roll_button.disabled = false
+		else:
+			first_turn_roll_button.text = "Кубик брошен ✓ · ждём остальных"
+			first_turn_roll_button.disabled = true
+	elif winner_player_index >= 0:
+		first_turn_roll_button.text = "Начать первую раздачу"
+		first_turn_roll_button.disabled = false
+	elif local_first_turn_roll_contenders.has(HUMAN_PLAYER_INDEX):
+		first_turn_roll_button.text = "Перебросить кубик" if roll_round > 0 else "Бросить кубик"
+		first_turn_roll_button.disabled = false
+	else:
+		first_turn_roll_button.text = "Боты перебрасывают кубики…"
+		first_turn_roll_button.disabled = true
+
+
+func _get_first_turn_roll_player_names(network_seats: Array) -> Array[String]:
+	var player_names: Array[String] = []
+	player_names.resize(PLAYER_NAMES.size())
+	for player_index in PLAYER_NAMES.size():
+		player_names[player_index] = game.players[player_index].display_name if player_index < game.players.size() else "Игрок %d" % (player_index + 1)
+	for seat_variant in network_seats:
+		if not (seat_variant is Dictionary):
+			continue
+		var seat: Dictionary = seat_variant
+		var player_index := int(seat.get("player_index", -1))
+		if player_index >= 0 and player_index < player_names.size():
+			player_names[player_index] = str(seat.get("display_name", player_names[player_index]))
+	return player_names
+
+
+func _add_first_turn_roll_player_slot(
+	player_name: String,
+	roll_value: int,
+	is_contender: bool,
+	has_submitted: bool,
+	is_winner: bool,
+	phase: int
+) -> void:
+	var slot := PanelContainer.new()
+	slot.custom_minimum_size = Vector2(150.0, 132.0)
+	slot.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var border_color := Color(1.0, 0.79, 0.24, 1.0) if is_winner else Color(0.47, 0.34, 0.12, 0.9) if is_contender else Color(0.2, 0.24, 0.2, 0.72)
+	var slot_style := _create_flat_style(
+		Color(0.15, 0.13, 0.035, 0.98) if is_winner else Color(0.025, 0.105, 0.065, 0.98),
+		border_color,
+		3 if is_winner else 1,
+		9,
+		4 if is_winner else 1
+	)
+	slot_style.content_margin_left = 8.0
+	slot_style.content_margin_top = 8.0
+	slot_style.content_margin_right = 8.0
+	slot_style.content_margin_bottom = 8.0
+	slot.add_theme_stylebox_override("panel", slot_style)
+	first_turn_roll_grid.add_child(slot)
+
+	var content := VBoxContainer.new()
+	content.add_theme_constant_override("separation", 3)
+	slot.add_child(content)
+	var name_label := Label.new()
+	name_label.text = player_name
+	name_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	name_label.add_theme_font_size_override("font_size", 16)
+	name_label.add_theme_color_override("font_color", Color(1.0, 0.9, 0.52, 1.0) if is_winner else Color(0.9, 0.96, 0.9, 1.0))
+	content.add_child(name_label)
+
+	var dice_label := Label.new()
+	dice_label.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	dice_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	dice_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	dice_label.add_theme_font_size_override("font_size", 42)
+	dice_label.add_theme_color_override("font_color", Color(1.0, 0.86, 0.34, 1.0) if is_winner else Color(0.96, 0.97, 0.91, 1.0))
+	if roll_value >= 1 and roll_value <= DICE_FACE_TEXTS.size():
+		dice_label.text = "%s  %d" % [DICE_FACE_TEXTS[roll_value - 1], roll_value]
+	elif not is_contender:
+		dice_label.text = "—"
+	elif has_submitted and phase == LoopbackNetwork.FirstTurnRollPhase.WAITING:
+		dice_label.text = "🎲"
+	else:
+		dice_label.text = "?"
+	content.add_child(dice_label)
+
+	var state_label := Label.new()
+	state_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	state_label.add_theme_font_size_override("font_size", 13)
+	state_label.add_theme_color_override("font_color", Color(0.72, 0.83, 0.73, 1.0))
+	if is_winner:
+		state_label.text = "ПЕРВЫЙ ХОД"
+	elif not is_contender:
+		state_label.text = "вне переброса"
+	elif has_submitted and roll_value < 0:
+		state_label.text = "бросок сделан"
+	else:
+		state_label.text = "участвует"
+	content.add_child(state_label)
 
 
 func _on_return_to_menu_pressed() -> void:
@@ -6036,6 +6332,14 @@ func _refresh_music_player() -> void:
 
 func _reset_game_session() -> void:
 	_stop_human_turn_timer()
+	local_first_turn_roll_generation += 1
+	local_first_turn_roll_active = false
+	local_first_turn_roll_round = 0
+	local_first_turn_roll_contenders.clear()
+	local_first_turn_roll_values.clear()
+	local_first_turn_roll_winner_index = -1
+	if is_instance_valid(first_turn_roll_panel):
+		first_turn_roll_panel.visible = false
 	game = Game.new(configured_player_names)
 	game_statistics_recorded_for_current_session = false
 	statistics_return_to_final_menu = false
@@ -6114,6 +6418,8 @@ func _start_round() -> void:
 			NORMAL_ROUND_COUNT,
 			game.players[game.dealer_index].display_name
 		]
+	if game.current_round.number == 1 and local_first_turn_roll_winner_index >= 0:
+		action_text += " Первым заказывает и ходит %s." % game.players[local_first_turn_roll_winner_index].display_name
 	_add_history(action_text)
 	next_round_button.visible = false
 	next_round_button.disabled = false
@@ -6730,6 +7036,7 @@ func _refresh_ui() -> void:
 	_refresh_sticker_controls()
 	_refresh_soundpad_controls()
 	_refresh_social_action_buttons()
+	_refresh_first_turn_roll_panel()
 
 
 func _refresh_header() -> void:
