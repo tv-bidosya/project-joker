@@ -7,27 +7,35 @@ enum DeckStyle {
 	JUMBO_FOUR_COLOR,
 	CLASSIC_FOUR_COLOR,
 	COMPACT_FOUR_COLOR,
-	ORIGINAL_JUMBO
+	ORIGINAL_JUMBO,
+	SIMPLE_FIRST_VERSION,
+	VECTOR_CLASSIC
 }
 
 
 const JUMBO_INDEX_ROOT := "res://Assets/Cards/JumboIndex/"
 const CLASSIC_FOUR_COLOR_ROOT := "res://Assets/Cards/ClassicFourColor/"
 const COMPACT_FOUR_COLOR_ROOT := "res://Assets/Cards/CompactFourColor/"
+const VECTOR_CLASSIC_ROOT := "res://Assets/Cards/VectorClassic/"
 
 static var selected_deck_style: DeckStyle = DeckStyle.JUMBO_FOUR_COLOR
 static var texture_cache: Dictionary = {}
 
 
 static func set_deck_style(deck_style: int) -> void:
-	selected_deck_style = clampi(deck_style, DeckStyle.JUMBO_FOUR_COLOR, DeckStyle.ORIGINAL_JUMBO)
+	selected_deck_style = clampi(deck_style, DeckStyle.JUMBO_FOUR_COLOR, DeckStyle.VECTOR_CLASSIC)
 
 
 static func get_face_texture(card: Card) -> Texture2D:
 	if card == null:
 		return null
 
+	if selected_deck_style == DeckStyle.SIMPLE_FIRST_VERSION:
+		return null
+
 	if card.is_joker:
+		if selected_deck_style == DeckStyle.VECTOR_CLASSIC:
+			return _load_texture(VECTOR_CLASSIC_ROOT.path_join("red_joker.svg"))
 		return _load_texture(JUMBO_INDEX_ROOT.path_join("redJoker.png"))
 
 	match selected_deck_style:
@@ -35,6 +43,8 @@ static func get_face_texture(card: Card) -> Texture2D:
 			return _load_texture(CLASSIC_FOUR_COLOR_ROOT.path_join(_get_classic_four_color_file_name(card)))
 		DeckStyle.COMPACT_FOUR_COLOR:
 			return _load_texture(COMPACT_FOUR_COLOR_ROOT.path_join(_get_compact_four_color_file_name(card)))
+		DeckStyle.VECTOR_CLASSIC:
+			return _load_texture(VECTOR_CLASSIC_ROOT.path_join(_get_vector_classic_file_name(card)))
 
 	var suit_name := _get_suit_name(card.suit)
 	var rank_name := _get_rank_name(card.rank)
@@ -61,6 +71,8 @@ static func get_face_texture(card: Card) -> Texture2D:
 
 
 static func get_back_texture() -> Texture2D:
+	if selected_deck_style == DeckStyle.SIMPLE_FIRST_VERSION:
+		return null
 	return _load_texture(JUMBO_INDEX_ROOT.path_join("blueBack.png"))
 
 
@@ -130,6 +142,39 @@ static func _get_compact_four_color_file_name(card: Card) -> String:
 	if suit_offset < 0 or rank_offset < 0:
 		return ""
 	return "card%d.png" % (suit_offset + rank_offset)
+
+
+static func _get_vector_classic_file_name(card: Card) -> String:
+	var rank_name := ""
+	match card.rank:
+		Card.Rank.SIX:
+			rank_name = "6"
+		Card.Rank.SEVEN:
+			rank_name = "7"
+		Card.Rank.EIGHT:
+			rank_name = "8"
+		Card.Rank.NINE:
+			rank_name = "9"
+		Card.Rank.TEN:
+			rank_name = "10"
+		Card.Rank.JACK:
+			rank_name = "jack"
+		Card.Rank.QUEEN:
+			rank_name = "queen"
+		Card.Rank.KING:
+			rank_name = "king"
+		Card.Rank.ACE:
+			rank_name = "ace"
+	var suit_name: String = {
+		Card.Suit.CLUBS: "clubs",
+		Card.Suit.SPADES: "spades",
+		Card.Suit.HEARTS: "hearts",
+		Card.Suit.DIAMONDS: "diamonds"
+	}.get(card.suit, "")
+	if rank_name.is_empty() or suit_name.is_empty():
+		return ""
+	var variant_suffix := "2" if card.rank in [Card.Rank.JACK, Card.Rank.QUEEN, Card.Rank.KING] or (card.rank == Card.Rank.ACE and card.suit == Card.Suit.SPADES) else ""
+	return "%s_of_%s%s.svg" % [rank_name, suit_name, variant_suffix]
 
 
 static func _create_four_color_texture(source_texture: Texture2D, suit: Card.Suit) -> Texture2D:

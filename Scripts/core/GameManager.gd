@@ -714,7 +714,7 @@ func _create_menu_backdrop_material() -> ShaderMaterial:
 
 
 func _on_menu_backdrop_gui_input(event: InputEvent) -> void:
-	if not is_pause_menu_open or is_processing_automatic_actions or is_bug_report_review_mode:
+	if not is_pause_menu_open or is_bug_report_review_mode:
 		return
 
 	var mouse_button_event: InputEventMouseButton = event as InputEventMouseButton
@@ -4091,6 +4091,8 @@ func _show_settings_menu() -> void:
 	deck_style_selector.add_item("Классическая · четыре цвета")
 	deck_style_selector.add_item("Компактная · четыре цвета")
 	deck_style_selector.add_item("Jumbo · оригинальная (2 цвета)")
+	deck_style_selector.add_item("Простая · первая версия")
+	deck_style_selector.add_item("Классическая векторная · Full HD")
 	deck_style_selector.selected = card_deck_style
 	deck_style_selector.custom_minimum_size = Vector2(0.0, 42.0)
 	deck_style_selector.add_theme_font_size_override("font_size", 17)
@@ -4324,9 +4326,6 @@ func _on_return_to_menu_pressed() -> void:
 
 
 func _on_pause_menu_pressed() -> void:
-	if is_processing_automatic_actions:
-		return
-
 	is_pause_menu_open = true
 	menu_overlay.visible = true
 	if _is_steam_p2p_main_table_active():
@@ -4496,7 +4495,7 @@ func _on_card_deck_style_selected(selected_index: int) -> void:
 	card_deck_style = clampi(
 		selected_index,
 		CardArtworkResource.DeckStyle.JUMBO_FOUR_COLOR,
-		CardArtworkResource.DeckStyle.ORIGINAL_JUMBO
+		CardArtworkResource.DeckStyle.VECTOR_CLASSIC
 	)
 	CardArtworkResource.set_deck_style(card_deck_style)
 	_save_persistent_settings()
@@ -4692,7 +4691,7 @@ func _load_persistent_settings() -> void:
 	card_deck_style = clampi(
 		saved_card_deck_style,
 		CardArtworkResource.DeckStyle.JUMBO_FOUR_COLOR,
-		CardArtworkResource.DeckStyle.ORIGINAL_JUMBO
+		CardArtworkResource.DeckStyle.VECTOR_CLASSIC
 	)
 	tutorial_enabled = bool(config.get_value("game", "tutorial_enabled", tutorial_enabled))
 	auto_turn_enabled = bool(config.get_value("game", "auto_turn_enabled", auto_turn_enabled))
@@ -6372,16 +6371,13 @@ func _process_local_undo_vote() -> void:
 
 
 func _on_score_sheet_toggle_pressed() -> void:
-	if is_processing_automatic_actions:
-		return
-
 	is_score_sheet_visible = not is_score_sheet_visible
 	_save_current_session()
 	_refresh_ui()
 
 
 func _on_score_sheet_backdrop_gui_input(event: InputEvent) -> void:
-	if is_processing_automatic_actions or not is_score_sheet_visible:
+	if not is_score_sheet_visible:
 		return
 
 	var mouse_button_event: InputEventMouseButton = event as InputEventMouseButton
@@ -6403,9 +6399,6 @@ func _on_music_player_visibility_toggle_pressed() -> void:
 
 
 func _on_round_history_toggle_pressed() -> void:
-	if is_processing_automatic_actions:
-		return
-
 	is_round_history_visible = not is_round_history_visible
 	_save_current_session()
 	_refresh_ui()
@@ -6747,7 +6740,7 @@ func _refresh_header() -> void:
 	)
 	action_label.visible = should_show_action_label
 	action_label.text = action_text
-	pause_menu_button.disabled = is_processing_automatic_actions
+	pause_menu_button.disabled = false
 
 
 func _refresh_player_panels() -> void:
@@ -7061,9 +7054,9 @@ func _refresh_score_sheet() -> void:
 		score_sheet_backdrop.visible = is_score_sheet_visible
 	if is_instance_valid(score_sheet_close_button):
 		score_sheet_close_button.visible = is_score_sheet_visible
-		score_sheet_close_button.disabled = is_processing_automatic_actions
+		score_sheet_close_button.disabled = false
 	score_sheet_toggle_button.text = "📋 Расписка"
-	score_sheet_toggle_button.disabled = is_processing_automatic_actions
+	score_sheet_toggle_button.disabled = false
 	score_sheet_title.text = "Расписка: %d из %d раздач сыграно · полный план партии" % [round_history.size(), TOTAL_ROUND_COUNT]
 	final_results_label.visible = _is_full_game_complete()
 
@@ -7520,7 +7513,7 @@ func _refresh_round_history_panel() -> void:
 	round_history_panel.visible = is_round_history_visible
 	round_history_toggle_button.text = "История"
 	round_history_toggle_button.tooltip_text = "Скрыть историю" if is_round_history_visible else "Показать историю"
-	round_history_toggle_button.disabled = is_processing_automatic_actions
+	round_history_toggle_button.disabled = false
 
 
 func _refresh_round_results() -> void:

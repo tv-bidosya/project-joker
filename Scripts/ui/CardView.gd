@@ -20,6 +20,7 @@ var artwork_texture: TextureRect
 var top_corner_label: Label
 var center_label: Label
 var bottom_corner_label: Label
+var status_badge: PanelContainer
 var status_label: Label
 
 
@@ -68,7 +69,28 @@ func set_card_size(card_size: Vector2) -> void:
 
 func set_status(status_text: String) -> void:
 	status_label.text = status_text
-	status_label.visible = not status_text.is_empty()
+	status_label.add_theme_font_size_override("font_size", 10 if status_text.length() > 10 else 12)
+	status_badge.visible = not status_text.is_empty()
+	if status_text.is_empty():
+		return
+
+	var is_discard := status_text.contains("НЕ БЕРЁТ") or status_text.contains("НЕ ЗАБИРАЕТ")
+	var is_declared_rule := status_text.contains("СТАРШАЯ") or status_text.contains("МЛАДШАЯ")
+	var badge_style := StyleBoxFlat.new()
+	badge_style.bg_color = (
+		Color(0.48, 0.08, 0.08, 0.96)
+		if is_discard
+		else Color(0.12, 0.25, 0.46, 0.96)
+		if is_declared_rule
+		else Color(0.04, 0.34, 0.18, 0.96)
+	)
+	badge_style.border_color = Color(1.0, 0.84, 0.38, 1.0)
+	badge_style.set_border_width_all(2)
+	badge_style.set_corner_radius_all(7)
+	badge_style.shadow_color = Color(0.0, 0.0, 0.0, 0.58)
+	badge_style.shadow_size = 4
+	badge_style.shadow_offset = Vector2(0.0, 2.0)
+	status_badge.add_theme_stylebox_override("panel", badge_style)
 
 
 func set_interactive(interactive: bool, disabled: bool) -> void:
@@ -132,21 +154,28 @@ func _create_visuals() -> void:
 	center_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	face_panel.add_child(center_label)
 
+	status_badge = PanelContainer.new()
+	status_badge.anchor_left = 0.0
+	status_badge.anchor_top = 1.0
+	status_badge.anchor_right = 1.0
+	status_badge.anchor_bottom = 1.0
+	status_badge.offset_left = 4.0
+	status_badge.offset_top = -38.0
+	status_badge.offset_right = -4.0
+	status_badge.offset_bottom = -4.0
+	status_badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	status_badge.visible = false
+	face_panel.add_child(status_badge)
+
 	status_label = Label.new()
-	status_label.anchor_left = 0.0
-	status_label.anchor_top = 1.0
-	status_label.anchor_right = 1.0
-	status_label.anchor_bottom = 1.0
-	status_label.offset_left = 6.0
-	status_label.offset_top = -30.0
-	status_label.offset_right = -6.0
-	status_label.offset_bottom = -6.0
 	status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	status_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	status_label.add_theme_color_override("font_color", Color(0.42, 0.17, 0.05, 1.0))
-	status_label.add_theme_font_size_override("font_size", 10)
-	status_label.visible = false
-	face_panel.add_child(status_label)
+	status_label.add_theme_color_override("font_color", Color.WHITE)
+	status_label.add_theme_color_override("font_shadow_color", Color(0.0, 0.0, 0.0, 0.8))
+	status_label.add_theme_constant_override("shadow_offset_x", 1)
+	status_label.add_theme_constant_override("shadow_offset_y", 1)
+	status_label.add_theme_font_size_override("font_size", 12)
+	status_badge.add_child(status_label)
 
 	bottom_corner_label = Label.new()
 	bottom_corner_label.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
