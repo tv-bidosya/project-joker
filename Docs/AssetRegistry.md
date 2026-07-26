@@ -8,7 +8,7 @@
 | `Assets/Cards/JumboIndex/*.png` | card faces and backs (PNG) | saul / OpenGameArt | CC0 — https://opengameart.org/content/jumbo-index-playing-cards | да | нет | нет | не требуется | страница источника и `Assets/Cards/JumboIndex/README.md` | готово |
 | `Assets/Cards/ClassicFourColor/*.svg` | card faces (SVG) | Heratexx / OpenGameArt | CC0 — https://opengameart.org/content/classic-4-color-poker-deck-svg | да | нет | нет | не требуется | страница источника и `Assets/Cards/ClassicFourColor/README.md` | готово |
 | `Assets/Cards/CompactFourColor/*.png` | card faces (PNG) | scl / OpenGameArt | CC0 — https://opengameart.org/content/4-color-playing-cards | да | нет | нет | не требуется | страница источника и `Assets/Cards/CompactFourColor/README.md` | готово |
-| `Assets/Cards/VectorClassic/*.svg` | card faces and Joker (SVG) | Byron Knoll / OpenGameArt | CC0 — https://opengameart.org/content/playing-cards-vector-png | да | нет | нет | не требуется | страница источника и `Assets/Cards/VectorClassic/README.md` | готово |
+| `Assets/Cards/VectorClassic/*.png` | card faces and Joker (high-resolution PNG export from vector originals) | Byron Knoll / OpenGameArt | CC0 — https://opengameart.org/content/playing-cards-vector-png | да | нет | нет | не требуется | страница источника и `Assets/Cards/VectorClassic/README.md` | готово |
 
 ## Правила заполнения
 

@@ -35,7 +35,7 @@ static func get_face_texture(card: Card) -> Texture2D:
 
 	if card.is_joker:
 		if selected_deck_style == DeckStyle.VECTOR_CLASSIC:
-			return _load_texture(VECTOR_CLASSIC_ROOT.path_join("red_joker.svg"))
+			return _load_texture(VECTOR_CLASSIC_ROOT.path_join("red_joker.png"))
 		return _load_texture(JUMBO_INDEX_ROOT.path_join("redJoker.png"))
 
 	match selected_deck_style:
@@ -174,7 +174,7 @@ static func _get_vector_classic_file_name(card: Card) -> String:
 	if rank_name.is_empty() or suit_name.is_empty():
 		return ""
 	var variant_suffix := "2" if card.rank in [Card.Rank.JACK, Card.Rank.QUEEN, Card.Rank.KING] or (card.rank == Card.Rank.ACE and card.suit == Card.Suit.SPADES) else ""
-	return "%s_of_%s%s.svg" % [rank_name, suit_name, variant_suffix]
+	return "%s_of_%s%s.png" % [rank_name, suit_name, variant_suffix]
 
 
 static func _create_four_color_texture(source_texture: Texture2D, suit: Card.Suit) -> Texture2D:
