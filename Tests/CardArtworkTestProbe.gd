@@ -5,6 +5,14 @@ const CardArtworkResource := preload("res://Scripts/ui/CardArtwork.gd")
 
 
 func _init() -> void:
+	assert(
+		CardArtworkResource.DEFAULT_DECK_STYLE == CardArtworkResource.DeckStyle.VECTOR_CLASSIC,
+		"Fresh installs must start with the classic vector deck"
+	)
+	assert(
+		CardArtworkResource.selected_deck_style == CardArtworkResource.DEFAULT_DECK_STYLE,
+		"Card artwork must initialize with the fresh-install default"
+	)
 	for deck_style in range(
 		CardArtworkResource.DeckStyle.JUMBO_FOUR_COLOR,
 		CardArtworkResource.DeckStyle.VECTOR_CLASSIC + 1

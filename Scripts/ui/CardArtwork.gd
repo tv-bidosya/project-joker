@@ -17,8 +17,9 @@ const JUMBO_INDEX_ROOT := "res://Assets/Cards/JumboIndex/"
 const CLASSIC_FOUR_COLOR_ROOT := "res://Assets/Cards/ClassicFourColor/"
 const COMPACT_FOUR_COLOR_ROOT := "res://Assets/Cards/CompactFourColor/"
 const VECTOR_CLASSIC_ROOT := "res://Assets/Cards/VectorClassic/"
+const DEFAULT_DECK_STYLE := DeckStyle.VECTOR_CLASSIC
 
-static var selected_deck_style: DeckStyle = DeckStyle.JUMBO_FOUR_COLOR
+static var selected_deck_style: DeckStyle = DEFAULT_DECK_STYLE
 static var texture_cache: Dictionary = {}
 
 
@@ -35,7 +36,7 @@ static func get_face_texture(card: Card) -> Texture2D:
 
 	if card.is_joker:
 		if selected_deck_style == DeckStyle.VECTOR_CLASSIC:
-			return _load_texture(VECTOR_CLASSIC_ROOT.path_join("red_joker.png"))
+			return _load_texture(VECTOR_CLASSIC_ROOT.path_join("project_joker.png"))
 		return _load_texture(JUMBO_INDEX_ROOT.path_join("redJoker.png"))
 
 	match selected_deck_style:

@@ -67,6 +67,36 @@ const BUG_REPORT_TIMELINE_LIMIT := 8
 const UNDO_REQUESTS_PER_DECISION_LIMIT := 2
 const LOCAL_UNDO_VOTE_INTERVAL_SECONDS := 0.28
 const LOCAL_UNDO_VOTE_RESULT_HOLD_SECONDS := 0.45
+const AVATAR_TURN_GLOW_SHADER_CODE := """
+shader_type canvas_item;
+render_mode unshaded;
+
+float rounded_box_sdf(vec2 point, vec2 half_size, float radius) {
+	vec2 offset = abs(point) - half_size + vec2(radius);
+	return length(max(offset, vec2(0.0))) + min(max(offset.x, offset.y), 0.0) - radius;
+}
+
+void fragment() {
+	vec2 point = (UV - vec2(0.5)) * 2.0;
+	float frame_distance = rounded_box_sdf(point, vec2(0.84), 0.15);
+	float ring = 1.0 - smoothstep(0.025, 0.065, abs(frame_distance));
+	float halo = 1.0 - smoothstep(0.055, 0.19, abs(frame_distance));
+	float angle = (atan(point.y, point.x) + PI) / TAU;
+	float sweep = pow(max(cos((angle - TIME * 0.32) * TAU), 0.0), 18.0);
+	float sparkle = pow(max(cos((angle + TIME * 0.18) * TAU * 3.0), 0.0), 28.0);
+	float pulse = 0.84 + 0.16 * sin(TIME * 4.2);
+	vec3 deep_gold = vec3(1.0, 0.48, 0.04);
+	vec3 pale_gold = vec3(1.0, 0.98, 0.68);
+	vec3 color = mix(deep_gold, pale_gold, clamp(sweep + sparkle * 0.45, 0.0, 1.0));
+	float alpha = clamp(
+		ring * (0.64 + sweep * 0.78 + sparkle * 0.34)
+		+ halo * (0.08 + sweep * 0.18),
+		0.0,
+		1.0
+	) * pulse;
+	COLOR = vec4(color, alpha);
+}
+"""
 
 
 enum HandSortMode {
@@ -164,6 +194,7 @@ var avatar_badges: Array[PanelContainer] = []
 var avatar_images: Array[TextureRect] = []
 var avatar_labels: Array[Label] = []
 var avatar_turn_labels: Array[Label] = []
+var avatar_turn_glows: Array[ColorRect] = []
 var turn_timer_indicator: TurnTimerIndicator
 var reaction_toggle_button: Button
 var reaction_picker: PanelContainer
@@ -246,7 +277,7 @@ var menu_scroll: ScrollContainer
 var menu_content: VBoxContainer
 var card_deck_preview_container: HBoxContainer
 var bot_speed_index := 1
-var card_deck_style := CardArtworkResource.DeckStyle.JUMBO_FOUR_COLOR
+var card_deck_style := CardArtworkResource.DEFAULT_DECK_STYLE
 var bot_difficulty: BotDifficulty = BotDifficulty.NORMAL
 var tutorial_enabled := false
 var auto_turn_enabled := false
@@ -1649,8 +1680,7 @@ func _refresh_network_main_players(snapshot: Dictionary, viewer_index: int, acti
 		var avatar_badge: PanelContainer = avatar_badges[relative_slot]
 		_place_player_avatar_badge(avatar_badge, relative_slot)
 		avatar_badge.tooltip_text = "Игрок: %s" % str(player_data.get("display_name", "Игрок"))
-		avatar_badge.add_theme_stylebox_override("panel", active_avatar_badge_style if is_current else avatar_badge_style)
-		avatar_turn_labels[relative_slot].visible = is_current
+		_set_avatar_turn_active(relative_slot, is_current)
 		var avatar_texture: Texture2D = _get_player_avatar_texture(relative_slot)
 		avatar_images[relative_slot].texture = avatar_texture
 		avatar_labels[relative_slot].visible = avatar_texture == null
@@ -6832,6 +6862,7 @@ func _load_avatar_texture_from_path(texture_path: String) -> Texture2D:
 func _create_player_avatar_badges() -> void:
 	undo_vote_states.resize(PLAYER_NAMES.size())
 	undo_vote_states.fill(UndoVoteState.NONE)
+	var turn_glow_material := _create_avatar_turn_glow_material()
 	for player_index in PLAYER_NAMES.size():
 		var badge := PanelContainer.new()
 		badge.tooltip_text = "Аватар игрока"
@@ -6857,6 +6888,19 @@ func _create_player_avatar_badges() -> void:
 		avatar_label.add_theme_color_override("font_color", Color(0.98, 0.9, 0.6, 1.0))
 		avatar_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		avatar_content.add_child(avatar_label)
+
+		var turn_glow := ColorRect.new()
+		turn_glow.visible = false
+		turn_glow.z_index = 3
+		turn_glow.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		turn_glow.set_anchors_preset(Control.PRESET_FULL_RECT)
+		turn_glow.offset_left = -10.0
+		turn_glow.offset_top = -10.0
+		turn_glow.offset_right = 10.0
+		turn_glow.offset_bottom = 10.0
+		turn_glow.color = Color.WHITE
+		turn_glow.material = turn_glow_material
+		avatar_content.add_child(turn_glow)
 
 		var turn_label := Label.new()
 		turn_label.visible = false
@@ -6906,6 +6950,7 @@ func _create_player_avatar_badges() -> void:
 		avatar_images.append(avatar_image)
 		avatar_labels.append(avatar_label)
 		avatar_turn_labels.append(turn_label)
+		avatar_turn_glows.append(turn_glow)
 		undo_vote_badges.append(undo_vote_badge)
 		undo_vote_labels.append(undo_vote_label)
 
@@ -6917,13 +6962,33 @@ func _refresh_player_avatar_badges() -> void:
 			and _get_current_player_index() == player_index
 			and game.current_round.state != Round.State.FINISHED
 		)
-		avatar_badges[player_index].add_theme_stylebox_override("panel", active_avatar_badge_style if is_current else avatar_badge_style)
-		avatar_turn_labels[player_index].visible = is_current
+		_set_avatar_turn_active(player_index, is_current)
 		avatar_badges[player_index].tooltip_text = "Аватар: %s" % game.players[player_index].display_name
 		var avatar_texture: Texture2D = _get_player_avatar_texture(player_index)
 		avatar_images[player_index].texture = avatar_texture
 		avatar_labels[player_index].visible = avatar_texture == null
 		avatar_labels[player_index].text = _get_player_avatar_symbol(player_index)
+
+
+func _set_avatar_turn_active(player_index: int, is_current: bool) -> void:
+	if player_index < 0 or player_index >= avatar_badges.size():
+		return
+	avatar_badges[player_index].add_theme_stylebox_override(
+		"panel",
+		active_avatar_badge_style if is_current else avatar_badge_style
+	)
+	if player_index < avatar_turn_labels.size():
+		avatar_turn_labels[player_index].visible = is_current
+	if player_index < avatar_turn_glows.size():
+		avatar_turn_glows[player_index].visible = is_current
+
+
+func _create_avatar_turn_glow_material() -> ShaderMaterial:
+	var glow_shader := Shader.new()
+	glow_shader.code = AVATAR_TURN_GLOW_SHADER_CODE
+	var glow_material := ShaderMaterial.new()
+	glow_material.shader = glow_shader
+	return glow_material
 
 
 func _place_player_avatar_badge(badge: PanelContainer, player_index: int) -> void:
