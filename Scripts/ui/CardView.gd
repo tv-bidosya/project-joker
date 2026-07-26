@@ -3,6 +3,9 @@ class_name CardView
 extends Control
 
 
+const CardArtworkResource = preload("res://Scripts/ui/CardArtwork.gd")
+
+
 signal card_pressed(card: Card)
 
 
@@ -13,6 +16,7 @@ var is_hovered := false
 var is_winner_highlighted := false
 
 var face_panel: Panel
+var artwork_texture: TextureRect
 var top_corner_label: Label
 var center_label: Label
 var bottom_corner_label: Label
@@ -31,6 +35,10 @@ func set_card(card: Card) -> void:
 	tooltip_text = card.get_card_name()
 	set_status("")
 	set_winner_highlight(false)
+	var face_texture: Texture2D = CardArtworkResource.get_face_texture(card)
+	var uses_artwork := face_texture != null
+	artwork_texture.texture = face_texture
+	artwork_texture.visible = uses_artwork
 
 	var card_color := _get_card_color(card)
 	if card.is_joker:
@@ -47,6 +55,7 @@ func set_card(card: Card) -> void:
 		center_label.add_theme_font_size_override("font_size", 48)
 
 	for label in [top_corner_label, center_label, bottom_corner_label]:
+		label.visible = not uses_artwork
 		label.add_theme_color_override("font_color", card_color)
 
 	_refresh_face_style()
@@ -90,6 +99,19 @@ func _create_visuals() -> void:
 	face_panel.set_anchors_preset(Control.PRESET_FULL_RECT)
 	face_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(face_panel)
+
+	artwork_texture = TextureRect.new()
+	artwork_texture.set_anchors_preset(Control.PRESET_FULL_RECT)
+	artwork_texture.offset_left = 4.0
+	artwork_texture.offset_top = 4.0
+	artwork_texture.offset_right = -4.0
+	artwork_texture.offset_bottom = -4.0
+	artwork_texture.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	artwork_texture.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+	artwork_texture.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+	artwork_texture.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	artwork_texture.visible = false
+	face_panel.add_child(artwork_texture)
 
 	top_corner_label = Label.new()
 	top_corner_label.position = Vector2(8.0, 6.0)

@@ -2,6 +2,8 @@ extends SceneTree
 
 
 const LoopbackNetwork = preload("res://Scripts/core/LoopbackNetworkTest.gd")
+const LocalMatchHost = preload("res://Scripts/core/LocalMatchHost.gd")
+const MatchCommand = preload("res://Scripts/core/MatchCommand.gd")
 const TEST_TIMEOUT_SECONDS := 15.0
 const TEST_PORT := 24568
 
@@ -14,6 +16,7 @@ var social_actions_checked := false
 
 
 func _init() -> void:
+	_verify_authoritative_undo_vote()
 	host = LoopbackNetwork.new()
 	root.add_child(host)
 	assert(host.start_host(TEST_PORT), "Проверка ENet-лобби: хост не смог запуститься.")
@@ -23,6 +26,44 @@ func _init() -> void:
 		clients.append(client)
 		root.add_child(client)
 		assert(client.start_client(player_index, TEST_PORT), "Проверка ENet-лобби: клиент %d не смог начать подключение." % (player_index + 1))
+
+
+func _verify_authoritative_undo_vote() -> void:
+	var game := Game.new(["Хост", "Игрок 2", "Бот 1", "Бот 2"])
+	game.dealer_index = 0
+	assert(game.start_round(1, Round.RoundType.NORMAL, Round.TrumpSuit.CLUBS), "Проверка возврата: не удалось начать раздачу.")
+	var match_host := LocalMatchHost.new(game)
+	match_host.record_current_round_started()
+	match_host.set_automatic_undo_approver_indices([2, 3])
+	var acting_player_index := game.current_round.current_player_index
+	var bid_command := MatchCommand.new(
+		MatchCommand.Type.BID,
+		acting_player_index,
+		game.round_number,
+		match_host.revision,
+		{"bid": 0}
+	)
+	assert(bool(match_host.apply_command(bid_command).get("accepted", false)), "Проверка возврата: хост не принял исходный заказ.")
+	assert(match_host.can_player_request_undo(acting_player_index), "Проверка возврата: автор своего заказа должен иметь право запросить откат.")
+	var request_command := MatchCommand.new(
+		MatchCommand.Type.UNDO_REQUEST,
+		acting_player_index,
+		game.round_number,
+		match_host.revision
+	)
+	assert(bool(match_host.apply_command(request_command).get("accepted", false)), "Проверка возврата: запрос не принят хостом.")
+	var requester_snapshot := match_host.create_player_snapshot(acting_player_index)
+	assert(bool(requester_snapshot.get("undo_state", {}).get("pending", false)), "Проверка возврата: голосование должно быть открыто до голоса хоста.")
+	var host_vote_command := MatchCommand.new(
+		MatchCommand.Type.UNDO_VOTE,
+		0,
+		game.round_number,
+		match_host.revision,
+		{"approved": true}
+	)
+	assert(bool(match_host.apply_command(host_vote_command).get("accepted", false)), "Проверка возврата: голос хоста не принят.")
+	assert(game.players[acting_player_index].bid == -1, "Проверка возврата: исходный заказ должен быть отменён после единогласного голоса.")
+	assert(int(match_host.create_player_snapshot(acting_player_index).get("table_state_reset_id", 0)) == 1, "Проверка возврата: клиент должен получить новый идентификатор состояния стола.")
 
 
 func _process(delta: float) -> bool:

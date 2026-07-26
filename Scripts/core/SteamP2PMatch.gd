@@ -150,6 +150,7 @@ func _process(delta: float) -> void:
 		_process_client_join_request(delta)
 	elif mode == Mode.HOST:
 		_process_snapshot_delivery(delta)
+		_process_host_undo_vote()
 
 	if mode == Mode.HOST:
 		_process_local_bots(delta)
@@ -354,6 +355,7 @@ func _start_as_host() -> void:
 	var test_game := Game.new(player_names)
 	test_game.dealer_index = HOST_PLAYER_INDEX
 	match_host = MatchHost.new(test_game)
+	match_host.set_automatic_undo_approver_indices(_local_bot_player_indices)
 	mode = Mode.HOST
 	_rebuild_host_lobby_seats()
 	var status_tail := "и двух локальных ботов" if _fill_empty_seats_with_bots else "из комнаты"
@@ -568,7 +570,7 @@ func _rebuild_host_lobby_seats() -> void:
 
 
 func _process_local_bots(delta: float) -> void:
-	if not _fill_empty_seats_with_bots or not lobby_round_started or match_host == null or is_match_paused_for_reconnect():
+	if not _fill_empty_seats_with_bots or not lobby_round_started or match_host == null or is_match_paused_for_reconnect() or match_host.is_undo_vote_pending():
 		return
 
 	_bot_action_delay_seconds = maxf(0.0, _bot_action_delay_seconds - delta)

@@ -14,6 +14,14 @@ const SOCIAL_ACTION_USE_LIMIT := 3
 const SOCIAL_ACTION_COOLDOWN_MILLISECONDS := 120000
 const NETWORK_REACTIONS := ["😄", "👏", "😮", "😢"]
 const NETWORK_STICKERS := ["🍫", "☕", "🍺", "💋", "♥"]
+const UNDO_REQUESTS_PER_DECISION_LIMIT := 2
+const UNDO_VOTE_TIMEOUT_MILLISECONDS := 45000
+
+enum UndoVote {
+	NONE,
+	APPROVED,
+	REJECTED
+}
 
 
 var game: Game
@@ -24,6 +32,18 @@ var public_table_events: Array[Dictionary] = []
 var next_public_table_event_id := 1
 var social_action_state_by_player: Dictionary = {}
 var last_rejection_reason := "rule_rejected"
+var undo_action_records: Array[Dictionary] = []
+var next_undo_action_id := 1
+var undo_request_counts_by_action_id: Dictionary = {}
+var undo_pending := false
+var undo_requester_player_index := -1
+var undo_votes: Array[int] = []
+var undo_deadline_milliseconds := 0
+var undo_last_broadcast_seconds := -1
+var undo_checkpoint: Dictionary = {}
+var automatic_undo_approver_indices: Array[int] = []
+var undo_state_reset_id := 0
+var undo_last_message := ""
 
 
 func _init(game_state: Game) -> void:
@@ -47,9 +67,15 @@ func apply_command(command) -> Dictionary:
 	var increments_revision := true
 	match command.type:
 		Command.Type.BID:
+			_capture_undo_checkpoint(command.player_index)
 			accepted = _apply_bid_command(command)
 		Command.Type.PLAY_CARD:
+			_capture_undo_checkpoint(command.player_index)
 			accepted = _apply_play_card_command(command)
+		Command.Type.UNDO_REQUEST:
+			accepted = _apply_undo_request(command)
+		Command.Type.UNDO_VOTE:
+			accepted = _apply_undo_vote(command)
 		Command.Type.SOCIAL_ACTION:
 			accepted = _apply_social_action_command(command)
 			increments_revision = false
@@ -57,6 +83,7 @@ func apply_command(command) -> Dictionary:
 			return _create_result(false, "unsupported_command", command.player_index)
 
 	if not accepted:
+		_discard_failed_undo_checkpoint(command)
 		return _create_result(false, last_rejection_reason, command.player_index)
 
 	if increments_revision:
@@ -71,6 +98,8 @@ func create_player_snapshot(player_index: int) -> Dictionary:
 	snapshot["public_history"] = public_history.duplicate()
 	snapshot["completed_rounds"] = completed_round_history.duplicate(true)
 	snapshot["public_table_events"] = public_table_events.duplicate(true)
+	snapshot["undo_state"] = _create_undo_state_snapshot(player_index)
+	snapshot["table_state_reset_id"] = undo_state_reset_id
 	return snapshot
 
 
@@ -91,7 +120,186 @@ func create_host_snapshot() -> Dictionary:
 	snapshot["public_history"] = public_history.duplicate()
 	snapshot["completed_rounds"] = completed_round_history.duplicate(true)
 	snapshot["public_table_events"] = public_table_events.duplicate(true)
+	snapshot["undo_state"] = _create_undo_state_snapshot(-1)
+	snapshot["table_state_reset_id"] = undo_state_reset_id
 	return snapshot
+
+
+func set_automatic_undo_approver_indices(player_indices: Array[int]) -> void:
+	automatic_undo_approver_indices = player_indices.duplicate()
+
+
+func process_undo_vote() -> bool:
+	if not undo_pending:
+		return false
+	var seconds_left := _get_undo_seconds_left()
+	if seconds_left <= 0:
+		_cancel_pending_undo("Время голосования за возврат хода истекло.")
+		return true
+	if seconds_left != undo_last_broadcast_seconds:
+		undo_last_broadcast_seconds = seconds_left
+		return true
+	return false
+
+
+func can_player_request_undo(player_index: int) -> bool:
+	if game == null or undo_pending or player_index < 0 or player_index >= game.players.size():
+		return false
+	if game.current_round == null or game.current_round.state == Round.State.FINISHED:
+		return false
+	var action_record := _get_latest_undo_action_for_player(player_index)
+	if action_record.is_empty():
+		return false
+	var action_id := int(action_record.get("action_id", -1))
+	return int(undo_request_counts_by_action_id.get(action_id, 0)) < UNDO_REQUESTS_PER_DECISION_LIMIT
+
+
+func is_undo_vote_pending() -> bool:
+	return undo_pending
+
+
+func _capture_undo_checkpoint(player_index: int) -> void:
+	if game == null:
+		return
+	undo_action_records.append({
+		"action_id": next_undo_action_id,
+		"actor_player_index": player_index,
+		"action_history_size": undo_action_records.size(),
+		"game": game.create_snapshot(),
+		"public_history": public_history.duplicate(),
+		"completed_round_history": completed_round_history.duplicate(true)
+	})
+	next_undo_action_id += 1
+	if undo_action_records.size() > 40:
+		undo_action_records.pop_front()
+
+
+func _discard_failed_undo_checkpoint(command) -> void:
+	if command == null or (command.type != Command.Type.BID and command.type != Command.Type.PLAY_CARD):
+		return
+	if undo_action_records.is_empty():
+		return
+	var last_record: Dictionary = undo_action_records.back()
+	if int(last_record.get("actor_player_index", -1)) == command.player_index:
+		undo_action_records.pop_back()
+
+
+func _get_latest_undo_action_for_player(player_index: int) -> Dictionary:
+	for record_index in range(undo_action_records.size() - 1, -1, -1):
+		var record: Dictionary = undo_action_records[record_index]
+		if int(record.get("actor_player_index", -1)) == player_index:
+			return record
+	return {}
+
+
+func _apply_undo_request(command) -> bool:
+	if not can_player_request_undo(command.player_index):
+		last_rejection_reason = "undo_unavailable"
+		return false
+
+	var action_record := _get_latest_undo_action_for_player(command.player_index)
+	var action_id := int(action_record.get("action_id", -1))
+	undo_request_counts_by_action_id[action_id] = int(undo_request_counts_by_action_id.get(action_id, 0)) + 1
+	undo_pending = true
+	undo_requester_player_index = command.player_index
+	undo_checkpoint = action_record.duplicate(true)
+	undo_votes.resize(game.players.size())
+	undo_votes.fill(UndoVote.NONE)
+	undo_votes[command.player_index] = UndoVote.APPROVED
+	for player_index in automatic_undo_approver_indices:
+		if player_index >= 0 and player_index < undo_votes.size():
+			undo_votes[player_index] = UndoVote.APPROVED
+	undo_deadline_milliseconds = Time.get_ticks_msec() + UNDO_VOTE_TIMEOUT_MILLISECONDS
+	undo_last_broadcast_seconds = _get_undo_seconds_left()
+	undo_last_message = "%s просит вернуть своё последнее решение." % _get_player_name(command.player_index)
+	_resolve_pending_undo_if_possible()
+	return true
+
+
+func _apply_undo_vote(command) -> bool:
+	if not undo_pending or command.player_index == undo_requester_player_index:
+		last_rejection_reason = "undo_vote_unavailable"
+		return false
+	if command.player_index < 0 or command.player_index >= undo_votes.size() or undo_votes[command.player_index] != UndoVote.NONE:
+		last_rejection_reason = "undo_vote_already_cast"
+		return false
+	if not command.payload.has("approved"):
+		last_rejection_reason = "invalid_undo_vote"
+		return false
+
+	undo_votes[command.player_index] = UndoVote.APPROVED if bool(command.payload.get("approved", false)) else UndoVote.REJECTED
+	_resolve_pending_undo_if_possible()
+	return true
+
+
+func _resolve_pending_undo_if_possible() -> void:
+	if not undo_pending:
+		return
+	if undo_votes.has(UndoVote.REJECTED):
+		_cancel_pending_undo("Возврат хода отклонён участником партии.")
+		return
+	if undo_votes.has(UndoVote.NONE):
+		return
+	_restore_pending_undo_checkpoint()
+
+
+func _restore_pending_undo_checkpoint() -> void:
+	if game == null or undo_checkpoint.is_empty():
+		_cancel_pending_undo("Не удалось восстановить предыдущее состояние.")
+		return
+	game.restore_snapshot(undo_checkpoint.get("game", {}))
+	public_history = (undo_checkpoint.get("public_history", []) as Array).duplicate()
+	completed_round_history = (undo_checkpoint.get("completed_round_history", []) as Array).duplicate(true)
+	var action_history_size := int(undo_checkpoint.get("action_history_size", 0))
+	while undo_action_records.size() > action_history_size:
+		undo_action_records.pop_back()
+	public_table_events.clear()
+	undo_state_reset_id += 1
+	var requester_name := _get_player_name(undo_requester_player_index)
+	undo_last_message = "%s: все согласились, предыдущее решение отменено." % requester_name
+	public_history.append(undo_last_message)
+	_clear_pending_undo()
+
+
+func _cancel_pending_undo(message: String) -> void:
+	undo_last_message = message
+	_clear_pending_undo()
+
+
+func _clear_pending_undo() -> void:
+	undo_pending = false
+	undo_requester_player_index = -1
+	undo_votes.clear()
+	undo_deadline_milliseconds = 0
+	undo_last_broadcast_seconds = -1
+	undo_checkpoint.clear()
+
+
+func _create_undo_state_snapshot(recipient_player_index: int) -> Dictionary:
+	var seconds_left := _get_undo_seconds_left()
+	return {
+		"pending": undo_pending,
+		"requester_player_index": undo_requester_player_index,
+		"votes": undo_votes.duplicate(),
+		"seconds_left": seconds_left,
+		"can_request": can_player_request_undo(recipient_player_index),
+		"requests_remaining": _get_undo_requests_remaining(recipient_player_index),
+		"last_message": undo_last_message
+	}
+
+
+func _get_undo_seconds_left() -> int:
+	if not undo_pending:
+		return 0
+	return maxi(0, ceili(float(undo_deadline_milliseconds - Time.get_ticks_msec()) / 1000.0))
+
+
+func _get_undo_requests_remaining(player_index: int) -> int:
+	var action_record := _get_latest_undo_action_for_player(player_index)
+	if action_record.is_empty():
+		return 0
+	var action_id := int(action_record.get("action_id", -1))
+	return maxi(0, UNDO_REQUESTS_PER_DECISION_LIMIT - int(undo_request_counts_by_action_id.get(action_id, 0)))
 
 
 func record_current_round_started() -> void:

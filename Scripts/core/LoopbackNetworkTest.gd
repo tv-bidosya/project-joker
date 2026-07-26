@@ -40,6 +40,7 @@ enum TestJokerScenario {
 
 signal status_changed
 signal public_table_event_received
+signal player_snapshot_received
 
 
 var mode: Mode = Mode.NONE
@@ -346,6 +347,7 @@ func _process(delta: float) -> void:
 		_process_client_connection(delta)
 	elif mode == Mode.HOST:
 		_process_snapshot_delivery(delta)
+		_process_host_undo_vote()
 
 	while peer != null and peer.get_available_packet_count() > 0:
 		var sender_peer_id := peer.get_packet_peer()
@@ -527,7 +529,7 @@ func _handle_host_match_command(message: Dictionary, sender_peer_id: int) -> voi
 		return
 
 	var requested_type := int(command_data.get("type", NetworkCommand.Type.INVALID))
-	if requested_type != NetworkCommand.Type.BID and requested_type != NetworkCommand.Type.PLAY_CARD and requested_type != NetworkCommand.Type.SOCIAL_ACTION:
+	if requested_type != NetworkCommand.Type.BID and requested_type != NetworkCommand.Type.PLAY_CARD and requested_type != NetworkCommand.Type.SOCIAL_ACTION and requested_type != NetworkCommand.Type.UNDO_REQUEST and requested_type != NetworkCommand.Type.UNDO_VOTE:
 		_send_command_result(sender_peer_id, false, "unsupported_command", match_host.revision)
 		return
 
@@ -552,7 +554,7 @@ func _handle_host_match_command(message: Dictionary, sender_peer_id: int) -> voi
 	if requested_type == NetworkCommand.Type.SOCIAL_ACTION:
 		_broadcast_latest_public_table_event()
 	_queue_player_snapshots_for_delivery()
-	var action_name := "заказ" if requested_type == NetworkCommand.Type.BID else "ход картой" if requested_type == NetworkCommand.Type.PLAY_CARD else "социальное действие"
+	var action_name := "заказ" if requested_type == NetworkCommand.Type.BID else "ход картой" if requested_type == NetworkCommand.Type.PLAY_CARD else "запрос на возврат" if requested_type == NetworkCommand.Type.UNDO_REQUEST else "голос за возврат" if requested_type == NetworkCommand.Type.UNDO_VOTE else "социальное действие"
 	_set_status("Хост принял %s места %d. Ревизия %d отправляется всем клиентам." % [action_name, assigned_player_index + 1, match_host.revision])
 
 
@@ -629,6 +631,11 @@ func _handle_client_snapshot(message: Dictionary) -> void:
 		client_command_in_flight = false
 		client_expected_revision = -1
 		client_last_command_message = "Хост принял действие. Стол обновлён."
+	# Состояние игрового стола может поменяться без изменения status_text:
+	# например, при отсчёте голосования за возврат хода или при его тайм-ауте.
+	# Отдельный сигнал заставляет клиент перерисовать стол сразу после приёма
+	# безопасного личного снимка, а не ждать следующего собственного действия.
+	player_snapshot_received.emit()
 	_set_status(_get_client_lobby_status())
 
 
@@ -885,6 +892,122 @@ func submit_social_action(payload: Dictionary) -> bool:
 	client_last_command_message = "Отправляю действие за столом…"
 	_set_status(_get_client_lobby_status())
 	return true
+
+
+func can_request_undo() -> bool:
+	if not lobby_round_started:
+		return false
+	if is_host():
+		if match_host == null:
+			return false
+		return match_host.can_player_request_undo(HOST_PLAYER_INDEX)
+	if not is_client() or not client_snapshot_is_safe or client_command_in_flight:
+		return false
+	var undo_state: Dictionary = client_snapshot.get("undo_state", {})
+	return not bool(undo_state.get("pending", false)) and bool(undo_state.get("can_request", false))
+
+
+func request_undo() -> bool:
+	if not can_request_undo():
+		return false
+	if is_host():
+		if match_host == null:
+			return false
+		var host_command := NetworkCommand.new(
+			NetworkCommand.Type.UNDO_REQUEST,
+			HOST_PLAYER_INDEX,
+			match_host.game.round_number,
+			match_host.revision
+		)
+		var host_result: Dictionary = match_host.apply_command(host_command)
+		if not bool(host_result.get("accepted", false)):
+			_set_status("Хост не смог запросить возврат: %s." % str(host_result.get("reason", "unknown")))
+			return false
+		_queue_player_snapshots_for_delivery()
+		_set_status("Хост запросил возврат последнего решения. Ожидаем голоса.")
+		return true
+
+	var command := NetworkCommand.new(
+		NetworkCommand.Type.UNDO_REQUEST,
+		client_player_index,
+		int(client_snapshot.get("round_number", -1)),
+		int(client_snapshot.get("revision", -1))
+	)
+	if not _send_message({"type": "match_command", "command": command.to_dictionary()}, 1):
+		client_last_command_message = "Не удалось отправить запрос на возврат хосту."
+		_set_status(_get_client_lobby_status())
+		return false
+	client_command_in_flight = true
+	client_expected_revision = -1
+	client_last_command_message = "Запрашиваю согласие игроков на возврат хода…"
+	_set_status(_get_client_lobby_status())
+	return true
+
+
+func can_submit_undo_vote() -> bool:
+	if not lobby_round_started:
+		return false
+	if is_host():
+		if match_host == null:
+			return false
+		var host_undo_state: Dictionary = match_host.create_player_snapshot(HOST_PLAYER_INDEX).get("undo_state", {})
+		return _can_player_vote_on_undo(host_undo_state, HOST_PLAYER_INDEX)
+	if not is_client() or not client_snapshot_is_safe or client_command_in_flight:
+		return false
+	return _can_player_vote_on_undo(client_snapshot.get("undo_state", {}), client_player_index)
+
+
+func submit_undo_vote(approved: bool) -> bool:
+	if not can_submit_undo_vote():
+		return false
+	if is_host():
+		if match_host == null:
+			return false
+		var host_command := NetworkCommand.new(
+			NetworkCommand.Type.UNDO_VOTE,
+			HOST_PLAYER_INDEX,
+			match_host.game.round_number,
+			match_host.revision,
+			{"approved": approved}
+		)
+		var host_result: Dictionary = match_host.apply_command(host_command)
+		if not bool(host_result.get("accepted", false)):
+			_set_status("Хост не смог учесть голос: %s." % str(host_result.get("reason", "unknown")))
+			return false
+		_queue_player_snapshots_for_delivery()
+		_set_status("Хост %s возврат хода." % ("подтвердил" if approved else "отклонил"))
+		return true
+
+	var command := NetworkCommand.new(
+		NetworkCommand.Type.UNDO_VOTE,
+		client_player_index,
+		int(client_snapshot.get("round_number", -1)),
+		int(client_snapshot.get("revision", -1)),
+		{"approved": approved}
+	)
+	if not _send_message({"type": "match_command", "command": command.to_dictionary()}, 1):
+		client_last_command_message = "Не удалось отправить голос хосту."
+		_set_status(_get_client_lobby_status())
+		return false
+	client_command_in_flight = true
+	client_expected_revision = -1
+	client_last_command_message = "Отправляю голос за возврат хода…"
+	_set_status(_get_client_lobby_status())
+	return true
+
+
+func _can_player_vote_on_undo(undo_state: Dictionary, player_index: int) -> bool:
+	if not bool(undo_state.get("pending", false)) or int(undo_state.get("requester_player_index", -1)) == player_index:
+		return false
+	var votes: Variant = undo_state.get("votes", [])
+	return votes is Array and player_index >= 0 and player_index < votes.size() and int(votes[player_index]) == NetworkHost.UndoVote.NONE
+
+
+func _process_host_undo_vote() -> void:
+	if match_host == null or not match_host.process_undo_vote():
+		return
+	_queue_player_snapshots_for_delivery()
+	_set_status("Голосование за возврат хода завершено. Обновляю стол для всех игроков.")
 
 
 func can_submit_host_test_bid() -> bool:

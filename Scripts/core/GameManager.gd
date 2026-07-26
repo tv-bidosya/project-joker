@@ -33,6 +33,7 @@ const NetworkHost = preload("res://Scripts/core/LocalMatchHost.gd")
 const LoopbackNetwork = preload("res://Scripts/core/LoopbackNetworkTest.gd")
 const SteamBridge = preload("res://Scripts/core/SteamBridge.gd")
 const SteamP2PMatch = preload("res://Scripts/core/SteamP2PMatch.gd")
+const CardArtworkResource = preload("res://Scripts/ui/CardArtwork.gd")
 const SCORE_SHEET_NUMBER_COLUMN_WIDTH := 46.0
 const SCORE_SHEET_MODE_COLUMN_WIDTH := 132.0
 const SCORE_SHEET_CARDS_COLUMN_WIDTH := 52.0
@@ -190,6 +191,7 @@ var trick_card_views: Array[CardView] = []
 var bot_card_back_holders: Array[Control] = []
 var deck_back_panels: Array[PanelContainer] = []
 var deck_trump_panel: PanelContainer
+var deck_trump_artwork: TextureRect
 var deck_trump_label: Label
 var deck_caption_label: Label
 var dealer_marker: PanelContainer
@@ -363,6 +365,7 @@ var network_public_event_stream_key := ""
 var network_last_public_event_id := -1
 var network_card_event_queue: Array[Dictionary] = []
 var network_card_play_presentation_active := false
+var network_table_state_reset_id := -1
 var network_table_view: Control
 var network_table_title_label: Label
 var network_table_round_label: Label
@@ -435,11 +438,13 @@ func _ready() -> void:
 	loopback_network_test = LoopbackNetwork.new()
 	loopback_network_test.status_changed.connect(_refresh_loopback_network_status)
 	loopback_network_test.public_table_event_received.connect(_on_network_public_table_event_received)
+	loopback_network_test.player_snapshot_received.connect(_on_network_player_snapshot_received)
 	add_child(loopback_network_test)
 	steam_p2p_match = SteamP2PMatch.new()
 	steam_p2p_match.name = "SteamP2PMatch"
 	steam_p2p_match.status_changed.connect(_refresh_steam_p2p_status)
 	steam_p2p_match.public_table_event_received.connect(_on_network_public_table_event_received)
+	steam_p2p_match.player_snapshot_received.connect(_on_network_player_snapshot_received)
 	add_child(steam_p2p_match)
 	_create_network_table_view()
 	joker_controls.z_index = 80
@@ -1021,6 +1026,20 @@ func _on_network_public_table_event_received() -> void:
 		_refresh_loopback_network_status()
 
 
+func _on_network_player_snapshot_received() -> void:
+	# Личный снимок может менять доступные кнопки, таймер голосования и карты
+	# без нового текстового статуса. Это особенно важно для Steam P2P: клиент
+	# должен увидеть хостовое обновление сразу, не отправляя встречный ход.
+	if steam_p2p_main_table_presentation and steam_p2p_match != null and steam_p2p_match.is_running():
+		_refresh_network_main_table()
+		return
+	if steam_p2p_table_presentation and is_instance_valid(network_table_view) and network_table_view.visible:
+		_refresh_network_table_view()
+		return
+	if loopback_network_test != null and loopback_network_test.is_running():
+		_refresh_loopback_network_status()
+
+
 func _is_loopback_network_client_launch() -> bool:
 	return (
 		OS.get_cmdline_user_args().has("--local-client")
@@ -1293,6 +1312,10 @@ func _refresh_network_main_table() -> void:
 	if snapshot.is_empty():
 		_refresh_network_main_waiting_state()
 		return
+	var table_state_reset_id := int(snapshot.get("table_state_reset_id", 0))
+	if table_state_reset_id != network_table_state_reset_id:
+		network_table_state_reset_id = table_state_reset_id
+		_reset_network_table_after_undo_restore()
 
 	var round_data: Dictionary = snapshot.get("round", {})
 	var active_trick: Dictionary = snapshot.get("active_trick", {})
@@ -1320,7 +1343,7 @@ func _refresh_network_main_table() -> void:
 	_refresh_network_main_results(snapshot, round_data)
 	_refresh_network_main_markers(snapshot, round_data, viewer_index)
 	_refresh_network_main_score_sheet(snapshot, round_data)
-	_refresh_network_main_common_controls()
+	_refresh_network_main_common_controls(snapshot)
 	_process_network_public_table_events(snapshot, viewer_index)
 
 
@@ -1369,22 +1392,29 @@ func _refresh_network_main_header(snapshot: Dictionary, round_data: Dictionary, 
 
 	var players_by_index: Dictionary = _get_network_players_by_index(snapshot)
 	var action_text_network := "Ожидание действий хоста"
+	var undo_state: Dictionary = snapshot.get("undo_state", {})
+	if bool(undo_state.get("pending", false)):
+		var requester_index := int(undo_state.get("requester_player_index", -1))
+		var requester_name := "Игрок"
+		if players_by_index.has(requester_index):
+			requester_name = str((players_by_index[requester_index] as Dictionary).get("display_name", requester_name))
+		action_text_network = "%s просит вернуть ход · осталось %d с." % [requester_name, int(undo_state.get("seconds_left", 0))]
 	var reconnecting_player_name := _get_network_reconnecting_player_name(snapshot, players_by_index)
 	if not reconnecting_player_name.is_empty():
 		action_text_network = "%s переподключается. Партия ожидает возвращения игрока." % reconnecting_player_name
-	elif state == Round.State.BIDDING:
+	elif not bool(undo_state.get("pending", false)) and state == Round.State.BIDDING:
 		if active_player_index == int(snapshot.get("recipient_player_index", -1)):
 			action_text_network = "Твой заказ: выбери число взяток."
 		elif players_by_index.has(active_player_index):
 			action_text_network = "Заказывает %s" % str((players_by_index[active_player_index] as Dictionary).get("display_name", "игрок"))
-	elif state == Round.State.PLAYING:
+	elif not bool(undo_state.get("pending", false)) and state == Round.State.PLAYING:
 		if loopback_network_joker_selection_open:
 			action_text_network = "Выбери условие для Джокера."
 		elif active_player_index == int(snapshot.get("recipient_player_index", -1)):
 			action_text_network = "Твой ход: выбери подсвеченную карту в руке."
 		elif players_by_index.has(active_player_index):
 			action_text_network = "Ходит %s" % str((players_by_index[active_player_index] as Dictionary).get("display_name", "игрок"))
-	elif state == Round.State.FINISHED:
+	elif not bool(undo_state.get("pending", false)) and state == Round.State.FINISHED:
 		action_text_network = "Раздача завершена. Итоги — в центре стола."
 	action_label.visible = true
 	action_label.text = action_text_network
@@ -1419,12 +1449,20 @@ func _get_network_reconnecting_player_name(snapshot: Dictionary, players_by_inde
 	return "Игрок %d" % (player_index + 1)
 
 
-func _refresh_network_main_common_controls() -> void:
+func _refresh_network_main_common_controls(snapshot: Dictionary = {}) -> void:
 	_refresh_music_player()
 	hand_sort_by_suit_button.disabled = hand_sort_mode == HandSortMode.BY_SUIT
 	hand_sort_trumps_left_button.disabled = hand_sort_mode == HandSortMode.TRUMPS_LEFT
-	undo_button.disabled = true
-	undo_button.tooltip_text = "Возврат хода для сетевой партии будет работать через голосование игроков."
+	var network_match = _get_active_network_match()
+	var can_request_undo: bool = network_match != null and network_match.has_method(&"can_request_undo") and bool(network_match.call(&"can_request_undo"))
+	var undo_state: Dictionary = snapshot.get("undo_state", {})
+	undo_button.disabled = not can_request_undo
+	if bool(undo_state.get("pending", false)):
+		undo_button.tooltip_text = "Сейчас идёт голосование за возврат хода."
+	elif can_request_undo:
+		undo_button.tooltip_text = "Запросить у всех игроков возврат своего последнего решения."
+	else:
+		undo_button.tooltip_text = "Возврат доступен только для своего последнего решения и не более двух запросов."
 	turn_timer_active = false
 	if is_instance_valid(turn_timer_indicator):
 		turn_timer_indicator.visible = false
@@ -1490,8 +1528,8 @@ func _refresh_network_main_players(snapshot: Dictionary, viewer_index: int, acti
 		avatar_images[relative_slot].texture = avatar_texture
 		avatar_labels[relative_slot].visible = avatar_texture == null
 		avatar_labels[relative_slot].text = _get_player_avatar_symbol(relative_slot)
-		if relative_slot < undo_vote_badges.size():
-			undo_vote_badges[relative_slot].visible = false
+
+	_refresh_network_main_undo_vote_badges(snapshot, viewer_index)
 
 	_refresh_network_main_card_backs(players_by_index, viewer_index)
 
@@ -1789,6 +1827,11 @@ func _refresh_network_main_action_controls(snapshot: Dictionary, round_data: Dic
 	_clear_children(bid_controls)
 	_clear_children(joker_controls)
 	joker_controls.visible = false
+	var undo_state: Dictionary = snapshot.get("undo_state", {})
+	if bool(undo_state.get("pending", false)):
+		_reset_loopback_network_joker_selection()
+		_refresh_network_main_undo_vote_controls(snapshot, undo_state)
+		return
 	var state: int = int(round_data.get("state", Round.State.SETUP))
 	if state == Round.State.FINISHED:
 		return
@@ -1812,6 +1855,57 @@ func _refresh_network_main_action_controls(snapshot: Dictionary, round_data: Dic
 		_apply_table_action_button_style(bid_button)
 		bid_button.pressed.connect(_on_submit_loopback_test_bid_pressed.bind(bid))
 		bid_controls.add_child(bid_button)
+
+
+func _refresh_network_main_undo_vote_controls(snapshot: Dictionary, undo_state: Dictionary) -> void:
+	var viewer_index := int(snapshot.get("recipient_player_index", -1))
+	var requester_index := int(undo_state.get("requester_player_index", -1))
+	var votes: Array = undo_state.get("votes", [])
+	var title := Label.new()
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 17)
+	title.add_theme_color_override("font_color", Color(0.94, 0.85, 0.42, 1.0))
+	bid_controls.add_child(title)
+	if viewer_index == requester_index:
+		title.text = "Запрос отправлен · ждём решения игроков (%d с)" % int(undo_state.get("seconds_left", 0))
+		return
+
+	var has_voted := viewer_index >= 0 and viewer_index < votes.size() and int(votes[viewer_index]) != NetworkHost.UndoVote.NONE
+	if has_voted:
+		title.text = "Твой голос учтён · ждём остальных (%d с)" % int(undo_state.get("seconds_left", 0))
+		return
+
+	title.text = "Разрешить вернуть ход? (%d с)" % int(undo_state.get("seconds_left", 0))
+	for vote_data in [["✓ Разрешить", true], ["✕ Отклонить", false]]:
+		var vote_button := Button.new()
+		vote_button.text = str(vote_data[0])
+		vote_button.custom_minimum_size = Vector2(150.0, 40.0)
+		_apply_table_action_button_style(vote_button)
+		vote_button.pressed.connect(_on_submit_network_undo_vote_pressed.bind(bool(vote_data[1])))
+		bid_controls.add_child(vote_button)
+
+
+func _refresh_network_main_undo_vote_badges(snapshot: Dictionary, viewer_index: int) -> void:
+	var undo_state: Dictionary = snapshot.get("undo_state", {})
+	var pending := bool(undo_state.get("pending", false))
+	var votes: Array = undo_state.get("votes", [])
+	for relative_slot in undo_vote_badges.size():
+		var badge := undo_vote_badges[relative_slot]
+		badge.visible = false
+		if not pending:
+			continue
+		var player_index: int = posmod(relative_slot + viewer_index, PLAYER_NAMES.size())
+		if player_index < 0 or player_index >= votes.size():
+			continue
+		var vote_state := int(votes[player_index])
+		if vote_state == NetworkHost.UndoVote.NONE:
+			continue
+		var approved := vote_state == NetworkHost.UndoVote.APPROVED
+		badge.visible = true
+		badge.add_theme_stylebox_override("panel", undo_vote_approved_style if approved else undo_vote_rejected_style)
+		undo_vote_labels[relative_slot].text = "✓" if approved else "✕"
+		undo_vote_labels[relative_slot].add_theme_color_override("font_color", Color(0.9, 1.0, 0.86, 1.0) if approved else Color(1.0, 0.9, 0.86, 1.0))
+		badge.tooltip_text = "Согласен вернуть ход" if approved else "Не согласен вернуть ход"
 
 
 func _refresh_network_main_joker_controls() -> void:
@@ -1895,7 +1989,8 @@ func _refresh_network_main_hand(snapshot: Dictionary, round_data: Dictionary) ->
 		card_keys_by_instance[card] = str(card_data.get("card_key", ""))
 
 	var trump: Round.TrumpSuit = int(round_data.get("trump", Round.TrumpSuit.NONE))
-	var presentation_locked := network_card_play_presentation_active or network_round_finish_presentation_active
+	var undo_pending: bool = bool((snapshot.get("undo_state", {}) as Dictionary).get("pending", false))
+	var presentation_locked := network_card_play_presentation_active or network_round_finish_presentation_active or undo_pending
 	var displayed_cards: Array[Card] = _sort_cards_for_display(cards, trump, hand_sort_mode)
 	for card in displayed_cards:
 		var card_view := CardView.new()
@@ -2335,14 +2430,15 @@ func _create_network_table_deck_visual() -> void:
 		card_back.position = Vector2(float(card_index * 13), 9.0)
 		card_back.size = Vector2(60.0, 82.0)
 		card_back.add_theme_stylebox_override("panel", card_back_style)
-		var ornament := Label.new()
-		ornament.text = "✦"
-		ornament.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		ornament.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-		ornament.add_theme_font_size_override("font_size", 24)
-		ornament.add_theme_color_override("font_color", Color(0.94, 0.73, 0.22, 1.0))
-		ornament.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-		card_back.add_child(ornament)
+		if not _add_card_back_artwork(card_back):
+			var ornament := Label.new()
+			ornament.text = "✦"
+			ornament.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+			ornament.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+			ornament.add_theme_font_size_override("font_size", 24)
+			ornament.add_theme_color_override("font_color", Color(0.94, 0.73, 0.22, 1.0))
+			ornament.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+			card_back.add_child(ornament)
 		network_table_deck_visual.add_child(card_back)
 		network_table_deck_back_panels.append(card_back)
 
@@ -3767,8 +3863,13 @@ func _show_rules_menu() -> void:
 	_add_menu_title("Правила партии", "Краткая памятка — полный документ остаётся в Game Design Document")
 	_add_menu_label("• Играют четыре игрока. Сдающий меняется по кругу; в начале выбирается случайно.", 15)
 	_add_menu_label("• В обычных, тёмных и бескозырных раздачах игроки заказывают число взяток. Последний заказ не может уравнять сумму заказов с числом карт.", 15)
-	_add_menu_label("• В бескозырке точный заказ даёт +15 за взятку, недобор — −10, перебор — +1; заказ 0 и 0 взяток — +5.", 15)
-	_add_menu_label("• В золотой и мизерной сериях заказов нет: золотая поощряет взятки, мизерная — избегание взяток.", 15)
+	_add_menu_label("Подсчёт очков", 19, Color(0.97, 0.86, 0.55, 1.0))
+	_add_menu_label("• Обычная: точный заказ больше 0 — +10 × заказ; недобор — −10 × недобор; перебор — +1 × лишняя взятка; 0/0 — +5.", 15)
+	_add_menu_label("• Тёмная: точный заказ больше 0 — +15 × заказ; недобор — −10 × недобор; перебор — +1 × лишняя взятка; 0/0 — +50.", 15)
+	_add_menu_label("• Бескозырка: точный заказ больше 0 — +15 × заказ; недобор — −10 × недобор; перебор — +1 × лишняя взятка; 0/0 — +5.", 15)
+	_add_menu_label("• Золотая: заказов нет; ноль взяток — −50, иначе +20 за каждую взятку.", 15)
+	_add_menu_label("• Мизерная: заказов нет; ноль взяток — +50, иначе −20 за каждую взятку.", 15)
+	_add_menu_label("• Важно: при недоборе или переборе очки не складываются с наградой за точный заказ. Например, заказ 2 и взято 3 — это +1, а не +21.", 15, Color(0.72, 0.85, 0.76, 1.0))
 	_add_menu_label("• Джокер можно использовать как сильнейшую карту или как сброс; при первом ходе он позволяет объявить масть и условие розыгрыша.", 15)
 	_add_menu_label("• При равенстве очков выше место у игрока, который точнее выполнил заказы за всю партию.", 15)
 	_add_menu_spacer(8.0)
@@ -5956,6 +6057,13 @@ func _on_joker_choice(
 
 
 func _on_undo_pressed() -> void:
+	if _is_steam_p2p_main_table_active():
+		var network_match = _get_active_network_match()
+		if network_match != null and network_match.has_method(&"request_undo"):
+			network_match.call(&"request_undo")
+		_refresh_network_main_table()
+		return
+
 	if not _can_request_undo():
 		return
 
@@ -5965,7 +6073,33 @@ func _on_undo_pressed() -> void:
 	_reset_undo_vote_states()
 	action_text = "Запрос на возврат хода: боты голосуют…"
 	_refresh_ui()
+	_process_local_undo_vote()
 
+
+func _on_submit_network_undo_vote_pressed(approved: bool) -> void:
+	var network_match = _get_active_network_match()
+	if network_match == null or not network_match.has_method(&"submit_undo_vote"):
+		return
+	network_match.call(&"submit_undo_vote", approved)
+	_refresh_network_main_table()
+
+
+func _reset_network_table_after_undo_restore() -> void:
+	network_round_result_key = ""
+	network_round_finish_presentation_key = ""
+	network_round_finish_presentation_active = false
+	network_collected_trick_key = ""
+	network_public_event_stream_key = ""
+	network_last_public_event_id = -1
+	network_card_event_queue.clear()
+	network_card_play_presentation_active = false
+	_reset_trick_presentation()
+
+
+func _process_local_undo_vote() -> void:
+	# В одиночной партии все три соперника — локальные боты. Они всегда
+	# подтверждают возврат, но делают это по очереди, чтобы галочки у
+	# аватаров успели появиться и игрок видел результат голосования.
 	for player_index in range(1, game.players.size()):
 		await get_tree().create_timer(LOCAL_UNDO_VOTE_INTERVAL_SECONDS).timeout
 		undo_vote_states[player_index] = UndoVoteState.APPROVED
@@ -5980,7 +6114,7 @@ func _on_undo_pressed() -> void:
 	pending_joker_card = null
 	pending_joker_suit = -1
 	last_trick_text = checkpoint["last_trick_text"]
-	action_text = "Боты согласились: возвращено к началу прошлого твоего решения."
+	action_text = "Боты согласились. Прошлый ход отменён."
 	recent_actions = checkpoint["recent_actions"].duplicate()
 	bug_report_timeline.clear()
 	pending_test_checkpoint = _create_test_checkpoint()
@@ -7415,13 +7549,14 @@ func _create_bot_card_backs() -> void:
 			card_back.mouse_filter = Control.MOUSE_FILTER_IGNORE
 			card_back.add_theme_stylebox_override("panel", card_back_style)
 
-			var ornament := Label.new()
-			ornament.text = "✦"
-			ornament.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-			ornament.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-			ornament.add_theme_color_override("font_color", Color(0.9, 0.73, 0.31, 1.0))
-			ornament.add_theme_font_size_override("font_size", 22)
-			card_back.add_child(ornament)
+			if not _add_card_back_artwork(card_back):
+				var ornament := Label.new()
+				ornament.text = "✦"
+				ornament.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+				ornament.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+				ornament.add_theme_color_override("font_color", Color(0.9, 0.73, 0.31, 1.0))
+				ornament.add_theme_font_size_override("font_size", 22)
+				card_back.add_child(ornament)
 			holder.add_child(card_back)
 
 		players_container.add_child(holder)
@@ -7459,13 +7594,14 @@ func _create_deck_visual() -> void:
 		card_back.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		card_back.add_theme_stylebox_override("panel", card_back_style)
 
-		var ornament := Label.new()
-		ornament.text = "✦"
-		ornament.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		ornament.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-		ornament.add_theme_color_override("font_color", Color(0.9, 0.73, 0.31, 1.0))
-		ornament.add_theme_font_size_override("font_size", 24)
-		card_back.add_child(ornament)
+		if not _add_card_back_artwork(card_back):
+			var ornament := Label.new()
+			ornament.text = "✦"
+			ornament.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+			ornament.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+			ornament.add_theme_color_override("font_color", Color(0.9, 0.73, 0.31, 1.0))
+			ornament.add_theme_font_size_override("font_size", 24)
+			card_back.add_child(ornament)
 		deck_visual.add_child(card_back)
 		deck_back_panels.append(card_back)
 
@@ -7474,6 +7610,19 @@ func _create_deck_visual() -> void:
 	deck_trump_panel.size = Vector2(76.0, 96.0)
 	deck_trump_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	deck_trump_panel.add_theme_stylebox_override("panel", deck_trump_card_style)
+
+	deck_trump_artwork = TextureRect.new()
+	deck_trump_artwork.set_anchors_preset(Control.PRESET_FULL_RECT)
+	deck_trump_artwork.offset_left = 4.0
+	deck_trump_artwork.offset_top = 4.0
+	deck_trump_artwork.offset_right = -4.0
+	deck_trump_artwork.offset_bottom = -4.0
+	deck_trump_artwork.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	deck_trump_artwork.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+	deck_trump_artwork.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+	deck_trump_artwork.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	deck_trump_artwork.visible = false
+	deck_trump_panel.add_child(deck_trump_artwork)
 
 	deck_trump_label = Label.new()
 	deck_trump_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -7505,6 +7654,10 @@ func _refresh_deck_visual() -> void:
 
 	if has_open_trump:
 		var trump_card := game.trump_card
+		var trump_texture: Texture2D = CardArtworkResource.get_face_texture(trump_card)
+		deck_trump_artwork.texture = trump_texture
+		deck_trump_artwork.visible = trump_texture != null
+		deck_trump_label.visible = trump_texture == null
 		deck_trump_label.text = trump_card.get_card_name()
 		deck_trump_label.add_theme_font_size_override("font_size", 17)
 		deck_trump_label.add_theme_color_override(
@@ -7520,11 +7673,34 @@ func _refresh_deck_visual() -> void:
 		return
 
 	var trump_name := game.current_round.get_trump_name()
+	deck_trump_artwork.texture = null
+	deck_trump_artwork.visible = false
+	deck_trump_label.visible = true
 	deck_trump_label.text = "—" if game.current_round.trump == Round.TrumpSuit.NONE else trump_name
 	deck_trump_label.add_theme_font_size_override("font_size", 32)
 	deck_trump_label.add_theme_color_override("font_color", Color(0.08, 0.08, 0.07, 1.0))
 	deck_trump_panel.tooltip_text = "Козырь задан правилами этой раздачи."
 	deck_caption_label.text = "Без козыря" if game.current_round.trump == Round.TrumpSuit.NONE else "Козырь задан: %s" % trump_name
+
+
+func _add_card_back_artwork(card_back: Control) -> bool:
+	var back_texture: Texture2D = CardArtworkResource.get_back_texture()
+	if back_texture == null:
+		return false
+
+	var texture_rect := TextureRect.new()
+	texture_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
+	texture_rect.offset_left = 2.0
+	texture_rect.offset_top = 2.0
+	texture_rect.offset_right = -2.0
+	texture_rect.offset_bottom = -2.0
+	texture_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	texture_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+	texture_rect.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+	texture_rect.texture = back_texture
+	texture_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	card_back.add_child(texture_rect)
+	return true
 
 
 func _create_table_markers() -> void:
