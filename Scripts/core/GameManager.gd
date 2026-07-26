@@ -1488,6 +1488,10 @@ func _refresh_network_main_deck(snapshot: Dictionary, round_data: Dictionary) ->
 		deck_back_panels[card_index].visible = has_open_trump and card_index < mini(3, cards_left)
 
 	if has_open_trump:
+		var trump_texture: Texture2D = CardArtworkResource.get_face_texture(trump_card)
+		deck_trump_artwork.texture = trump_texture
+		deck_trump_artwork.visible = trump_texture != null
+		deck_trump_label.visible = trump_texture == null
 		deck_trump_label.text = trump_card.get_card_name()
 		deck_trump_label.add_theme_font_size_override("font_size", 17)
 		deck_trump_label.add_theme_color_override(
@@ -1498,6 +1502,9 @@ func _refresh_network_main_deck(snapshot: Dictionary, round_data: Dictionary) ->
 		deck_caption_label.text = "Открытый Джокер · бескозырка" if trump_card.is_joker else "Открытый козырь · в колоде: %d" % cards_left
 		return
 
+	deck_trump_artwork.texture = null
+	deck_trump_artwork.visible = false
+	deck_trump_label.visible = true
 	deck_trump_label.text = "—"
 	deck_trump_label.add_theme_font_size_override("font_size", 32)
 	deck_trump_label.add_theme_color_override("font_color", Color(0.08, 0.08, 0.07, 1.0))
