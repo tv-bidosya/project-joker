@@ -244,6 +244,7 @@ var menu_backdrop: ColorRect
 var menu_panel: PanelContainer
 var menu_scroll: ScrollContainer
 var menu_content: VBoxContainer
+var card_deck_preview_container: HBoxContainer
 var bot_speed_index := 1
 var card_deck_style := CardArtworkResource.DeckStyle.JUMBO_FOUR_COLOR
 var bot_difficulty: BotDifficulty = BotDifficulty.NORMAL
@@ -4089,6 +4090,7 @@ func _show_settings_menu() -> void:
 	deck_style_selector.add_item("Jumbo · четыре цвета")
 	deck_style_selector.add_item("Классическая · четыре цвета")
 	deck_style_selector.add_item("Компактная · четыре цвета")
+	deck_style_selector.add_item("Jumbo · оригинальная (2 цвета)")
 	deck_style_selector.selected = card_deck_style
 	deck_style_selector.custom_minimum_size = Vector2(0.0, 42.0)
 	deck_style_selector.add_theme_font_size_override("font_size", 17)
@@ -4101,6 +4103,19 @@ func _show_settings_menu() -> void:
 	deck_style_hint.add_theme_font_size_override("font_size", 14)
 	deck_style_hint.add_theme_color_override("font_color", Color(0.72, 0.85, 0.76, 1.0))
 	menu_content.add_child(deck_style_hint)
+
+	var deck_preview_label := Label.new()
+	deck_preview_label.text = "Предпросмотр"
+	deck_preview_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	deck_preview_label.add_theme_font_size_override("font_size", 15)
+	deck_preview_label.add_theme_color_override("font_color", Color(0.97, 0.86, 0.55, 1.0))
+	menu_content.add_child(deck_preview_label)
+
+	card_deck_preview_container = HBoxContainer.new()
+	card_deck_preview_container.alignment = BoxContainer.ALIGNMENT_CENTER
+	card_deck_preview_container.add_theme_constant_override("separation", 8)
+	menu_content.add_child(card_deck_preview_container)
+	_refresh_card_deck_preview()
 
 	var speed_label := Label.new()
 	speed_label.text = "Скорость ходов ботов"
@@ -4481,11 +4496,30 @@ func _on_card_deck_style_selected(selected_index: int) -> void:
 	card_deck_style = clampi(
 		selected_index,
 		CardArtworkResource.DeckStyle.JUMBO_FOUR_COLOR,
-		CardArtworkResource.DeckStyle.COMPACT_FOUR_COLOR
+		CardArtworkResource.DeckStyle.ORIGINAL_JUMBO
 	)
 	CardArtworkResource.set_deck_style(card_deck_style)
 	_save_persistent_settings()
 	_refresh_ui()
+	_refresh_card_deck_preview()
+
+
+func _refresh_card_deck_preview() -> void:
+	if not is_instance_valid(card_deck_preview_container):
+		return
+	_clear_children(card_deck_preview_container)
+	var preview_cards: Array[Card] = [
+		_create_card(Card.Suit.CLUBS, Card.Rank.ACE),
+		_create_card(Card.Suit.SPADES, Card.Rank.KING),
+		_create_card(Card.Suit.HEARTS, Card.Rank.QUEEN),
+		_create_card(Card.Suit.DIAMONDS, Card.Rank.TEN),
+		_create_card(Card.Suit.CLUBS, Card.Rank.SIX, true)
+	]
+	for card in preview_cards:
+		var card_view := CardView.new()
+		card_view.set_card_size(Vector2(62.0, 90.0))
+		card_view.set_card(card)
+		card_deck_preview_container.add_child(card_view)
 
 
 func _on_sound_volume_selected(selected_index: int) -> void:
@@ -4658,7 +4692,7 @@ func _load_persistent_settings() -> void:
 	card_deck_style = clampi(
 		saved_card_deck_style,
 		CardArtworkResource.DeckStyle.JUMBO_FOUR_COLOR,
-		CardArtworkResource.DeckStyle.COMPACT_FOUR_COLOR
+		CardArtworkResource.DeckStyle.ORIGINAL_JUMBO
 	)
 	tutorial_enabled = bool(config.get_value("game", "tutorial_enabled", tutorial_enabled))
 	auto_turn_enabled = bool(config.get_value("game", "auto_turn_enabled", auto_turn_enabled))

@@ -6,7 +6,8 @@ extends RefCounted
 enum DeckStyle {
 	JUMBO_FOUR_COLOR,
 	CLASSIC_FOUR_COLOR,
-	COMPACT_FOUR_COLOR
+	COMPACT_FOUR_COLOR,
+	ORIGINAL_JUMBO
 }
 
 
@@ -19,7 +20,7 @@ static var texture_cache: Dictionary = {}
 
 
 static func set_deck_style(deck_style: int) -> void:
-	selected_deck_style = clampi(deck_style, DeckStyle.JUMBO_FOUR_COLOR, DeckStyle.COMPACT_FOUR_COLOR)
+	selected_deck_style = clampi(deck_style, DeckStyle.JUMBO_FOUR_COLOR, DeckStyle.ORIGINAL_JUMBO)
 
 
 static func get_face_texture(card: Card) -> Texture2D:
@@ -41,11 +42,16 @@ static func get_face_texture(card: Card) -> Texture2D:
 		return null
 
 	var texture_path := JUMBO_INDEX_ROOT.path_join("%s%s.png" % [suit_name, rank_name])
+	if selected_deck_style == DeckStyle.ORIGINAL_JUMBO:
+		return _load_texture(texture_path)
 	var recolored_cache_path := "%s#four-color" % texture_path
 	if texture_cache.has(recolored_cache_path):
 		return texture_cache[recolored_cache_path] as Texture2D
 	var source_texture := _load_texture(texture_path)
-	if source_texture == null or (card.suit != Card.Suit.CLUBS and card.suit != Card.Suit.DIAMONDS):
+	if (
+		source_texture == null
+		or (card.suit != Card.Suit.CLUBS and card.suit != Card.Suit.DIAMONDS)
+	):
 		return source_texture
 	var recolored_texture := _create_four_color_texture(source_texture, card.suit)
 	if recolored_texture != null:
@@ -127,9 +133,16 @@ static func _get_compact_four_color_file_name(card: Card) -> String:
 
 
 static func _create_four_color_texture(source_texture: Texture2D, suit: Card.Suit) -> Texture2D:
-	var image := source_texture.get_image()
-	if image == null or image.is_empty():
+	var source_image := source_texture.get_image()
+	if source_image == null or source_image.is_empty():
 		return null
+	var image := Image.create_from_data(
+		source_image.get_width(),
+		source_image.get_height(),
+		source_image.has_mipmaps(),
+		source_image.get_format(),
+		source_image.get_data().duplicate()
+	)
 	image.convert(Image.FORMAT_RGBA8)
 	for y in image.get_height():
 		for x in image.get_width():
