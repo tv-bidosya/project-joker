@@ -176,10 +176,10 @@ var sticker_picker_title: Label
 var sticker_picker_back_button: Button
 var sticker_picker_content: VBoxContainer
 var sticker_selected_target_index := -1
-var sticker_flyer: PanelContainer
-var sticker_flyer_label: Label
-var sticker_flyer_image: TextureRect
-var sticker_flyer_tween: Tween
+var sticker_flyers: Array[PanelContainer] = []
+var sticker_flyer_labels: Array[Label] = []
+var sticker_flyer_images: Array[TextureRect] = []
+var sticker_flyer_tweens: Dictionary = {}
 var soundpad_toggle_button: Button
 var soundpad_picker: PanelContainer
 var soundpad_picker_title: Label
@@ -1870,27 +1870,15 @@ func _present_network_reaction_event(event: Dictionary, viewer_index: int) -> vo
 
 
 func _present_network_sticker_event(event: Dictionary, viewer_index: int) -> void:
-	if not is_instance_valid(sticker_flyer):
-		return
 	var source_relative := posmod(int(event.get("actor_player_index", -1)) - viewer_index, PLAYER_NAMES.size())
 	var target_relative := posmod(int(event.get("target_player_index", -1)) - viewer_index, PLAYER_NAMES.size())
 	if source_relative < 0 or source_relative >= avatar_badges.size() or target_relative < 0 or target_relative >= avatar_badges.size():
 		return
-	_configure_sticker_flyer({"symbol": str(event.get("sticker", ""))})
-	sticker_flyer.visible = true
-	sticker_flyer.modulate = Color.WHITE
-	sticker_flyer.scale = Vector2.ONE
-	if is_instance_valid(sticker_flyer_tween):
-		sticker_flyer_tween.kill()
-	var flyer_size := sticker_flyer.size
-	var source_center := avatar_badges[source_relative].get_global_rect().get_center()
-	var target_center := avatar_badges[target_relative].get_global_rect().get_center()
-	sticker_flyer.global_position = source_center - flyer_size * 0.5
-	sticker_flyer_tween = create_tween()
-	sticker_flyer_tween.tween_property(sticker_flyer, "global_position", target_center - flyer_size * 0.5, STICKER_FLY_DURATION)
-	sticker_flyer_tween.tween_interval(STICKER_HOLD_DURATION)
-	sticker_flyer_tween.tween_property(sticker_flyer, "modulate:a", 0.0, 0.22)
-	sticker_flyer_tween.tween_callback(_hide_sticker_flyer)
+	_show_sticker_flyer(
+		{"symbol": str(event.get("sticker", ""))},
+		source_relative,
+		target_relative
+	)
 
 
 func _present_network_soundpad_event(event: Dictionary, viewer_index: int) -> void:
@@ -7997,7 +7985,7 @@ func _create_reaction_controls() -> void:
 		"panel",
 		_create_flat_style(Color(0.012, 0.075, 0.045, 0.96), Color(0.64, 0.47, 0.14, 0.96), 2, 10, 5)
 	)
-	_set_control_layout(reaction_picker, 0.5, 1.0, 0.5, 1.0, 128.0, -456.0, 456.0, -402.0)
+	_set_control_layout(reaction_picker, 0.5, 1.0, 0.5, 1.0, 128.0, -456.0, 428.0, -402.0)
 
 	var reaction_row := HBoxContainer.new()
 	reaction_row.add_theme_constant_override("separation", 4)
@@ -8154,30 +8142,38 @@ func _create_sticker_controls() -> void:
 	sticker_layout.add_child(sticker_picker_content)
 	players_container.add_child(sticker_picker)
 
-	sticker_flyer = PanelContainer.new()
-	sticker_flyer.visible = false
-	sticker_flyer.size = Vector2(60.0, 60.0)
-	sticker_flyer.pivot_offset = sticker_flyer.size * 0.5
-	sticker_flyer.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	sticker_flyer.z_index = 32
-	sticker_flyer.add_theme_stylebox_override(
-		"panel",
-		_create_flat_style(Color(0.04, 0.055, 0.12, 0.97), Color(0.83, 0.72, 0.98, 1.0), 2, 18, 7)
-	)
+	sticker_flyers.clear()
+	sticker_flyer_labels.clear()
+	sticker_flyer_images.clear()
+	sticker_flyer_tweens.clear()
+	for _player_index in PLAYER_NAMES.size():
+		var flyer := PanelContainer.new()
+		flyer.visible = false
+		flyer.size = Vector2(60.0, 60.0)
+		flyer.pivot_offset = flyer.size * 0.5
+		flyer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		flyer.z_index = 32
+		flyer.add_theme_stylebox_override(
+			"panel",
+			_create_flat_style(Color(0.04, 0.055, 0.12, 0.97), Color(0.83, 0.72, 0.98, 1.0), 2, 18, 7)
+		)
 
-	sticker_flyer_image = TextureRect.new()
-	sticker_flyer_image.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	sticker_flyer_image.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	sticker_flyer_image.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	sticker_flyer_image.visible = false
-	sticker_flyer.add_child(sticker_flyer_image)
+		var flyer_image := TextureRect.new()
+		flyer_image.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		flyer_image.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		flyer_image.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		flyer_image.visible = false
+		flyer.add_child(flyer_image)
 
-	sticker_flyer_label = Label.new()
-	sticker_flyer_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	sticker_flyer_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	sticker_flyer_label.add_theme_font_size_override("font_size", 31)
-	sticker_flyer.add_child(sticker_flyer_label)
-	players_container.add_child(sticker_flyer)
+		var flyer_label := Label.new()
+		flyer_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		flyer_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		flyer_label.add_theme_font_size_override("font_size", 31)
+		flyer.add_child(flyer_label)
+		players_container.add_child(flyer)
+		sticker_flyers.append(flyer)
+		sticker_flyer_images.append(flyer_image)
+		sticker_flyer_labels.append(flyer_label)
 
 
 func _on_sticker_toggle_pressed() -> void:
@@ -8337,37 +8333,62 @@ func _on_sticker_selected(sticker: Dictionary) -> void:
 		return
 
 	sticker_picker.visible = false
-	_configure_sticker_flyer(sticker)
-	sticker_flyer.visible = true
-	sticker_flyer.modulate = Color.WHITE
-	sticker_flyer.scale = Vector2.ONE
-
-	if is_instance_valid(sticker_flyer_tween):
-		sticker_flyer_tween.kill()
-
-	var source_center: Vector2 = avatar_badges[HUMAN_PLAYER_INDEX].get_global_rect().get_center()
-	var target_center: Vector2 = avatar_badges[sticker_selected_target_index].get_global_rect().get_center()
-	var flyer_size: Vector2 = sticker_flyer.size
-	sticker_flyer.global_position = source_center - flyer_size * 0.5
-
-	sticker_flyer_tween = create_tween()
-	sticker_flyer_tween.tween_property(sticker_flyer, "global_position", target_center - flyer_size * 0.5, STICKER_FLY_DURATION)
-	sticker_flyer_tween.tween_interval(STICKER_HOLD_DURATION)
-	sticker_flyer_tween.tween_property(sticker_flyer, "modulate:a", 0.0, 0.22)
-	sticker_flyer_tween.tween_callback(_hide_sticker_flyer)
+	_show_sticker_flyer(sticker, HUMAN_PLAYER_INDEX, sticker_selected_target_index)
 
 
-func _configure_sticker_flyer(sticker: Dictionary) -> void:
+func _show_sticker_flyer(sticker: Dictionary, source_player_index: int, target_player_index: int) -> void:
+	if (
+		source_player_index < 0
+		or source_player_index >= avatar_badges.size()
+		or target_player_index < 0
+		or target_player_index >= avatar_badges.size()
+		or target_player_index >= sticker_flyers.size()
+	):
+		return
+
+	var flyer := sticker_flyers[target_player_index]
+	var flyer_image := sticker_flyer_images[target_player_index]
+	var flyer_label := sticker_flyer_labels[target_player_index]
 	var sticker_texture: Texture2D = sticker.get("texture", null) as Texture2D
-	sticker_flyer_image.texture = sticker_texture
-	sticker_flyer_image.visible = sticker_texture != null
-	sticker_flyer_label.visible = sticker_texture == null
-	sticker_flyer_label.text = str(sticker.get("symbol", ""))
+	flyer_image.texture = sticker_texture
+	flyer_image.visible = sticker_texture != null
+	flyer_label.visible = sticker_texture == null
+	flyer_label.text = str(sticker.get("symbol", ""))
+	flyer.visible = true
+	flyer.modulate = Color.WHITE
+	flyer.scale = Vector2.ONE
+
+	var existing_tween: Tween = sticker_flyer_tweens.get(target_player_index) as Tween
+	if is_instance_valid(existing_tween):
+		existing_tween.kill()
+
+	var flyer_size := flyer.size
+	var source_center := avatar_badges[source_player_index].get_global_rect().get_center()
+	var target_center := avatar_badges[target_player_index].get_global_rect().get_center()
+	flyer.global_position = source_center - flyer_size * 0.5
+
+	var flyer_tween := create_tween()
+	sticker_flyer_tweens[target_player_index] = flyer_tween
+	flyer_tween.tween_property(flyer, "global_position", target_center - flyer_size * 0.5, STICKER_FLY_DURATION)
+	flyer_tween.tween_interval(STICKER_HOLD_DURATION)
+	flyer_tween.tween_property(flyer, "modulate:a", 0.0, 0.22)
+	flyer_tween.tween_callback(_hide_sticker_flyer.bind(target_player_index))
 
 
-func _hide_sticker_flyer() -> void:
-	if is_instance_valid(sticker_flyer):
-		sticker_flyer.visible = false
+func _hide_sticker_flyer(target_player_index: int) -> void:
+	if target_player_index >= 0 and target_player_index < sticker_flyers.size():
+		sticker_flyers[target_player_index].visible = false
+	sticker_flyer_tweens.erase(target_player_index)
+
+
+func _hide_all_sticker_flyers() -> void:
+	for tween_variant in sticker_flyer_tweens.values():
+		var flyer_tween := tween_variant as Tween
+		if is_instance_valid(flyer_tween):
+			flyer_tween.kill()
+	sticker_flyer_tweens.clear()
+	for flyer in sticker_flyers:
+		flyer.visible = false
 
 
 func _refresh_sticker_controls() -> void:
@@ -8378,7 +8399,7 @@ func _refresh_sticker_controls() -> void:
 	sticker_toggle_button.visible = can_show_controls
 	if not can_show_controls:
 		sticker_picker.visible = false
-		_hide_sticker_flyer()
+		_hide_all_sticker_flyers()
 
 
 func _create_soundpad_controls() -> void:
