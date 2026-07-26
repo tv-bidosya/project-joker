@@ -161,6 +161,7 @@ var player_panels: Array[PanelContainer] = []
 var avatar_badges: Array[PanelContainer] = []
 var avatar_images: Array[TextureRect] = []
 var avatar_labels: Array[Label] = []
+var avatar_turn_labels: Array[Label] = []
 var turn_timer_indicator: TurnTimerIndicator
 var reaction_toggle_button: Button
 var reaction_picker: PanelContainer
@@ -233,6 +234,7 @@ var deck_trump_card_style: StyleBoxFlat
 var dealer_marker_style: StyleBoxFlat
 var lead_marker_style: StyleBoxFlat
 var avatar_badge_style: StyleBoxFlat
+var active_avatar_badge_style: StyleBoxFlat
 var undo_vote_approved_style: StyleBoxFlat
 var undo_vote_rejected_style: StyleBoxFlat
 var menu_overlay: Control
@@ -490,6 +492,7 @@ func _create_table_visual_styles() -> void:
 	dealer_marker_style = _create_flat_style(Color(0.33, 0.2, 0.07, 1.0), Color(0.96, 0.77, 0.31, 1.0), 2, 18, 3)
 	lead_marker_style = _create_flat_style(Color(0.055, 0.2, 0.13, 1.0), Color(0.64, 0.86, 0.52, 1.0), 1, 8, 2)
 	avatar_badge_style = _create_flat_style(Color(0.04, 0.1, 0.07, 1.0), Color(0.75, 0.58, 0.2, 1.0), 2, 6, 2)
+	active_avatar_badge_style = _create_flat_style(Color(0.12, 0.14, 0.045, 1.0), Color(1.0, 0.82, 0.24, 1.0), 5, 10, 12)
 	undo_vote_approved_style = _create_flat_style(Color(0.05, 0.34, 0.14, 0.98), Color(0.62, 0.94, 0.46, 1.0), 2, 14, 2)
 	undo_vote_rejected_style = _create_flat_style(Color(0.36, 0.07, 0.06, 0.98), Color(1.0, 0.52, 0.42, 1.0), 2, 14, 2)
 	music_player_panel.add_theme_stylebox_override("panel", _create_flat_style(Color(0.012, 0.055, 0.034, 0.94), Color(0.38, 0.255, 0.11, 0.0), 0, 6, 0))
@@ -1535,6 +1538,8 @@ func _refresh_network_main_players(snapshot: Dictionary, viewer_index: int, acti
 		var avatar_badge: PanelContainer = avatar_badges[relative_slot]
 		_place_player_avatar_badge(avatar_badge, relative_slot)
 		avatar_badge.tooltip_text = "Игрок: %s" % str(player_data.get("display_name", "Игрок"))
+		avatar_badge.add_theme_stylebox_override("panel", active_avatar_badge_style if is_current else avatar_badge_style)
+		avatar_turn_labels[relative_slot].visible = is_current
 		var avatar_texture: Texture2D = _get_player_avatar_texture(relative_slot)
 		avatar_images[relative_slot].texture = avatar_texture
 		avatar_labels[relative_slot].visible = avatar_texture == null
@@ -6647,6 +6652,22 @@ func _create_player_avatar_badges() -> void:
 		avatar_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		avatar_content.add_child(avatar_label)
 
+		var turn_label := Label.new()
+		turn_label.visible = false
+		turn_label.z_index = 4
+		turn_label.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+		turn_label.offset_top = -30.0
+		turn_label.offset_bottom = -4.0
+		turn_label.text = "ХОД"
+		turn_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		turn_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		turn_label.add_theme_font_size_override("font_size", 17)
+		turn_label.add_theme_color_override("font_color", Color(1.0, 0.88, 0.34, 1.0))
+		turn_label.add_theme_color_override("font_outline_color", Color(0.04, 0.03, 0.01, 1.0))
+		turn_label.add_theme_constant_override("outline_size", 6)
+		turn_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		avatar_content.add_child(turn_label)
+
 		var undo_vote_badge := PanelContainer.new()
 		undo_vote_badge.name = "UndoVoteBadge"
 		undo_vote_badge.visible = false
@@ -6678,12 +6699,20 @@ func _create_player_avatar_badges() -> void:
 		avatar_badges.append(badge)
 		avatar_images.append(avatar_image)
 		avatar_labels.append(avatar_label)
+		avatar_turn_labels.append(turn_label)
 		undo_vote_badges.append(undo_vote_badge)
 		undo_vote_labels.append(undo_vote_label)
 
 
 func _refresh_player_avatar_badges() -> void:
 	for player_index in avatar_badges.size():
+		var is_current := (
+			not is_trick_presentation_active
+			and _get_current_player_index() == player_index
+			and game.current_round.state != Round.State.FINISHED
+		)
+		avatar_badges[player_index].add_theme_stylebox_override("panel", active_avatar_badge_style if is_current else avatar_badge_style)
+		avatar_turn_labels[player_index].visible = is_current
 		avatar_badges[player_index].tooltip_text = "Аватар: %s" % game.players[player_index].display_name
 		var avatar_texture: Texture2D = _get_player_avatar_texture(player_index)
 		avatar_images[player_index].texture = avatar_texture
