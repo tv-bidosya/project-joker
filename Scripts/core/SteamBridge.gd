@@ -349,6 +349,30 @@ func set_local_lobby_ready(ready: bool) -> Dictionary:
 	return get_lobby_state()
 
 
+func set_fill_empty_seats_with_bots(enabled: bool) -> Dictionary:
+	if _lobby_id <= 0:
+		_lobby_status = "Ботов можно добавить только внутри Steam-комнаты."
+		lobby_status_changed.emit()
+		return get_lobby_state()
+
+	var steam_api := _get_steam_api()
+	if steam_api == null or not steam_api.has_method(&"setLobbyData"):
+		_lobby_status = "Steam API не позволяет изменить состав комнаты в этой среде."
+		lobby_status_changed.emit()
+		return get_lobby_state()
+
+	var lobby_owner := int(steam_api.call(&"getLobbyOwner", _lobby_id)) if steam_api.has_method(&"getLobbyOwner") else 0
+	if lobby_owner != get_local_steam_id():
+		_lobby_status = "Заполнять свободные места ботами может только хост."
+		lobby_status_changed.emit()
+		return get_lobby_state()
+
+	steam_api.call(&"setLobbyData", _lobby_id, "pj_fill_bots", "1" if enabled else "0")
+	_lobby_status = "Свободные места заполнены ботами." if enabled else "Боты убраны из свободных мест."
+	lobby_status_changed.emit()
+	return get_lobby_state()
+
+
 func leave_lobby() -> Dictionary:
 	if _lobby_id <= 0:
 		_lobby_status = "Активной Steam-комнаты нет."
@@ -370,6 +394,7 @@ func get_lobby_state() -> Dictionary:
 	var member_count := 0
 	var member_limit := LOBBY_MEMBER_LIMIT
 	var lobby_owner := 0
+	var fill_empty_seats_with_bots := false
 	var members: Array[Dictionary] = []
 	var steam_api := _get_steam_api()
 	if _lobby_id > 0 and steam_api != null:
@@ -379,6 +404,8 @@ func get_lobby_state() -> Dictionary:
 			member_limit = int(steam_api.call(&"getLobbyMemberLimit", _lobby_id))
 		if steam_api.has_method(&"getLobbyOwner"):
 			lobby_owner = int(steam_api.call(&"getLobbyOwner", _lobby_id))
+		if steam_api.has_method(&"getLobbyData"):
+			fill_empty_seats_with_bots = str(steam_api.call(&"getLobbyData", _lobby_id, "pj_fill_bots")) == "1"
 		members = _get_lobby_members(steam_api, member_count, lobby_owner)
 
 	return {
@@ -390,6 +417,8 @@ func get_lobby_state() -> Dictionary:
 		"lobby_owner": lobby_owner,
 		"members": members,
 		"local_ready": _local_lobby_ready,
+		"fill_empty_seats_with_bots": fill_empty_seats_with_bots,
+		"bot_count": maxi(0, member_limit - member_count) if fill_empty_seats_with_bots else 0,
 	}
 
 
@@ -436,6 +465,7 @@ func _on_lobby_created(result: int, lobby_id: int) -> void:
 		steam_api.call(&"setLobbyData", _lobby_id, "protocol", "1")
 		steam_api.call(&"setLobbyData", _lobby_id, "mode", "prototype")
 		steam_api.call(&"setLobbyData", _lobby_id, "max_seats", str(LOBBY_MEMBER_LIMIT))
+		steam_api.call(&"setLobbyData", _lobby_id, "pj_fill_bots", "0")
 		steam_api.call(&"setLobbyMemberLimit", _lobby_id, LOBBY_MEMBER_LIMIT)
 		steam_api.call(&"setLobbyJoinable", _lobby_id, true)
 	lobby_status_changed.emit()

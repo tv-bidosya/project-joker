@@ -68,9 +68,9 @@ func start_from_current_lobby(bridge: RefCounted, fill_empty_seats_with_bots: bo
 	if lobby_id <= 0 or host_steam_id <= 0 or local_steam_id <= 0:
 		_set_status("Steam P2P можно подготовить только внутри подключённой Steam-комнаты.")
 		return false
-	var expected_member_count := 2 if fill_empty_seats_with_bots else PLAYER_COUNT
-	if members.size() != expected_member_count or not _are_all_members_ready(members):
-		var requirement_text := "два участника комнаты и два локальных бота" if fill_empty_seats_with_bots else "четыре участника комнаты"
+	var expected_member_count := members.size() if fill_empty_seats_with_bots else PLAYER_COUNT
+	if members.size() != expected_member_count or expected_member_count < 1 or expected_member_count > PLAYER_COUNT or not _are_all_members_ready(members):
+		var requirement_text := "хотя бы один участник и боты на свободных местах" if fill_empty_seats_with_bots else "четыре участника комнаты"
 		_set_status("Для Steam P2P нужны %s с отметкой «готов»." % requirement_text)
 		return false
 
@@ -349,16 +349,16 @@ func _start_as_host() -> void:
 		return
 
 	var player_names := ["Хост", "Игрок 2", "Игрок 3", "Игрок 4"]
-	if _fill_empty_seats_with_bots:
-		player_names[2] = "Бот 1"
-		player_names[3] = "Бот 2"
+	for bot_offset in _local_bot_player_indices.size():
+		var player_index := _local_bot_player_indices[bot_offset]
+		player_names[player_index] = "Бот %d" % (bot_offset + 1)
 	var test_game := Game.new(player_names)
 	test_game.dealer_index = HOST_PLAYER_INDEX
 	match_host = MatchHost.new(test_game)
 	match_host.set_automatic_undo_approver_indices(_local_bot_player_indices)
 	mode = Mode.HOST
 	_rebuild_host_lobby_seats()
-	var status_tail := "и двух локальных ботов" if _fill_empty_seats_with_bots else "из комнаты"
+	var status_tail := "и %d локальных ботов" % _local_bot_player_indices.size() if _fill_empty_seats_with_bots else "из комнаты"
 	_set_status("Steam P2P-хост подготовлен через SteamMultiplayerPeer. Ждём подключения %d игроков %s." % [_expected_remote_player_count, status_tail])
 
 
@@ -557,7 +557,8 @@ func _rebuild_host_lobby_seats() -> void:
 		var is_reconnecting := _reconnecting_player_indices.has(player_index)
 		var is_assigned := is_host_player or is_local_bot or _connected_client_peers_by_player.has(player_index) or seat_reserved_for_reconnect
 		var is_confirmed := is_host_player or is_local_bot or _confirmed_client_peers_by_player.has(player_index)
-		var display_name := "Хост" if is_host_player else ("Бот %d" % (player_index - 1) if is_local_bot else "Игрок %d" % (player_index + 1))
+		var bot_number := _local_bot_player_indices.find(player_index) + 1
+		var display_name := "Хост" if is_host_player else ("Бот %d" % bot_number if is_local_bot else "Игрок %d" % (player_index + 1))
 		lobby_seats.append({
 			"player_index": player_index,
 			"display_name": display_name,

@@ -805,7 +805,7 @@ func _show_steam_lobby_menu() -> void:
 	is_pause_menu_open = false
 	menu_overlay.visible = true
 	_clear_children(menu_content)
-	_add_menu_title("Steam-комната (тест)", "Закрытая комната на четыре места · приглашения Steam без карточной партии и P2P")
+	_add_menu_title("Приватная Steam-комната", "Четыре места · друзья через Steam · свободные места можно заполнить ботами")
 	_add_menu_spacer(12.0)
 
 	steam_lobby_status_label = Label.new()
@@ -840,13 +840,13 @@ func _show_steam_lobby_menu() -> void:
 	steam_lobby_create_button = _add_menu_button("Создать закрытую комнату", _on_create_steam_lobby_pressed, true)
 	steam_lobby_invite_button = _add_menu_button("Пригласить друга через Steam", _on_open_steam_lobby_invite_pressed)
 	steam_lobby_ready_button = _add_menu_button("Отметиться готовым", _on_toggle_steam_lobby_ready_pressed)
-	steam_p2p_prepare_button = _add_menu_button("Подготовить Steam P2P", _on_prepare_steam_p2p_pressed)
-	steam_p2p_prepare_with_bots_button = _add_menu_button("P2P-тест: 2 игрока + 2 бота", _on_prepare_steam_p2p_with_bots_pressed)
-	steam_p2p_start_round_button = _add_menu_button("Начать первую раздачу (1 карта)", _on_start_steam_p2p_round_pressed, true)
+	steam_p2p_prepare_button = _add_menu_button("Подключиться к игровому столу", _on_prepare_steam_p2p_pressed)
+	steam_p2p_prepare_with_bots_button = _add_menu_button("Заполнить свободные места ботами", _on_toggle_steam_lobby_bots_pressed)
+	steam_p2p_start_round_button = _add_menu_button("Начать партию", _on_start_steam_p2p_round_pressed, true)
 	steam_p2p_open_table_button = _add_menu_button("Открыть Steam P2P-стол", _on_open_steam_p2p_table_pressed)
 	steam_lobby_leave_button = _add_menu_button("Выйти из комнаты", _on_leave_steam_lobby_pressed)
 	_add_menu_spacer(10.0)
-	_add_menu_label("Приглашение открывает стандартный Steam Overlay. После готовности игроков каждый отдельно подключает Steam P2P, а хост запускает первую обычную раздачу на одну карту. Для проверки двух компьютеров есть режим с двумя ботами у хоста. Хост по-прежнему проверяет команды и отправляет каждому только его руку.", 14, Color(0.72, 0.85, 0.76, 1.0))
+	_add_menu_label("Приглашение открывает стандартный Steam Overlay. Хост может заполнить свободные места ботами или дождаться четырёх людей. Все живые участники отмечают готовность и подключаются к игровому столу, после чего хост начинает полноценную партию. Хост проверяет команды и отправляет каждому только его закрытую руку.", 14, Color(0.72, 0.85, 0.76, 1.0))
 	_add_menu_spacer(14.0)
 	_add_menu_button("Назад", _show_developer_tools_menu)
 	_refresh_steam_lobby_status()
@@ -894,13 +894,14 @@ func _on_toggle_steam_lobby_ready_pressed() -> void:
 
 func _on_prepare_steam_p2p_pressed() -> void:
 	_reset_loopback_network_joker_selection()
-	steam_p2p_match.start_from_current_lobby(steam_bridge)
+	var lobby_state: Dictionary = steam_bridge.get_lobby_state()
+	steam_p2p_match.start_from_current_lobby(steam_bridge, bool(lobby_state.get("fill_empty_seats_with_bots", false)))
 	_refresh_steam_lobby_status()
 
 
-func _on_prepare_steam_p2p_with_bots_pressed() -> void:
-	_reset_loopback_network_joker_selection()
-	steam_p2p_match.start_from_current_lobby(steam_bridge, true)
+func _on_toggle_steam_lobby_bots_pressed() -> void:
+	var lobby_state: Dictionary = steam_bridge.get_lobby_state()
+	steam_bridge.set_fill_empty_seats_with_bots(not bool(lobby_state.get("fill_empty_seats_with_bots", false)))
 	_refresh_steam_lobby_status()
 
 
@@ -935,6 +936,9 @@ func _refresh_steam_lobby_status() -> void:
 	var member_limit := int(lobby_state.get("member_limit", 4))
 	var lobby_status := str(lobby_state.get("status", "Статус Steam-комнаты не получен."))
 	var local_ready := bool(lobby_state.get("local_ready", false))
+	var fill_empty_seats_with_bots := bool(lobby_state.get("fill_empty_seats_with_bots", false))
+	var bot_count := int(lobby_state.get("bot_count", 0))
+	var local_is_host: bool = int(lobby_state.get("lobby_owner", 0)) == steam_bridge.get_local_steam_id()
 	var members: Array = lobby_state.get("members", [])
 
 	steam_lobby_status_label.text = lobby_status
@@ -950,6 +954,10 @@ func _refresh_steam_lobby_status() -> void:
 		var member_role := " · хост" if bool(member.get("is_owner", false)) else ""
 		var member_ready := "✓ готов" if bool(member.get("ready", false)) else "… ждём"
 		member_lines.append("%s%s — %s" % [member_name, member_role, member_ready])
+	for bot_index in bot_count:
+		member_lines.append("Бот %d — ✓ готов" % (bot_index + 1))
+	for empty_index in maxi(0, member_limit - member_count - bot_count):
+		member_lines.append("Свободное место %d" % (member_count + bot_count + empty_index + 1))
 	steam_lobby_members_label.text = "Участники комнаты\n%s" % "\n".join(member_lines) if not member_lines.is_empty() else ""
 
 	if is_instance_valid(steam_lobby_create_button):
@@ -959,22 +967,18 @@ func _refresh_steam_lobby_status() -> void:
 	if is_instance_valid(steam_lobby_ready_button):
 		steam_lobby_ready_button.disabled = lobby_id <= 0
 		steam_lobby_ready_button.text = "Готов ✓ (отменить)" if local_ready else "Отметиться готовым"
-	var all_members_ready := member_count == member_limit and member_limit == 4 and not members.is_empty()
+	var all_members_ready := member_count > 0
 	for member_variant in members:
 		if not (member_variant is Dictionary) or not bool(member_variant.get("ready", false)):
 			all_members_ready = false
 			break
-	var two_members_ready := member_count == 2 and members.size() == 2
-	for member_variant in members:
-		if not (member_variant is Dictionary) or not bool(member_variant.get("ready", false)):
-			two_members_ready = false
-			break
-	var can_prepare_p2p: bool = lobby_id > 0 and local_ready and all_members_ready and steam_bridge.is_multiplayer_peer_transport_available()
+	var seats_are_filled := member_count == member_limit or fill_empty_seats_with_bots
+	var can_prepare_p2p: bool = lobby_id > 0 and local_ready and all_members_ready and seats_are_filled and steam_bridge.is_multiplayer_peer_transport_available()
 	if is_instance_valid(steam_p2p_prepare_button):
 		steam_p2p_prepare_button.disabled = not can_prepare_p2p or (steam_p2p_match != null and steam_p2p_match.is_running())
-	var can_prepare_p2p_with_bots: bool = lobby_id > 0 and local_ready and two_members_ready and steam_bridge.is_multiplayer_peer_transport_available()
 	if is_instance_valid(steam_p2p_prepare_with_bots_button):
-		steam_p2p_prepare_with_bots_button.disabled = not can_prepare_p2p_with_bots or (steam_p2p_match != null and steam_p2p_match.is_running())
+		steam_p2p_prepare_with_bots_button.disabled = lobby_id <= 0 or not local_is_host or (member_count >= member_limit and not fill_empty_seats_with_bots) or (steam_p2p_match != null and steam_p2p_match.is_running())
+		steam_p2p_prepare_with_bots_button.text = "Убрать ботов" if fill_empty_seats_with_bots else "Заполнить свободные места ботами"
 	if is_instance_valid(steam_p2p_start_round_button):
 		steam_p2p_start_round_button.disabled = steam_p2p_match == null or not steam_p2p_match.is_host() or not steam_p2p_match.can_start_test_round()
 	if is_instance_valid(steam_p2p_open_table_button):
