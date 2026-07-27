@@ -59,7 +59,7 @@ const SOCIAL_ACTION_COOLDOWN_SECONDS := 120.0
 const BUILT_IN_AVATAR_COUNT := 4
 const CUSTOM_AVATAR_INDEX := BUILT_IN_AVATAR_COUNT
 const HUMAN_AVATAR_COUNT := BUILT_IN_AVATAR_COUNT + 1
-const GAME_VERSION := "0.2.1"
+const GAME_VERSION := "0.3.5"
 # Перед публичным экспортом поставь false: игрок сможет создать отчёт, но не
 # увидит внутреннюю кнопку его загрузки. После экспорта можно вернуть true.
 const DEVELOPER_REPORT_TOOLS_ENABLED := true
