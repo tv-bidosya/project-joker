@@ -916,8 +916,6 @@ func _get_local_bot_bid(player_index: int, round: Round) -> int:
 			if valid_bid >= 2 and valid_bid <= 4:
 				valid_dark_bids.append(valid_bid)
 		if not valid_dark_bids.is_empty():
-			if _bot_difficulty == BOT_DIFFICULTY_EASY:
-				return valid_dark_bids[0]
 			return valid_dark_bids[_bot_random.randi_range(0, valid_dark_bids.size() - 1)]
 
 	if _bot_difficulty == BOT_DIFFICULTY_EASY:

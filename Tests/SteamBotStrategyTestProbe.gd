@@ -22,9 +22,11 @@ func _init() -> void:
 
 func _test_dark_bid_range(network_match: SteamP2PMatch) -> void:
 	var game := Game.new(["Host", "Bot", "Player 3", "Player 4"])
+	game.dealer_index = 0
 	assert(game.start_round(9, Round.RoundType.DARK, Round.TrumpSuit.CLUBS, false))
 	network_match.match_host = MatchHost.new(game)
 	var bot_player_index := game.current_round.current_player_index
+	assert(game.players[bot_player_index].hand.is_empty(), "A dark-round bot must bid before seeing its hand.")
 
 	for difficulty in [
 		SteamP2PMatch.BOT_DIFFICULTY_EASY,
@@ -32,8 +34,34 @@ func _test_dark_bid_range(network_match: SteamP2PMatch) -> void:
 		SteamP2PMatch.BOT_DIFFICULTY_HARD
 	]:
 		network_match._bot_difficulty = difficulty
-		var bid := network_match._get_local_bot_bid(bot_player_index, game.current_round)
-		assert(bid >= 2 and bid <= 4, "A network bot must bid from 2 to 4 in a dark round.")
+		network_match._bot_random.seed = 20260728 + difficulty
+		var observed_bids: Dictionary = {}
+		for _sample_index in 60:
+			var bid := network_match._get_local_bot_bid(bot_player_index, game.current_round)
+			assert(bid >= 2 and bid <= 4, "A network bot must bid from 2 to 4 in a dark round.")
+			observed_bids[bid] = true
+		assert(
+			observed_bids.size() == 3,
+			"Every difficulty must randomly use bids 2, 3 and 4 when all three are legal."
+		)
+
+	assert(game.place_bid(1, 2))
+	assert(game.place_bid(2, 2))
+	assert(game.place_bid(3, 1))
+	assert(game.current_round.current_player_index == 0)
+	assert(not game.current_round.can_place_bid(0, 4), "The final bid of 4 must be forbidden when the total would equal nine.")
+	for difficulty in [
+		SteamP2PMatch.BOT_DIFFICULTY_EASY,
+		SteamP2PMatch.BOT_DIFFICULTY_NORMAL,
+		SteamP2PMatch.BOT_DIFFICULTY_HARD
+	]:
+		network_match._bot_difficulty = difficulty
+		var observed_final_bids: Dictionary = {}
+		for _sample_index in 40:
+			var final_bid := network_match._get_local_bot_bid(0, game.current_round)
+			assert(final_bid == 2 or final_bid == 3, "A dark bot must respect the forbidden final bid.")
+			observed_final_bids[final_bid] = true
+		assert(observed_final_bids.size() == 2, "The final dark bidder must randomize between all remaining legal values.")
 
 
 func _test_ace_is_saved_in_lost_trick(network_match: SteamP2PMatch) -> void:
