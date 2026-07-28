@@ -86,6 +86,17 @@ func _run() -> void:
 	assert(main_scene.sticker_picker.visible, "The avatar gift button must open the gift picker.")
 	assert(not main_scene.sticker_picker_auto_close_timer.is_stopped(), "The open gift picker must start its idle close timer.")
 	assert(is_equal_approx(main_scene.sticker_picker_auto_close_timer.wait_time, 5.0))
+	await process_frame
+	var sticker_picker_rect: Rect2 = main_scene.sticker_picker.get_global_rect()
+	var soundpad_button_rect: Rect2 = main_scene.soundpad_toggle_button.get_global_rect()
+	assert(
+		is_equal_approx(sticker_picker_rect.position.x - soundpad_button_rect.end.x, 12.0),
+		"The gift picker must use the empty space to the right of the soundpad."
+	)
+	assert(
+		is_equal_approx(sticker_picker_rect.get_center().y, soundpad_button_rect.get_center().y),
+		"The gift picker and soundpad button must share a vertical center."
+	)
 	assert(main_scene.sticker_picker_close_button.text == "×", "The gift picker must use a close button instead of a back arrow.")
 	main_scene.sticker_picker_close_button.pressed.emit()
 	assert(not main_scene.sticker_picker.visible, "The close button must dismiss the gift picker.")

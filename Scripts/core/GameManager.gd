@@ -9345,7 +9345,7 @@ func _create_sticker_controls() -> void:
 	)
 	sticker_picker.gui_input.connect(_on_sticker_picker_gui_input)
 	sticker_picker.mouse_entered.connect(_restart_sticker_picker_auto_close)
-	_set_control_layout(sticker_picker, 0.5, 1.0, 0.5, 1.0, 128.0, -500.0, 470.0, -408.0)
+	_set_control_layout(sticker_picker, 0.5, 1.0, 0.5, 1.0, 258.0, -401.0, 600.0, -309.0)
 
 	sticker_picker_auto_close_timer = Timer.new()
 	sticker_picker_auto_close_timer.one_shot = true
@@ -9460,7 +9460,7 @@ func _close_sticker_picker() -> void:
 func _build_sticker_target_picker() -> void:
 	_clear_children(sticker_picker_content)
 	sticker_picker_title.text = "Кому отправить стикер?"
-	_set_control_layout(sticker_picker, 0.5, 1.0, 0.5, 1.0, 128.0, -500.0, 470.0, -408.0)
+	_set_control_layout(sticker_picker, 0.5, 1.0, 0.5, 1.0, 258.0, -401.0, 600.0, -309.0)
 
 	var target_row := HBoxContainer.new()
 	target_row.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -9506,7 +9506,7 @@ func _build_sticker_choice_picker() -> void:
 		if players_by_index.has(sticker_selected_target_index):
 			target_name = str((players_by_index[sticker_selected_target_index] as Dictionary).get("display_name", target_name))
 	sticker_picker_title.text = "Что отправить %s?" % target_name.left(12)
-	_set_control_layout(sticker_picker, 0.5, 1.0, 0.5, 1.0, 128.0, -558.0, 454.0, -408.0)
+	_set_control_layout(sticker_picker, 0.5, 1.0, 0.5, 1.0, 258.0, -430.0, 584.0, -280.0)
 
 	var sticker_scroll := ScrollContainer.new()
 	sticker_scroll.custom_minimum_size = Vector2(0.0, 88.0)
