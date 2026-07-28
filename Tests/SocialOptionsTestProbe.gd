@@ -35,6 +35,10 @@ func _run() -> void:
 
 	main_scene.sticker_selected_target_index = 1
 	main_scene._build_sticker_choice_picker()
+	assert(
+		is_equal_approx(main_scene.sticker_picker.offset_right - main_scene.sticker_picker.offset_left, 326.0),
+		"Gift picker must fit the five buttons without an empty right gutter"
+	)
 	var sticker_scroll := main_scene.sticker_picker_content.get_child(0) as ScrollContainer
 	var sticker_grid := sticker_scroll.get_child(0) as GridContainer
 	assert(sticker_grid.columns == 5 and sticker_grid.get_child_count() == 10, "Gift picker must show a 5x2 grid")

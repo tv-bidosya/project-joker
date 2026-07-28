@@ -128,6 +128,10 @@ func _test_undo_rejection_timeout_and_limit() -> void:
 	assert(bool(match_host.apply_command(reject_command).get("accepted", false)))
 	assert(not match_host.is_undo_vote_pending())
 	assert(game.players[actor_index].bid == 0, "A rejected undo must preserve the accepted bid.")
+	assert(
+		int(match_host.create_player_snapshot(actor_index).get("undo_state", {}).get("last_rejected_player_index", -1)) == rejecting_player_index,
+		"The rejecting player's cross must remain visible briefly."
+	)
 
 	assert(_request_undo(match_host, actor_index))
 	match_host.undo_deadline_milliseconds = Time.get_ticks_msec() - 1
@@ -158,6 +162,13 @@ func _test_undo_rejection_timeout_and_limit() -> void:
 	var stale_result: Dictionary = match_host.apply_command(stale_bid)
 	assert(not bool(stale_result.get("accepted", false)))
 	assert(str(stale_result.get("reason", "")) == "outdated_revision")
+
+	game.current_round.state = Round.State.FINISHED
+	assert(match_host.start_next_round(1, Round.RoundType.NORMAL, Round.TrumpSuit.SPADES))
+	assert(
+		not match_host.can_player_request_undo(actor_index),
+		"Starting a new round must discard every undo checkpoint from the previous round."
+	)
 
 
 func _test_afk_pauses_during_undo_vote() -> void:

@@ -77,11 +77,15 @@ theme_override_font_sizes/font_size = 18
 text = "Этап: подготовка"
 vertical_alignment = 1
 
-[node name="TrumpLabel" type="Label" parent="Margin/TablePanel/TableContent/Header"]
+[node name="TrumpLabel" type="RichTextLabel" parent="Margin/TablePanel/TableContent/Header"]
 unique_name_in_owner = true
+custom_minimum_size = Vector2(420, 28)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.97, 0.86, 0.55, 1)
-theme_override_font_sizes/font_size = 18
+theme_override_font_sizes/normal_font_size = 18
+bbcode_enabled = true
+fit_content = true
+scroll_active = false
 text = "Козырь: —"
 vertical_alignment = 1
 
@@ -184,12 +188,15 @@ size_flags_vertical = 3
 horizontal_scroll_mode = 0
 vertical_scroll_mode = 1
 
-[node name="HistoryLabel" type="Label" parent="Margin/TablePanel/TableContent/RoundHistoryPanel/RoundHistoryScroll"]
+[node name="HistoryLabel" type="RichTextLabel" parent="Margin/TablePanel/TableContent/RoundHistoryPanel/RoundHistoryScroll"]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0.72, 0.85, 0.76, 1)
-theme_override_font_sizes/font_size = 14
+theme_override_font_sizes/normal_font_size = 14
+bbcode_enabled = true
+fit_content = true
+scroll_active = false
 text = "Ход раздачи"
 autowrap_mode = 2
 

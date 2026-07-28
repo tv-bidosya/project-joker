@@ -54,20 +54,16 @@ func can_play_card(player: Player, card: Card) -> bool:
 	if played_cards.is_empty():
 		return true
 
-	if card.is_joker and trump == Round.TrumpSuit.NONE:
+	# Джокер — добровольное универсальное исключение: в ответ его можно
+	# сыграть при любой руке, а затем выбрать «берёт» или виртуальную младшую.
+	if card.is_joker:
 		return true
 
 	if _hand_has_suit(player.hand, lead_suit):
-		if card.is_joker:
-			return lead_suit == trump
-
 		if card.suit != lead_suit:
 			return false
 
 		return _is_forced_card_allowed(player, card)
-
-	if card.is_joker:
-		return true
 
 	if trump != Round.TrumpSuit.NONE and _hand_has_suit(player.hand, trump):
 		return card.suit == trump

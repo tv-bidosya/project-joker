@@ -12,6 +12,8 @@ func _init() -> void:
 	_test_ace_is_saved_in_lost_trick(network_match)
 	_test_misere_avoids_trick(network_match)
 	_test_golden_round_seeks_trick(network_match)
+	_test_golden_round_preserves_unsafe_trump_king(network_match)
+	_test_overbid_bot_keeps_taking(network_match)
 	_test_joker_takes_when_regular_card_cannot(network_match)
 	_test_hard_bot_preserves_leading_joker(network_match)
 
@@ -117,6 +119,31 @@ func _test_golden_round_seeks_trick(network_match: SteamP2PMatch) -> void:
 
 	var payload := network_match._get_local_bot_card_payload(bot_index)
 	assert(payload.get("card_key", "") == _card_key(ace), "The bot must seek tricks in a golden round.")
+
+
+func _test_golden_round_preserves_unsafe_trump_king(network_match: SteamP2PMatch) -> void:
+	var game := _create_playing_game(Round.RoundType.GOLDEN, Round.TrumpSuit.CLUBS)
+	var bot_index := game.current_round.current_player_index
+	var trump_king := _card(Card.Suit.CLUBS, Card.Rank.KING)
+	var low_non_trump := _card(Card.Suit.HEARTS, Card.Rank.SIX)
+	game.players[bot_index].receive_card(trump_king)
+	game.players[bot_index].receive_card(low_non_trump)
+	network_match.match_host = MatchHost.new(game)
+	network_match._bot_difficulty = SteamP2PMatch.BOT_DIFFICULTY_HARD
+	var payload := network_match._get_local_bot_card_payload(bot_index)
+	assert(
+		payload.get("card_key", "") == _card_key(low_non_trump),
+		"A hard golden bot must not donate a trump king while the trump ace is still unknown."
+	)
+
+
+func _test_overbid_bot_keeps_taking(network_match: SteamP2PMatch) -> void:
+	var game := _create_playing_game(Round.RoundType.NORMAL, Round.TrumpSuit.CLUBS)
+	var bot_index := game.current_round.current_player_index
+	game.players[bot_index].bid = 1
+	game.players[bot_index].tricks_taken = 2
+	network_match.match_host = MatchHost.new(game)
+	assert(network_match._local_bot_wants_trick(game.players[bot_index]), "An overbid bot must keep seeking tricks.")
 
 
 func _test_joker_takes_when_regular_card_cannot(network_match: SteamP2PMatch) -> void:

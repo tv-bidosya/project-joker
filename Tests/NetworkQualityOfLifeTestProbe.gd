@@ -146,9 +146,14 @@ func _test_network_profile_name_update() -> void:
 	network._confirmed_client_peers_by_player[1] = 22
 	network._handle_host_profile_name({
 		"player_index": 1,
-		"display_name": "Тестер"
+		"display_name": "Тестер",
+		"avatar_index": 3,
+		"avatar_data": "dGVzdA=="
 	}, 22)
 	assert(network.match_host.game.players[1].display_name == "Тестер", "Host must apply a client's profile name")
-	network.update_local_display_name("Ведущий")
+	assert(int(network._avatar_index_by_player.get(1, -1)) == 3, "Host must apply a client's avatar choice")
+	assert(str(network._avatar_data_by_player.get(1, "")) == "dGVzdA==", "Host must retain the avatar preview payload")
+	network.update_local_profile("Ведущий", 2)
 	assert(network.match_host.game.players[0].display_name == "Ведущий", "Host profile name must update live")
+	assert(int(network._avatar_index_by_player.get(0, -1)) == 2, "Host avatar must update live")
 	network.free()

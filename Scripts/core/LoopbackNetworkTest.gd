@@ -21,6 +21,7 @@ const SNAPSHOT_DELIVERY_INTERVAL_SECONDS := 0.15
 const SNAPSHOT_RETRY_INTERVAL_SECONDS := 1.0
 const FIRST_TURN_ROLL_REVEAL_SECONDS := 2.4
 const MAX_NETWORK_DISPLAY_NAME_LENGTH := 16
+const MAX_NETWORK_AVATAR_DATA_LENGTH := 180000
 const NetworkHost = preload("res://Scripts/core/LocalMatchHost.gd")
 const NetworkSnapshot = preload("res://Scripts/core/MatchStateSnapshot.gd")
 const NetworkCommand = preload("res://Scripts/core/MatchCommand.gd")
@@ -88,6 +89,8 @@ var first_turn_roll_winner_index := -1
 var first_turn_roll_state: Dictionary = {}
 var _first_turn_roll_reveal_seconds_remaining := 0.0
 var _first_turn_roll_random := RandomNumberGenerator.new()
+var _avatar_index_by_player: Dictionary = {}
+var _avatar_data_by_player: Dictionary = {}
 
 
 func start_host(local_port: int = HOST_PORT) -> bool:
@@ -162,6 +165,8 @@ func stop() -> void:
 	first_turn_roll_winner_index = -1
 	first_turn_roll_state.clear()
 	_first_turn_roll_reveal_seconds_remaining = 0.0
+	_avatar_index_by_player.clear()
+	_avatar_data_by_player.clear()
 	_set_status("Сеть остановлена.")
 
 
@@ -269,13 +274,26 @@ func submit_first_turn_roll() -> bool:
 
 
 func update_local_display_name(display_name: String) -> bool:
+	var local_player_index := HOST_PLAYER_INDEX if is_host() else client_player_index
+	return update_local_profile(
+		display_name,
+		int(_avatar_index_by_player.get(local_player_index, 0)),
+		str(_avatar_data_by_player.get(local_player_index, ""))
+	)
+
+
+func update_local_profile(display_name: String, avatar_index: int, avatar_data: String = "") -> bool:
 	var sanitized_name := _sanitize_network_display_name(display_name)
 	if sanitized_name.is_empty():
 		return false
+	var sanitized_avatar_index := clampi(avatar_index, 0, 4)
+	var sanitized_avatar_data := avatar_data if avatar_data.length() <= MAX_NETWORK_AVATAR_DATA_LENGTH else ""
 	if is_host():
 		if match_host == null or match_host.game.players.is_empty():
 			return false
 		match_host.game.players[HOST_PLAYER_INDEX].display_name = sanitized_name
+		_avatar_index_by_player[HOST_PLAYER_INDEX] = sanitized_avatar_index
+		_avatar_data_by_player[HOST_PLAYER_INDEX] = sanitized_avatar_data
 		_rebuild_host_lobby_seats()
 		_broadcast_lobby_state()
 		if lobby_round_started:
@@ -283,10 +301,14 @@ func update_local_display_name(display_name: String) -> bool:
 		return true
 	if not is_client() or client_player_index < FIRST_CLIENT_PLAYER_INDEX:
 		return false
+	_avatar_index_by_player[client_player_index] = sanitized_avatar_index
+	_avatar_data_by_player[client_player_index] = sanitized_avatar_data
 	return _send_message({
 		"type": "profile_name",
 		"player_index": client_player_index,
-		"display_name": sanitized_name
+		"display_name": sanitized_name,
+		"avatar_index": sanitized_avatar_index,
+		"avatar_data": sanitized_avatar_data
 	}, 1)
 
 
@@ -578,6 +600,7 @@ func _handle_host_join_request(message: Dictionary, sender_peer_id: int) -> void
 	var requested_display_name := _sanitize_network_display_name(str(message.get("display_name", "")))
 	if not requested_display_name.is_empty() and assigned_player_index < match_host.game.players.size():
 		match_host.game.players[assigned_player_index].display_name = requested_display_name
+	_store_network_avatar_profile(assigned_player_index, message)
 
 	_rebuild_host_lobby_seats()
 	_send_message({
@@ -673,6 +696,7 @@ func _handle_host_profile_name(message: Dictionary, sender_peer_id: int) -> void
 	if display_name.is_empty() or match_host == null or assigned_player_index >= match_host.game.players.size():
 		return
 	match_host.game.players[assigned_player_index].display_name = display_name
+	_store_network_avatar_profile(assigned_player_index, message)
 	_rebuild_host_lobby_seats()
 	_broadcast_lobby_state()
 	if lobby_round_started:
@@ -682,6 +706,12 @@ func _handle_host_profile_name(message: Dictionary, sender_peer_id: int) -> void
 
 func _sanitize_network_display_name(display_name: String) -> String:
 	return display_name.replace("\n", " ").replace("\r", " ").strip_edges().left(MAX_NETWORK_DISPLAY_NAME_LENGTH)
+
+
+func _store_network_avatar_profile(player_index: int, profile_data: Dictionary) -> void:
+	_avatar_index_by_player[player_index] = clampi(int(profile_data.get("avatar_index", 0)), 0, 4)
+	var avatar_data := str(profile_data.get("avatar_data", ""))
+	_avatar_data_by_player[player_index] = avatar_data if avatar_data.length() <= MAX_NETWORK_AVATAR_DATA_LENGTH else ""
 
 
 func _handle_host_match_command(message: Dictionary, sender_peer_id: int) -> void:
@@ -1403,14 +1433,8 @@ func _is_client_joker_allowed() -> bool:
 	if not has_joker:
 		return false
 
-	var active_trick_data: Dictionary = _get_client_active_trick_data()
-	if active_trick_data.is_empty():
-		return true
-
-	var lead_suit := int(active_trick_data.get("lead_suit", -1))
-	var trump := int(active_trick_data.get("trump", Round.TrumpSuit.NONE))
-	if lead_suit >= 0 and _serialized_hand_has_suit(private_hand, lead_suit):
-		return lead_suit == trump
+	# Клиентская подсветка повторяет правило хоста: Джокер разрешён в ответ
+	# независимо от наличия масти или козыря.
 	return true
 
 
@@ -1780,7 +1804,9 @@ func _rebuild_host_lobby_seats() -> void:
 			"display_name": display_name,
 			"is_host": is_host_player,
 			"assigned": is_assigned,
-			"confirmed": is_confirmed
+			"confirmed": is_confirmed,
+			"avatar_index": int(_avatar_index_by_player.get(player_index, 0)),
+			"avatar_data": str(_avatar_data_by_player.get(player_index, ""))
 		})
 
 

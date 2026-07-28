@@ -44,6 +44,8 @@ var undo_checkpoint: Dictionary = {}
 var automatic_undo_approver_indices: Array[int] = []
 var undo_state_reset_id := 0
 var undo_last_message := ""
+var undo_last_rejected_player_index := -1
+var undo_rejection_visible_until_milliseconds := 0
 
 
 func _init(game_state: Game) -> void:
@@ -131,6 +133,10 @@ func set_automatic_undo_approver_indices(player_indices: Array[int]) -> void:
 
 func process_undo_vote() -> bool:
 	if not undo_pending:
+		if undo_last_rejected_player_index >= 0 and Time.get_ticks_msec() >= undo_rejection_visible_until_milliseconds:
+			undo_last_rejected_player_index = -1
+			undo_rejection_visible_until_milliseconds = 0
+			return true
 		return false
 	var seconds_left := _get_undo_seconds_left()
 	if seconds_left <= 0:
@@ -227,7 +233,11 @@ func _apply_undo_vote(command) -> bool:
 		last_rejection_reason = "invalid_undo_vote"
 		return false
 
-	undo_votes[command.player_index] = UndoVote.APPROVED if bool(command.payload.get("approved", false)) else UndoVote.REJECTED
+	var approved := bool(command.payload.get("approved", false))
+	undo_votes[command.player_index] = UndoVote.APPROVED if approved else UndoVote.REJECTED
+	if not approved:
+		undo_last_rejected_player_index = command.player_index
+		undo_rejection_visible_until_milliseconds = Time.get_ticks_msec() + 3000
 	_resolve_pending_undo_if_possible()
 	return true
 
@@ -284,7 +294,8 @@ func _create_undo_state_snapshot(recipient_player_index: int) -> Dictionary:
 		"seconds_left": seconds_left,
 		"can_request": can_player_request_undo(recipient_player_index),
 		"requests_remaining": _get_undo_requests_remaining(recipient_player_index),
-		"last_message": undo_last_message
+		"last_message": undo_last_message,
+		"last_rejected_player_index": undo_last_rejected_player_index
 	}
 
 
@@ -333,6 +344,11 @@ func start_next_round(
 		game.dealer_index = previous_dealer_index
 		return false
 
+	undo_action_records.clear()
+	undo_request_counts_by_action_id.clear()
+	_clear_pending_undo()
+	undo_last_rejected_player_index = -1
+	undo_rejection_visible_until_milliseconds = 0
 	# Новая раздача — самостоятельная версия общего состояния. Это не даёт
 	# клиенту применить позднюю команду из предыдущей раздачи.
 	revision += 1

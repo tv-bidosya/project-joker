@@ -77,6 +77,20 @@ static func get_back_texture() -> Texture2D:
 	return _load_texture(JUMBO_INDEX_ROOT.path_join("blueBack.png"))
 
 
+static func get_scheduled_trump_texture(suit: int) -> Texture2D:
+	# Фиксированный козырь не является реально открытой картой из колоды,
+	# поэтому показываем его отдельной декоративной картой одной стилистики.
+	var file_name: String = {
+		Card.Suit.CLUBS: "ace_of_clubs.png",
+		Card.Suit.SPADES: "ace_of_spades2.png",
+		Card.Suit.HEARTS: "ace_of_hearts.png",
+		Card.Suit.DIAMONDS: "ace_of_diamonds.png"
+	}.get(suit, "")
+	if file_name.is_empty():
+		return null
+	return _load_texture(VECTOR_CLASSIC_ROOT.path_join(file_name))
+
+
 static func _load_texture(texture_path: String) -> Texture2D:
 	if texture_path.is_empty():
 		return null

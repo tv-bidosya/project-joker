@@ -44,6 +44,8 @@ var _reconnecting_player_indices: Dictionary = {}
 var _bot_random := RandomNumberGenerator.new()
 var _local_display_name := "Игрок"
 var _local_auto_turn_enabled := false
+var _local_avatar_index := 0
+var _local_avatar_data := ""
 
 
 func _init() -> void:
@@ -69,7 +71,9 @@ func start_from_current_lobby(
 	fill_empty_seats_with_bots: bool = false,
 	bot_difficulty: int = BOT_DIFFICULTY_NORMAL,
 	local_display_name: String = "Игрок",
-	local_auto_turn_enabled: bool = false
+	local_auto_turn_enabled: bool = false,
+	local_avatar_index: int = 0,
+	local_avatar_data: String = ""
 ) -> bool:
 	stop()
 	steam_bridge = bridge
@@ -77,6 +81,8 @@ func start_from_current_lobby(
 	_local_display_name = _sanitize_network_display_name(local_display_name)
 	if _local_display_name.is_empty():
 		_local_display_name = "Игрок"
+	_local_avatar_index = clampi(local_avatar_index, 0, 4)
+	_local_avatar_data = local_avatar_data if local_avatar_data.length() <= MAX_NETWORK_AVATAR_DATA_LENGTH else ""
 	if steam_bridge == null:
 		_set_status("Steam P2P недоступен: мост Steam не создан.")
 		return false
@@ -112,6 +118,9 @@ func start_from_current_lobby(
 	_transport_active = true
 	if local_steam_id == host_steam_id:
 		_start_as_host()
+		_avatar_index_by_player[HOST_PLAYER_INDEX] = _local_avatar_index
+		_avatar_data_by_player[HOST_PLAYER_INDEX] = _local_avatar_data
+		_rebuild_host_lobby_seats()
 		_set_player_auto_turn_enabled(HOST_PLAYER_INDEX, _local_auto_turn_enabled, false)
 	else:
 		_start_as_client()
@@ -146,6 +155,8 @@ func stop() -> void:
 	_outbound_flush_pending = false
 	_local_display_name = "Игрок"
 	_local_auto_turn_enabled = false
+	_local_avatar_index = 0
+	_local_avatar_data = ""
 	steam_bridge = null
 	super.stop()
 
@@ -187,11 +198,17 @@ func set_bot_difficulty(difficulty: int) -> void:
 
 
 func update_local_display_name(display_name: String) -> bool:
+	return update_local_profile(display_name, _local_avatar_index, _local_avatar_data)
+
+
+func update_local_profile(display_name: String, avatar_index: int, avatar_data: String = "") -> bool:
 	var sanitized_name := _sanitize_network_display_name(display_name)
 	if sanitized_name.is_empty():
 		return false
 	_local_display_name = sanitized_name
-	return super.update_local_display_name(sanitized_name)
+	_local_avatar_index = clampi(avatar_index, 0, 4)
+	_local_avatar_data = avatar_data if avatar_data.length() <= MAX_NETWORK_AVATAR_DATA_LENGTH else ""
+	return super.update_local_profile(sanitized_name, _local_avatar_index, _local_avatar_data)
 
 
 func set_local_auto_turn_enabled(enabled: bool) -> bool:
@@ -538,7 +555,9 @@ func _process_client_join_request(delta: float) -> void:
 		"protocol_version": PROTOCOL_VERSION,
 		"requested_player_index": client_requested_player_index,
 		"display_name": _local_display_name,
-		"auto_turn_enabled": _local_auto_turn_enabled
+		"auto_turn_enabled": _local_auto_turn_enabled,
+		"avatar_index": _local_avatar_index,
+		"avatar_data": _local_avatar_data
 	}, 1)
 	_join_request_attempt_count += 1
 	if join_request_was_sent:
@@ -727,7 +746,9 @@ func _rebuild_host_lobby_seats() -> void:
 			"is_temporary_bot": is_temporary_bot,
 			"assigned": is_assigned,
 			"confirmed": is_confirmed,
-			"reconnecting": is_reconnecting
+			"reconnecting": is_reconnecting,
+			"avatar_index": int(_avatar_index_by_player.get(player_index, 0)),
+			"avatar_data": str(_avatar_data_by_player.get(player_index, ""))
 		})
 
 
@@ -1042,6 +1063,8 @@ func _choose_local_bot_card(player: Player, legal_cards: Array[Card]) -> Card:
 func _choose_hard_local_bot_card(player: Player, legal_cards: Array[Card]) -> Card:
 	var wants_trick := _local_bot_wants_trick(player)
 	if match_host.game.active_trick == null:
+		if match_host.game.current_round.round_type == Round.RoundType.GOLDEN:
+			return _select_golden_local_bot_lead_card(legal_cards, match_host.game.current_round.trump)
 		var regular_lead := _select_local_bot_non_joker_by_strength(legal_cards, wants_trick)
 		return regular_lead if regular_lead != null else _get_local_bot_joker(legal_cards)
 
@@ -1074,7 +1097,32 @@ func _local_bot_wants_trick(player: Player) -> bool:
 			return true
 		Round.RoundType.MISERE:
 			return false
-	return player.bid > player.tricks_taken
+	return player.bid != player.tricks_taken
+
+
+func _select_golden_local_bot_lead_card(cards: Array[Card], trump: Round.TrumpSuit) -> Card:
+	var joker := _get_local_bot_joker(cards)
+	if joker != null:
+		return joker
+	for card in cards:
+		if not card.is_joker and card.suit == trump and card.rank == Card.Rank.ACE:
+			return card
+	for card in cards:
+		if not card.is_joker and card.suit != trump and card.rank == Card.Rank.ACE:
+			return card
+
+	var non_trumps: Array[Card] = []
+	var trumps: Array[Card] = []
+	for card in cards:
+		if card.is_joker:
+			continue
+		if card.suit == trump:
+			trumps.append(card)
+		else:
+			non_trumps.append(card)
+	if not non_trumps.is_empty():
+		return _select_local_bot_card_by_strength(non_trumps, false)
+	return _select_local_bot_card_by_strength(trumps, false)
 
 
 func _select_local_bot_weakest_winner(legal_cards: Array[Card]) -> Card:
