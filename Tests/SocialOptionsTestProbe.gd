@@ -30,6 +30,8 @@ func _run() -> void:
 		assert(gift_texture != null, "Every built-in gift must use its bundled Fluent Emoji texture")
 	assert(gift_symbols == LocalMatchHostResource.NETWORK_STICKERS, "Client and host social option lists must match")
 	assert(main_scene.FLUENT_EMOJI_TEXTURE_PATHS.size() == 30, "The bundled Fluent Emoji subset must contain ten gifts and twenty reactions")
+	assert(main_scene.reaction_toggle_button.text == "☺", "The table reaction toggle must stay icon-only without a usage counter")
+	assert(main_scene.soundpad_toggle_button.text == "🔊", "The table soundpad toggle must stay icon-only without a usage counter")
 	assert(
 		main_scene.FLUENT_EMOJI_LICENSE.LICENSE_TEXT.contains("Copyright (c) Microsoft Corporation."),
 		"The exported project must retain the Fluent Emoji MIT notice"
@@ -49,6 +51,15 @@ func _run() -> void:
 		reaction_picker_padding >= 12.0 and reaction_picker_padding <= 36.0,
 		"Reaction picker must keep balanced breathing room around the grid"
 	)
+	main_scene.reaction_picker.visible = true
+	await process_frame
+	var reaction_picker_rect: Rect2 = main_scene.reaction_picker.get_global_rect()
+	var reaction_grid_rect: Rect2 = reaction_grid.get_global_rect()
+	var reaction_top_space := reaction_grid_rect.position.y - reaction_picker_rect.position.y
+	var reaction_bottom_space := reaction_picker_rect.end.y - reaction_grid_rect.end.y
+	assert(is_equal_approx(reaction_picker_rect.size.y, 198.0), "Reaction picker must fit four rows without a black footer")
+	assert(absf(reaction_top_space - reaction_bottom_space) <= 3.0, "Reaction grid must have balanced top and bottom spacing")
+	main_scene.reaction_picker.visible = false
 
 	main_scene.sticker_selected_target_index = 1
 	main_scene._build_sticker_choice_picker()

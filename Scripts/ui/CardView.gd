@@ -4,6 +4,22 @@ extends Control
 
 
 const CardArtworkResource = preload("res://Scripts/ui/CardArtwork.gd")
+const ARTWORK_EDGE_SHADER_CODE := """
+shader_type canvas_item;
+
+void fragment() {
+	vec4 artwork = texture(TEXTURE, UV);
+	const float edge_inset = 0.003;
+	const float corner_radius = 0.026;
+	vec2 rounded_box = abs(UV - vec2(0.5)) - vec2(0.5 - edge_inset - corner_radius);
+	float edge_distance = length(max(rounded_box, vec2(0.0)))
+		+ min(max(rounded_box.x, rounded_box.y), 0.0)
+		- corner_radius;
+	float antialias_width = max(fwidth(edge_distance) * 0.85, 0.001);
+	float clean_edge = 1.0 - smoothstep(-antialias_width, antialias_width, edge_distance);
+	COLOR = vec4(artwork.rgb, artwork.a * clean_edge);
+}
+"""
 
 
 signal card_pressed(card: Card)
@@ -14,6 +30,7 @@ var is_interactive := false
 var is_disabled := false
 var is_hovered := false
 var is_winner_highlighted := false
+var requested_presentation_rotation := 0.0
 var presentation_rotation := 0.0
 var presentation_offset := Vector2.ZERO
 var visual_tween: Tween
@@ -26,10 +43,6 @@ var center_label: Label
 var bottom_corner_label: Label
 var status_badge: PanelContainer
 var status_label: Label
-var top_edge_highlight: ColorRect
-var left_edge_highlight: ColorRect
-var bottom_edge_shade: ColorRect
-var right_edge_shade: ColorRect
 
 
 func _init() -> void:
@@ -67,6 +80,7 @@ func set_card(card: Card) -> void:
 		label.visible = not uses_artwork
 		label.add_theme_color_override("font_color", card_color)
 
+	_sync_card_specific_presentation()
 	_refresh_face_style()
 
 
@@ -80,22 +94,22 @@ func set_hand_presentation(card_index: int, card_count: int) -> void:
 	var normalized_position := 0.0
 	if card_count > 1:
 		normalized_position = remap(float(card_index), 0.0, float(card_count - 1), -1.0, 1.0)
-	presentation_rotation = deg_to_rad(normalized_position * 2.4)
+	requested_presentation_rotation = deg_to_rad(normalized_position * 2.4)
 	presentation_offset = Vector2(0.0, absf(normalized_position) * 4.0)
-	_apply_visual_pose(false)
+	_sync_card_specific_presentation()
 
 
 func set_table_presentation(relative_slot: int) -> void:
 	var table_angles := [-1.4, 2.2, -1.8, 1.6]
-	presentation_rotation = deg_to_rad(float(table_angles[clampi(relative_slot, 0, table_angles.size() - 1)]))
+	requested_presentation_rotation = deg_to_rad(float(table_angles[clampi(relative_slot, 0, table_angles.size() - 1)]))
 	presentation_offset = Vector2.ZERO
-	_apply_visual_pose(false)
+	_sync_card_specific_presentation()
 
 
 func reset_presentation() -> void:
-	presentation_rotation = 0.0
+	requested_presentation_rotation = 0.0
 	presentation_offset = Vector2.ZERO
-	_apply_visual_pose(false)
+	_sync_card_specific_presentation()
 
 
 func set_status(status_text: String) -> void:
@@ -171,11 +185,11 @@ func _create_visuals() -> void:
 	depth_shadow.set_anchors_preset(Control.PRESET_FULL_RECT)
 	depth_shadow.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var shadow_style := StyleBoxFlat.new()
-	shadow_style.bg_color = Color(0.0, 0.0, 0.0, 0.28)
+	shadow_style.bg_color = Color.TRANSPARENT
 	shadow_style.set_corner_radius_all(10)
-	shadow_style.shadow_color = Color(0.0, 0.0, 0.0, 0.34)
-	shadow_style.shadow_size = 8
-	shadow_style.shadow_offset = Vector2(0.0, 5.0)
+	shadow_style.shadow_color = Color(0.0, 0.0, 0.0, 0.3)
+	shadow_style.shadow_size = 7
+	shadow_style.shadow_offset = Vector2(0.0, 4.0)
 	depth_shadow.add_theme_stylebox_override("panel", shadow_style)
 	add_child(depth_shadow)
 
@@ -186,13 +200,11 @@ func _create_visuals() -> void:
 
 	artwork_texture = TextureRect.new()
 	artwork_texture.set_anchors_preset(Control.PRESET_FULL_RECT)
-	artwork_texture.offset_left = 4.0
-	artwork_texture.offset_top = 4.0
-	artwork_texture.offset_right = -4.0
-	artwork_texture.offset_bottom = -4.0
 	artwork_texture.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	artwork_texture.stretch_mode = TextureRect.STRETCH_SCALE
-	artwork_texture.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+	artwork_texture.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS_ANISOTROPIC
+	artwork_texture.texture_repeat = CanvasItem.TEXTURE_REPEAT_DISABLED
+	artwork_texture.material = _create_artwork_edge_material()
 	artwork_texture.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	artwork_texture.visible = false
 	face_panel.add_child(artwork_texture)
@@ -250,38 +262,18 @@ func _create_visuals() -> void:
 	bottom_corner_label.add_theme_font_size_override("font_size", 18)
 	face_panel.add_child(bottom_corner_label)
 
-	top_edge_highlight = ColorRect.new()
-	top_edge_highlight.color = Color(1.0, 1.0, 0.94, 0.46)
-	top_edge_highlight.set_anchors_preset(Control.PRESET_TOP_WIDE)
-	top_edge_highlight.offset_bottom = 2.0
-	top_edge_highlight.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	face_panel.add_child(top_edge_highlight)
-
-	left_edge_highlight = ColorRect.new()
-	left_edge_highlight.color = Color(1.0, 1.0, 0.94, 0.26)
-	left_edge_highlight.set_anchors_preset(Control.PRESET_LEFT_WIDE)
-	left_edge_highlight.offset_right = 2.0
-	left_edge_highlight.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	face_panel.add_child(left_edge_highlight)
-
-	bottom_edge_shade = ColorRect.new()
-	bottom_edge_shade.color = Color(0.08, 0.06, 0.025, 0.22)
-	bottom_edge_shade.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
-	bottom_edge_shade.offset_top = -3.0
-	bottom_edge_shade.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	face_panel.add_child(bottom_edge_shade)
-
-	right_edge_shade = ColorRect.new()
-	right_edge_shade.color = Color(0.08, 0.06, 0.025, 0.18)
-	right_edge_shade.set_anchors_preset(Control.PRESET_RIGHT_WIDE)
-	right_edge_shade.offset_left = -3.0
-	right_edge_shade.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	face_panel.add_child(right_edge_shade)
-
 	resized.connect(_update_visual_pivots)
 	mouse_entered.connect(_on_mouse_entered)
 	mouse_exited.connect(_on_mouse_exited)
 	call_deferred("_update_visual_pivots")
+
+
+func _create_artwork_edge_material() -> ShaderMaterial:
+	var edge_shader := Shader.new()
+	edge_shader.code = ARTWORK_EDGE_SHADER_CODE
+	var edge_material := ShaderMaterial.new()
+	edge_material.shader = edge_shader
+	return edge_material
 
 
 func _refresh_face_style() -> void:
@@ -292,13 +284,21 @@ func _refresh_face_style() -> void:
 	var is_hover_highlighted := is_interactive and not is_disabled and is_hovered
 	var border_color := Color(0.98, 0.78, 0.25, 1.0) if is_winner_highlighted else (Color(0.88, 0.67, 0.22, 1.0) if is_hover_highlighted else Color(0.16, 0.2, 0.17, 1.0))
 	var border_width := 4 if is_winner_highlighted else (3 if is_hover_highlighted else 2)
+	var uses_finished_artwork := artwork_texture.visible
+	depth_shadow.visible = not uses_finished_artwork
 	var style := StyleBoxFlat.new()
-	style.bg_color = background_color
+	style.bg_color = Color.TRANSPARENT if uses_finished_artwork else background_color
 	style.border_color = border_color
-	style.set_border_width_all(border_width)
-	style.set_corner_radius_all(8)
-	style.shadow_color = Color(0.98, 0.72, 0.16, 0.72) if is_winner_highlighted else Color(0.0, 0.0, 0.0, 0.42)
-	style.shadow_size = 12 if is_winner_highlighted else 4
+	style.set_border_width_all(0 if uses_finished_artwork else border_width)
+	style.set_corner_radius_all(0 if uses_finished_artwork else 8)
+	style.shadow_color = (
+		Color(0.98, 0.72, 0.16, 0.72)
+		if is_winner_highlighted
+		else Color(0.88, 0.67, 0.22, 0.32)
+		if uses_finished_artwork and is_hover_highlighted
+		else Color(0.0, 0.0, 0.0, 0.42)
+	)
+	style.shadow_size = 0 if uses_finished_artwork else (12 if is_winner_highlighted else 4)
 	style.shadow_offset = Vector2(0.0, 2.0)
 	face_panel.add_theme_stylebox_override("panel", style)
 
@@ -329,6 +329,11 @@ func _update_visual_pivots() -> void:
 		depth_shadow.pivot_offset = size * 0.5
 
 
+func _sync_card_specific_presentation() -> void:
+	presentation_rotation = requested_presentation_rotation
+	_apply_visual_pose(false)
+
+
 func _apply_visual_pose(animated: bool) -> void:
 	if animated:
 		_animate_visual_pose(presentation_offset, presentation_rotation, Vector2.ONE, 0.16)
@@ -341,10 +346,10 @@ func _apply_visual_pose(animated: bool) -> void:
 	face_panel.position = presentation_offset
 	face_panel.rotation = presentation_rotation
 	face_panel.scale = Vector2.ONE
-	depth_shadow.position = presentation_offset + Vector2(5.0, 8.0)
+	depth_shadow.position = presentation_offset + Vector2(2.0, 4.0)
 	depth_shadow.rotation = presentation_rotation
 	depth_shadow.scale = Vector2(0.99, 0.99)
-	depth_shadow.modulate = Color(1.0, 1.0, 1.0, 0.78)
+	depth_shadow.modulate = Color(1.0, 1.0, 1.0, 0.9)
 
 
 func _animate_visual_pose(target_offset: Vector2, target_rotation: float, target_scale: Vector2, duration: float) -> void:
@@ -357,10 +362,10 @@ func _animate_visual_pose(target_offset: Vector2, target_rotation: float, target
 	visual_tween.tween_property(face_panel, "position", target_offset, duration)
 	visual_tween.tween_property(face_panel, "rotation", target_rotation, duration)
 	visual_tween.tween_property(face_panel, "scale", target_scale, duration)
-	visual_tween.tween_property(depth_shadow, "position", target_offset + Vector2(7.0, 11.0), duration)
+	visual_tween.tween_property(depth_shadow, "position", target_offset + Vector2(3.0, 6.0), duration)
 	visual_tween.tween_property(depth_shadow, "rotation", target_rotation, duration)
 	visual_tween.tween_property(depth_shadow, "scale", target_scale * 0.99, duration)
-	visual_tween.tween_property(depth_shadow, "modulate", Color(1.0, 1.0, 1.0, 0.5), duration)
+	visual_tween.tween_property(depth_shadow, "modulate", Color(1.0, 1.0, 1.0, 0.72), duration)
 
 
 func _get_card_color(card: Card) -> Color:

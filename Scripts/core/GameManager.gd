@@ -36,7 +36,7 @@ const SteamP2PMatch = preload("res://Scripts/core/SteamP2PMatch.gd")
 const CardArtworkResource = preload("res://Scripts/ui/CardArtwork.gd")
 const Dice3DViewResource = preload("res://Scripts/ui/Dice3DView.gd")
 const FLUENT_EMOJI_LICENSE = preload("res://Assets/Social/FluentEmoji3D/license_notice.gd")
-const JOKER_CELEBRATION_TEXTURE = preload("res://Assets/Effects/Joker/laughing_jester.png")
+const JOKER_CELEBRATION_TEXTURE = preload("res://Assets/Effects/Joker/laughing_jester_middle_fingers.png")
 const SCORE_SHEET_NUMBER_COLUMN_WIDTH := 46.0
 const SCORE_SHEET_MODE_COLUMN_WIDTH := 132.0
 const SCORE_SHEET_CARDS_COLUMN_WIDTH := 52.0
@@ -288,7 +288,7 @@ var avatar_gift_buttons: Array[Button] = []
 var avatar_mute_hovered_slots: Dictionary = {}
 var muted_network_player_indices: Dictionary = {}
 var turn_timer_indicator: TurnTimerIndicator
-var social_controls_container: HBoxContainer
+var social_controls_container: VBoxContainer
 var reaction_toggle_button: Button
 var reaction_picker: PanelContainer
 var reaction_bubble: PanelContainer
@@ -9410,10 +9410,10 @@ func _create_table_markers() -> void:
 
 
 func _create_social_controls_container() -> void:
-	social_controls_container = HBoxContainer.new()
+	social_controls_container = VBoxContainer.new()
 	social_controls_container.name = "SocialControls"
 	social_controls_container.alignment = BoxContainer.ALIGNMENT_CENTER
-	social_controls_container.add_theme_constant_override("separation", 6)
+	social_controls_container.add_theme_constant_override("separation", 2)
 	social_controls_container.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	social_controls_container.z_index = 30
 	_set_control_layout(
@@ -9423,9 +9423,9 @@ func _create_social_controls_container() -> void:
 		0.5,
 		1.0,
 		112.0,
-		-380.0,
-		246.0,
-		-330.0
+		-396.0,
+		156.0,
+		-314.0
 	)
 	players_container.add_child(social_controls_container)
 
@@ -9478,12 +9478,9 @@ func _create_reaction_controls() -> void:
 	reaction_toggle_button.visible = false
 	reaction_toggle_button.z_index = 30
 	reaction_toggle_button.mouse_filter = Control.MOUSE_FILTER_STOP
-	reaction_toggle_button.custom_minimum_size = Vector2(64.0, 50.0)
-	reaction_toggle_button.add_theme_font_size_override("font_size", 17)
-	reaction_toggle_button.add_theme_stylebox_override(
-		"normal",
-		_create_flat_style(Color(0.035, 0.12, 0.075, 0.98), Color(0.88, 0.68, 0.24, 1.0), 2, 8, 3)
-	)
+	reaction_toggle_button.custom_minimum_size = Vector2(44.0, 40.0)
+	reaction_toggle_button.add_theme_font_size_override("font_size", 24)
+	_apply_bare_social_icon_button_style(reaction_toggle_button)
 	reaction_toggle_button.pressed.connect(_on_reaction_toggle_pressed)
 	social_controls_container.add_child(reaction_toggle_button)
 
@@ -9495,11 +9492,12 @@ func _create_reaction_controls() -> void:
 		"panel",
 		_create_flat_style(Color(0.012, 0.075, 0.045, 0.96), Color(0.64, 0.47, 0.14, 0.96), 2, 10, 5)
 	)
-	_set_control_layout(reaction_picker, 0.5, 1.0, 0.5, 1.0, 116.0, -624.0, 440.0, -402.0)
+	_set_control_layout(reaction_picker, 0.5, 1.0, 0.5, 1.0, 168.0, -454.0, 492.0, -256.0)
 
 	var reaction_grid := GridContainer.new()
 	reaction_grid.columns = 5
 	reaction_grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	reaction_grid.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	reaction_grid.add_theme_constant_override("h_separation", 4)
 	reaction_grid.add_theme_constant_override("v_separation", 4)
 	reaction_picker.add_child(reaction_grid)
@@ -9710,7 +9708,7 @@ func _create_sticker_controls() -> void:
 	)
 	sticker_picker.gui_input.connect(_on_sticker_picker_gui_input)
 	sticker_picker.mouse_entered.connect(_restart_sticker_picker_auto_close)
-	_set_control_layout(sticker_picker, 0.5, 1.0, 0.5, 1.0, 258.0, -401.0, 600.0, -309.0)
+	_set_control_layout(sticker_picker, 0.5, 1.0, 0.5, 1.0, 168.0, -401.0, 510.0, -309.0)
 
 	sticker_picker_auto_close_timer = Timer.new()
 	sticker_picker_auto_close_timer.one_shot = true
@@ -9844,7 +9842,7 @@ func _close_sticker_picker() -> void:
 func _build_sticker_target_picker() -> void:
 	_clear_children(sticker_picker_content)
 	sticker_picker_title.text = "Кому отправить стикер?"
-	_set_control_layout(sticker_picker, 0.5, 1.0, 0.5, 1.0, 258.0, -401.0, 600.0, -309.0)
+	_set_control_layout(sticker_picker, 0.5, 1.0, 0.5, 1.0, 168.0, -401.0, 510.0, -309.0)
 
 	var target_row := HBoxContainer.new()
 	target_row.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -9890,7 +9888,7 @@ func _build_sticker_choice_picker() -> void:
 		if players_by_index.has(sticker_selected_target_index):
 			target_name = str((players_by_index[sticker_selected_target_index] as Dictionary).get("display_name", target_name))
 	sticker_picker_title.text = "Что отправить %s?" % target_name.left(12)
-	_set_control_layout(sticker_picker, 0.5, 1.0, 0.5, 1.0, 258.0, -430.0, 584.0, -280.0)
+	_set_control_layout(sticker_picker, 0.5, 1.0, 0.5, 1.0, 168.0, -430.0, 494.0, -280.0)
 
 	var sticker_scroll := ScrollContainer.new()
 	sticker_scroll.custom_minimum_size = Vector2(0.0, 88.0)
@@ -10095,12 +10093,9 @@ func _create_soundpad_controls() -> void:
 	soundpad_toggle_button.visible = false
 	soundpad_toggle_button.z_index = 30
 	soundpad_toggle_button.mouse_filter = Control.MOUSE_FILTER_STOP
-	soundpad_toggle_button.custom_minimum_size = Vector2(64.0, 50.0)
-	soundpad_toggle_button.add_theme_font_size_override("font_size", 16)
-	soundpad_toggle_button.add_theme_stylebox_override(
-		"normal",
-		_create_flat_style(Color(0.1, 0.07, 0.12, 0.98), Color(0.89, 0.51, 0.82, 1.0), 2, 8, 3)
-	)
+	soundpad_toggle_button.custom_minimum_size = Vector2(44.0, 40.0)
+	soundpad_toggle_button.add_theme_font_size_override("font_size", 22)
+	_apply_bare_social_icon_button_style(soundpad_toggle_button)
 	soundpad_toggle_button.pressed.connect(_on_soundpad_toggle_pressed)
 	social_controls_container.add_child(soundpad_toggle_button)
 
@@ -10112,7 +10107,7 @@ func _create_soundpad_controls() -> void:
 		"panel",
 		_create_flat_style(Color(0.09, 0.035, 0.09, 0.97), Color(0.89, 0.51, 0.82, 0.96), 2, 10, 5)
 	)
-	_set_control_layout(soundpad_picker, 0.5, 1.0, 0.5, 1.0, 104.0, -600.0, 440.0, -408.0)
+	_set_control_layout(soundpad_picker, 0.5, 1.0, 0.5, 1.0, 168.0, -451.0, 486.0, -259.0)
 
 	var soundpad_layout := VBoxContainer.new()
 	soundpad_layout.add_theme_constant_override("separation", 6)
@@ -10254,16 +10249,17 @@ func _build_soundpad_sound_picker() -> void:
 func _resize_soundpad_picker(content_height: float) -> void:
 	var picker_width := 318.0
 	var picker_height := 32.0 + content_height
+	var picker_center_y := -355.0
 	_set_control_layout(
 		soundpad_picker,
 		0.5,
 		1.0,
 		0.5,
 		1.0,
-		128.0,
-		-408.0 - picker_height,
-		128.0 + picker_width,
-		-408.0
+		168.0,
+		picker_center_y - picker_height * 0.5,
+		168.0 + picker_width,
+		picker_center_y + picker_height * 0.5
 	)
 
 
@@ -10593,7 +10589,8 @@ func _refresh_social_action_buttons() -> void:
 	if is_instance_valid(reaction_toggle_button):
 		var reaction_ready := _is_social_action_ready(SocialAction.REACTION)
 		reaction_toggle_button.disabled = not reaction_ready
-		reaction_toggle_button.text = "☺ %d" % _get_social_action_uses_remaining(SocialAction.REACTION) if reaction_ready else "⌛"
+		reaction_toggle_button.text = "☺"
+		reaction_toggle_button.modulate = Color.WHITE if reaction_ready else Color(1.0, 1.0, 1.0, 0.34)
 		reaction_toggle_button.tooltip_text = _get_social_action_status_text("Эмоции", SocialAction.REACTION)
 		if not reaction_ready and is_instance_valid(reaction_picker):
 			reaction_picker.visible = false
@@ -10601,7 +10598,8 @@ func _refresh_social_action_buttons() -> void:
 	if is_instance_valid(sticker_toggle_button):
 		var sticker_ready := _is_social_action_ready(SocialAction.STICKER)
 		sticker_toggle_button.disabled = not sticker_ready
-		sticker_toggle_button.text = "🎁 %d" % _get_social_action_uses_remaining(SocialAction.STICKER) if sticker_ready else "⌛"
+		sticker_toggle_button.text = "🎁"
+		sticker_toggle_button.modulate = Color.WHITE if sticker_ready else Color(1.0, 1.0, 1.0, 0.34)
 		sticker_toggle_button.tooltip_text = _get_social_action_status_text("Стикеры", SocialAction.STICKER)
 		if not sticker_ready and is_instance_valid(sticker_picker):
 			_close_sticker_picker()
@@ -10609,7 +10607,8 @@ func _refresh_social_action_buttons() -> void:
 	if is_instance_valid(soundpad_toggle_button):
 		var soundpad_ready := _is_social_action_ready(SocialAction.SOUNDPAD)
 		soundpad_toggle_button.disabled = not soundpad_ready
-		soundpad_toggle_button.text = "🔊 %d" % _get_social_action_uses_remaining(SocialAction.SOUNDPAD) if soundpad_ready else "⌛"
+		soundpad_toggle_button.text = "🔊"
+		soundpad_toggle_button.modulate = Color.WHITE if soundpad_ready else Color(1.0, 1.0, 1.0, 0.34)
 		soundpad_toggle_button.tooltip_text = (
 			"Саундпад: добавь звуки в Assets/Soundboard"
 			if soundpad_sounds.is_empty()

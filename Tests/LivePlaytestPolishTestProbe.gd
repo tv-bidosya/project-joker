@@ -64,6 +64,14 @@ func _run() -> void:
 	main_scene._show_joker_celebration(1)
 	assert(main_scene.joker_celebration.visible, "The winning Joker must reveal its celebration overlay")
 	assert(main_scene.joker_celebration_image.texture != null, "The celebration must use the bundled original jester art")
+	assert(
+		main_scene.joker_celebration_image.texture.resource_path.ends_with("laughing_jester_middle_fingers.png"),
+		"The winning Joker must use the cheeky two-hand gesture variant"
+	)
+	var celebration_image: Image = main_scene.joker_celebration_image.texture.get_image()
+	assert(celebration_image.get_width() == 640 and celebration_image.get_height() == 640)
+	assert(is_zero_approx(celebration_image.get_pixel(0, 0).a), "The celebration sprite must retain transparent corners")
+	assert(celebration_image.get_pixel(320, 240).a > 0.99, "The celebration sprite must retain the face and costume")
 	assert(main_scene.joker_celebration_sparkles.size() == 8, "The celebration must include animated gold sparkles")
 	await create_timer(2.0).timeout
 	assert(not main_scene.joker_celebration.visible, "The Joker celebration must dismiss itself")

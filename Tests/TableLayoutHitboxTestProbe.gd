@@ -36,6 +36,7 @@ func _run() -> void:
 	var social_rect: Rect2 = main_scene.social_controls_container.get_global_rect()
 	assert(is_equal_approx(social_rect.position.x - bottom_panel_rect.end.x, 7.0))
 	assert(main_scene.social_controls_container.mouse_filter == Control.MOUSE_FILTER_IGNORE)
+	assert(main_scene.social_controls_container is VBoxContainer, "Table social buttons must form a compact vertical column.")
 	assert(
 		is_equal_approx(main_scene.reaction_toggle_button.get_global_rect().position.x - bottom_panel_rect.end.x, 7.0),
 		"The first visible social button must not keep an empty centered gutter."
@@ -55,8 +56,9 @@ func _run() -> void:
 		assert(button.mouse_filter == Control.MOUSE_FILTER_STOP)
 		assert(button.scale == Vector2.ONE)
 		var button_rect := button.get_global_rect()
-		assert(is_equal_approx(button_rect.size.x, 64.0))
-		assert(is_equal_approx(button_rect.size.y, 50.0))
+		assert(is_equal_approx(button_rect.size.x, 44.0))
+		assert(is_equal_approx(button_rect.size.y, 40.0))
+		assert(button.get_theme_stylebox("normal") is StyleBoxEmpty, "Table social buttons must display bare icons without frames.")
 		for vertical_ratio in [0.25, 0.5, 0.75]:
 			var visual_point := Vector2(
 				button_rect.get_center().x,
@@ -92,12 +94,20 @@ func _run() -> void:
 	var sticker_picker_rect: Rect2 = main_scene.sticker_picker.get_global_rect()
 	var soundpad_button_rect: Rect2 = main_scene.soundpad_toggle_button.get_global_rect()
 	assert(
-		is_equal_approx(sticker_picker_rect.position.x - soundpad_button_rect.end.x, 12.0),
-		"The gift picker must use the empty space to the right of the soundpad."
+		is_equal_approx(sticker_picker_rect.position.x - social_rect.end.x, 12.0),
+		"The gift picker must use the empty space to the right of the social icon column."
 	)
 	assert(
-		is_equal_approx(sticker_picker_rect.get_center().y, soundpad_button_rect.get_center().y),
-		"The gift picker and soundpad button must share a vertical center."
+		is_equal_approx(main_scene.reaction_picker.offset_left, main_scene.sticker_picker.offset_left),
+		"Reaction picker must open in the same right-side zone as gifts."
+	)
+	assert(
+		is_equal_approx(main_scene.soundpad_picker.offset_left, main_scene.sticker_picker.offset_left),
+		"Soundpad picker must open in the same right-side zone as gifts."
+	)
+	assert(
+		is_equal_approx(sticker_picker_rect.get_center().y, social_rect.get_center().y),
+		"The gift picker and social icon column must share a vertical center."
 	)
 	assert(main_scene.sticker_picker_close_button.text == "×", "The gift picker must use a close button instead of a back arrow.")
 	main_scene.sticker_picker_close_button.pressed.emit()

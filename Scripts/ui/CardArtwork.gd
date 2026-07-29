@@ -36,7 +36,7 @@ static func get_face_texture(card: Card) -> Texture2D:
 
 	if card.is_joker:
 		if selected_deck_style == DeckStyle.VECTOR_CLASSIC:
-			return _load_texture(VECTOR_CLASSIC_ROOT.path_join("project_joker.png"))
+			return _load_texture(VECTOR_CLASSIC_ROOT.path_join("project_joker_crisp.png"))
 		return _load_texture(JUMBO_INDEX_ROOT.path_join("redJoker.png"))
 
 	match selected_deck_style:
