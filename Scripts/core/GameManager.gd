@@ -64,7 +64,7 @@ const SOCIAL_ACTION_COOLDOWN_SECONDS := 120.0
 const BUILT_IN_AVATAR_COUNT := 4
 const CUSTOM_AVATAR_INDEX := BUILT_IN_AVATAR_COUNT
 const HUMAN_AVATAR_COUNT := BUILT_IN_AVATAR_COUNT + 1
-const GAME_VERSION := "0.3.5"
+const GAME_VERSION := "0.3.6"
 # Перед публичным экспортом поставь false: игрок сможет создать отчёт, но не
 # увидит внутреннюю кнопку его загрузки. После экспорта можно вернуть true.
 const DEVELOPER_REPORT_TOOLS_ENABLED := true
@@ -82,6 +82,38 @@ const LOCAL_UNDO_VOTE_RESULT_HOLD_SECONDS := 0.45
 const FIRST_TURN_ROLL_BOT_REROLL_DELAY_SECONDS := 1.8
 const TURN_REMINDER_DELAY_SECONDS := 10.0
 const UNSET_SCORE_DISPLAY := -2147483648
+const TABLE_FELT_NAMES := ["Классическое зелёное", "Синее", "Бордовое"]
+const TABLE_SURROUND_NAMES := ["Тёмно-зелёный", "Тёмный орех", "Светлый дуб", "Тёмный клуб", "Тёплая ткань"]
+const TABLE_SURROUND_SHADER_CODE := """
+shader_type canvas_item;
+render_mode unshaded;
+
+uniform vec4 base_color : source_color = vec4(0.008, 0.05, 0.032, 1.0);
+uniform int pattern_kind = 0;
+
+float hash(vec2 point) {
+	return fract(sin(dot(point, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+void fragment() {
+	vec2 point = UV;
+	float detail = 0.0;
+	if (pattern_kind == 1) {
+		float grain = sin(point.y * 190.0 + sin(point.x * 23.0) * 5.0);
+		float pores = hash(floor(point * vec2(95.0, 280.0))) - 0.5;
+		detail = grain * 0.055 + pores * 0.025;
+	} else if (pattern_kind == 2) {
+		float threads = sin(point.x * 540.0) * sin(point.y * 420.0);
+		detail = threads * 0.022;
+	} else if (pattern_kind == 3) {
+		float club_glow = 1.0 - smoothstep(0.0, 0.72, distance(point, vec2(0.5)));
+		detail = club_glow * 0.055 - 0.025;
+	}
+	float vignette = 1.0 - smoothstep(0.18, 0.78, distance(point, vec2(0.5)));
+	vec3 color = base_color.rgb * (0.88 + vignette * 0.12 + detail);
+	COLOR = vec4(color, base_color.a);
+}
+"""
 const AVATAR_TURN_GLOW_SHADER_CODE := """
 shader_type canvas_item;
 render_mode unshaded;
@@ -210,6 +242,22 @@ enum UndoVoteState {
 }
 
 
+enum TableFeltTheme {
+	GREEN,
+	BLUE,
+	BURGUNDY
+}
+
+
+enum TableSurroundTheme {
+	DARK_GREEN,
+	DARK_WALNUT,
+	LIGHT_OAK,
+	DARK_CLUB,
+	WARM_FABRIC
+}
+
+
 @onready var phase_label: Label = %PhaseLabel
 @onready var trump_label: RichTextLabel = %TrumpLabel
 @onready var background: ColorRect = %Background
@@ -261,6 +309,7 @@ var steam_lobby_status_label: Label
 var steam_lobby_details_label: Label
 var steam_lobby_members_label: Label
 var steam_lobby_bot_difficulty_selector: OptionButton
+var steam_lobby_history_mode_selector: OptionButton
 var steam_p2p_status_label: Label
 var steam_reconnect_controls: VBoxContainer
 var steam_lobby_create_button: Button
@@ -380,8 +429,17 @@ var menu_panel: PanelContainer
 var menu_scroll: ScrollContainer
 var menu_content: VBoxContainer
 var card_deck_preview_container: HBoxContainer
+var table_theme_preview_surround: PanelContainer
+var table_theme_preview_felt: Panel
+var local_table_outer: Panel
+var local_table_cloth: Panel
+var network_table_backdrop: ColorRect
+var network_table_surface: Panel
 var bot_speed_index := 1
 var card_deck_style := CardArtworkResource.DEFAULT_DECK_STYLE
+var table_felt_theme: TableFeltTheme = TableFeltTheme.GREEN
+var table_surround_theme: TableSurroundTheme = TableSurroundTheme.DARK_GREEN
+var match_history_mode := NetworkHost.HistoryMode.FULL
 var bot_difficulty: BotDifficulty = BotDifficulty.NORMAL
 var tutorial_enabled := false
 var auto_turn_enabled := false
@@ -416,6 +474,7 @@ var network_avatar_texture_cache: Dictionary = {}
 var new_game_name_inputs: Array[LineEdit] = []
 var new_game_avatar_selectors: Array[OptionButton] = []
 var new_game_bot_difficulty_selector: OptionButton
+var new_game_history_mode_selector: OptionButton
 var profile_name_input: LineEdit
 var profile_avatar_selector: OptionButton
 var profile_avatar_status_label: Label
@@ -636,10 +695,10 @@ func _ready() -> void:
 
 
 func _create_table_visual_styles() -> void:
-	background.color = Color(0.115, 0.062, 0.028, 1.0)
+	_apply_surround_theme_to_rect(background)
 	table_panel.add_theme_stylebox_override(
 		"panel",
-		_create_flat_style(Color(0.018, 0.145, 0.085, 1.0), Color(0.265, 0.145, 0.058, 1.0), 8, 16, 8)
+		_create_flat_style(_get_felt_color().darkened(0.48), Color(0.265, 0.145, 0.058, 1.0), 8, 16, 8)
 	)
 	player_panel_style = _create_flat_style(Color(0.028, 0.073, 0.052, 0.96), Color(0.38, 0.255, 0.11, 0.86), 1, 10, 3)
 	human_player_panel_style = player_panel_style
@@ -692,27 +751,115 @@ func _create_table_visual_styles() -> void:
 func _create_table_surface() -> void:
 	# Первый тестовый вариант стола: форму можно позднее заменить на квадратную,
 	# не меняя расположение игроков и игровую логику.
-	var outer_table := Panel.new()
-	outer_table.name = "OvalTableOuter"
-	outer_table.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var outer_table_style := _create_flat_style(Color(0.115, 0.062, 0.028, 1.0), Color(0.6, 0.39, 0.13, 1.0), 7, 286, 10)
+	local_table_outer = Panel.new()
+	local_table_outer.name = "OvalTableOuter"
+	local_table_outer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var outer_table_style := _create_flat_style(_get_table_rim_color(), Color(0.6, 0.39, 0.13, 1.0), 7, 286, 10)
 	outer_table_style.corner_detail = 64
-	outer_table.add_theme_stylebox_override("panel", outer_table_style)
-	_set_control_layout(outer_table, 0.5, 0.0, 0.5, 0.0, -660.0, 150.0, 660.0, 710.0)
-	players_container.add_child(outer_table)
+	local_table_outer.add_theme_stylebox_override("panel", outer_table_style)
+	_set_control_layout(local_table_outer, 0.5, 0.0, 0.5, 0.0, -660.0, 150.0, 660.0, 710.0)
+	players_container.add_child(local_table_outer)
 
-	var inner_table := Panel.new()
-	inner_table.name = "OvalTableCloth"
-	inner_table.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var inner_table_style := _create_flat_style(Color(0.035, 0.255, 0.145, 1.0), Color(0.74, 0.84, 0.66, 0.72), 3, 266, 0)
+	local_table_cloth = Panel.new()
+	local_table_cloth.name = "OvalTableCloth"
+	local_table_cloth.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var inner_table_style := _create_flat_style(_get_felt_color(), _get_felt_border_color(), 3, 266, 0)
 	inner_table_style.corner_detail = 64
-	inner_table.add_theme_stylebox_override("panel", inner_table_style)
-	inner_table.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	inner_table.offset_left = 18.0
-	inner_table.offset_top = 18.0
-	inner_table.offset_right = -18.0
-	inner_table.offset_bottom = -18.0
-	outer_table.add_child(inner_table)
+	local_table_cloth.add_theme_stylebox_override("panel", inner_table_style)
+	local_table_cloth.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	local_table_cloth.offset_left = 18.0
+	local_table_cloth.offset_top = 18.0
+	local_table_cloth.offset_right = -18.0
+	local_table_cloth.offset_bottom = -18.0
+	local_table_outer.add_child(local_table_cloth)
+
+
+func _get_felt_color(theme: int = table_felt_theme) -> Color:
+	match clampi(theme, TableFeltTheme.GREEN, TableFeltTheme.BURGUNDY):
+		TableFeltTheme.BLUE:
+			return Color(0.035, 0.19, 0.34, 1.0)
+		TableFeltTheme.BURGUNDY:
+			return Color(0.31, 0.055, 0.085, 1.0)
+		_:
+			return Color(0.035, 0.255, 0.145, 1.0)
+
+
+func _get_felt_border_color(theme: int = table_felt_theme) -> Color:
+	match clampi(theme, TableFeltTheme.GREEN, TableFeltTheme.BURGUNDY):
+		TableFeltTheme.BLUE:
+			return Color(0.57, 0.76, 0.9, 0.76)
+		TableFeltTheme.BURGUNDY:
+			return Color(0.91, 0.67, 0.62, 0.76)
+		_:
+			return Color(0.74, 0.84, 0.66, 0.72)
+
+
+func _get_surround_color(theme: int = table_surround_theme) -> Color:
+	match clampi(theme, TableSurroundTheme.DARK_GREEN, TableSurroundTheme.WARM_FABRIC):
+		TableSurroundTheme.DARK_WALNUT:
+			return Color(0.115, 0.062, 0.028, 1.0)
+		TableSurroundTheme.LIGHT_OAK:
+			return Color(0.34, 0.205, 0.095, 1.0)
+		TableSurroundTheme.DARK_CLUB:
+			return Color(0.025, 0.024, 0.038, 1.0)
+		TableSurroundTheme.WARM_FABRIC:
+			return Color(0.19, 0.105, 0.075, 1.0)
+		_:
+			return Color(0.008, 0.05, 0.032, 1.0)
+
+
+func _get_surround_pattern(theme: int = table_surround_theme) -> int:
+	match clampi(theme, TableSurroundTheme.DARK_GREEN, TableSurroundTheme.WARM_FABRIC):
+		TableSurroundTheme.DARK_WALNUT, TableSurroundTheme.LIGHT_OAK:
+			return 1
+		TableSurroundTheme.WARM_FABRIC:
+			return 2
+		TableSurroundTheme.DARK_CLUB:
+			return 3
+		_:
+			return 0
+
+
+func _get_table_rim_color() -> Color:
+	if table_surround_theme == TableSurroundTheme.LIGHT_OAK:
+		return Color(0.31, 0.165, 0.06, 1.0)
+	return Color(0.115, 0.062, 0.028, 1.0)
+
+
+func _apply_surround_theme_to_rect(rect: ColorRect) -> void:
+	if not is_instance_valid(rect):
+		return
+	rect.color = Color.WHITE
+	var shader := Shader.new()
+	shader.code = TABLE_SURROUND_SHADER_CODE
+	var material := ShaderMaterial.new()
+	material.shader = shader
+	material.set_shader_parameter("base_color", _get_surround_color())
+	material.set_shader_parameter("pattern_kind", _get_surround_pattern())
+	rect.material = material
+
+
+func _apply_table_theme() -> void:
+	_apply_surround_theme_to_rect(background)
+	_apply_surround_theme_to_rect(network_table_backdrop)
+	table_panel.add_theme_stylebox_override(
+		"panel",
+		_create_flat_style(_get_felt_color().darkened(0.48), Color(0.265, 0.145, 0.058, 1.0), 8, 16, 8)
+	)
+	if is_instance_valid(local_table_outer):
+		var outer_style := _create_flat_style(_get_table_rim_color(), Color(0.6, 0.39, 0.13, 1.0), 7, 286, 10)
+		outer_style.corner_detail = 64
+		local_table_outer.add_theme_stylebox_override("panel", outer_style)
+	if is_instance_valid(local_table_cloth):
+		var cloth_style := _create_flat_style(_get_felt_color(), _get_felt_border_color(), 3, 266, 0)
+		cloth_style.corner_detail = 64
+		local_table_cloth.add_theme_stylebox_override("panel", cloth_style)
+	if is_instance_valid(network_table_surface):
+		network_table_surface.add_theme_stylebox_override(
+			"panel",
+			_create_flat_style(_get_felt_color().darkened(0.12), _get_table_rim_color().lightened(0.24), 8, 250, 10)
+		)
+	_refresh_table_theme_preview()
 
 
 func _create_score_sheet_overlay() -> void:
@@ -1041,6 +1188,24 @@ func _show_steam_lobby_menu() -> void:
 	steam_lobby_bot_difficulty_selector.item_selected.connect(_on_steam_lobby_bot_difficulty_selected)
 	menu_content.add_child(steam_lobby_bot_difficulty_selector)
 
+	var history_mode_label := Label.new()
+	history_mode_label.text = "История раздачи"
+	history_mode_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	history_mode_label.add_theme_font_size_override("font_size", 16)
+	history_mode_label.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
+	menu_content.add_child(history_mode_label)
+
+	steam_lobby_history_mode_selector = OptionButton.new()
+	steam_lobby_history_mode_selector.name = "SteamLobbyHistoryModeSelector"
+	steam_lobby_history_mode_selector.add_item(_get_history_mode_label(NetworkHost.HistoryMode.FULL))
+	steam_lobby_history_mode_selector.add_item(_get_history_mode_label(NetworkHost.HistoryMode.LAST_TRICK_ONLY))
+	steam_lobby_history_mode_selector.selected = match_history_mode
+	steam_lobby_history_mode_selector.custom_minimum_size = Vector2(0.0, 42.0)
+	steam_lobby_history_mode_selector.add_theme_font_size_override("font_size", 16)
+	steam_lobby_history_mode_selector.item_selected.connect(_on_steam_lobby_history_mode_selected)
+	menu_content.add_child(steam_lobby_history_mode_selector)
+	_add_menu_label("Полная — видны все сыгранные карты. «Только последняя взятка» скрывает старые ходы и оставляет последнюю завершённую взятку плюс текущие карты на столе.", 14, Color(0.72, 0.85, 0.76, 1.0))
+
 	_add_menu_spacer(14.0)
 	steam_lobby_create_button = _add_menu_button("Создать закрытую комнату", _on_create_steam_lobby_pressed, true)
 	steam_lobby_invite_button = _add_menu_button("Пригласить друга через Steam", _on_open_steam_lobby_invite_pressed)
@@ -1109,7 +1274,8 @@ func _on_prepare_steam_p2p_pressed() -> void:
 		configured_player_names[HUMAN_PLAYER_INDEX],
 		auto_turn_enabled,
 		configured_avatar_indices[HUMAN_PLAYER_INDEX],
-		_get_local_network_avatar_data()
+		_get_local_network_avatar_data(),
+		int(lobby_state.get("history_mode", match_history_mode))
 	)
 	_refresh_steam_lobby_status()
 
@@ -1125,6 +1291,17 @@ func _on_steam_lobby_bot_difficulty_selected(selected_index: int) -> void:
 	steam_bridge.set_lobby_bot_difficulty(bot_difficulty)
 	if steam_p2p_match != null and steam_p2p_match.is_host():
 		steam_p2p_match.set_bot_difficulty(bot_difficulty)
+	_save_persistent_settings()
+	_refresh_steam_lobby_status()
+
+
+func _on_steam_lobby_history_mode_selected(selected_index: int) -> void:
+	match_history_mode = clampi(
+		selected_index,
+		NetworkHost.HistoryMode.FULL,
+		NetworkHost.HistoryMode.LAST_TRICK_ONLY
+	)
+	steam_bridge.set_lobby_history_mode(match_history_mode)
 	_save_persistent_settings()
 	_refresh_steam_lobby_status()
 
@@ -1166,15 +1343,27 @@ func _refresh_steam_lobby_status() -> void:
 	var local_ready := bool(lobby_state.get("local_ready", false))
 	var fill_empty_seats_with_bots := bool(lobby_state.get("fill_empty_seats_with_bots", false))
 	var lobby_bot_difficulty := clampi(int(lobby_state.get("bot_difficulty", bot_difficulty)), 0, BOT_DIFFICULTY_COUNT - 1)
+	var lobby_history_mode := clampi(
+		int(lobby_state.get("history_mode", match_history_mode)),
+		NetworkHost.HistoryMode.FULL,
+		NetworkHost.HistoryMode.LAST_TRICK_ONLY
+	)
 	var bot_count := int(lobby_state.get("bot_count", 0))
 	var local_is_host: bool = int(lobby_state.get("lobby_owner", 0)) == steam_bridge.get_local_steam_id()
 	var members: Array = lobby_state.get("members", [])
 	bot_difficulty = lobby_bot_difficulty
+	match_history_mode = lobby_history_mode
 	var network_bot_difficulty_name: String = ["лёгкий", "обычный", "сложный"][lobby_bot_difficulty]
 
 	steam_lobby_status_label.text = lobby_status
 	if lobby_id > 0:
-		steam_lobby_details_label.text = "Комната: %d\nУчастники: %d из %d\nТип: закрытая для друзей · Project Joker · протокол %d" % [lobby_id, member_count, member_limit, LoopbackNetwork.PROTOCOL_VERSION]
+		steam_lobby_details_label.text = "Комната: %d\nУчастники: %d из %d\nИстория: %s\nТип: закрытая для друзей · Project Joker · протокол %d" % [
+			lobby_id,
+			member_count,
+			member_limit,
+			_get_history_mode_label(lobby_history_mode),
+			LoopbackNetwork.PROTOCOL_VERSION
+		]
 	else:
 		steam_lobby_details_label.text = "Steam: %s\nПосле создания появятся ID комнаты и число участников." % ("подключён" if initialized else "ещё не подключён")
 
@@ -1201,6 +1390,9 @@ func _refresh_steam_lobby_status() -> void:
 	if is_instance_valid(steam_lobby_bot_difficulty_selector):
 		steam_lobby_bot_difficulty_selector.selected = lobby_bot_difficulty
 		steam_lobby_bot_difficulty_selector.disabled = lobby_id <= 0 or not local_is_host
+	if is_instance_valid(steam_lobby_history_mode_selector):
+		steam_lobby_history_mode_selector.selected = lobby_history_mode
+		steam_lobby_history_mode_selector.disabled = lobby_id <= 0 or not local_is_host or (steam_p2p_match != null and steam_p2p_match.is_running())
 	var all_members_ready := member_count > 0
 	for member_variant in members:
 		if not (member_variant is Dictionary) or not bool(member_variant.get("ready", false)):
@@ -1621,6 +1813,11 @@ func _refresh_network_main_table() -> void:
 	if snapshot.is_empty():
 		_refresh_network_main_waiting_state()
 		return
+	match_history_mode = clampi(
+		int(snapshot.get("history_mode", match_history_mode)),
+		NetworkHost.HistoryMode.FULL,
+		NetworkHost.HistoryMode.LAST_TRICK_ONLY
+	)
 	_sync_network_auto_turn_setting(snapshot)
 	var table_state_reset_id := int(snapshot.get("table_state_reset_id", 0))
 	if table_state_reset_id != network_table_state_reset_id:
@@ -2166,7 +2363,18 @@ func _get_network_main_trick_card_status(card: Card, card_index: int, trick_data
 
 
 func _refresh_network_main_history(snapshot: Dictionary, round_data: Dictionary, active_trick: Dictionary, active_player_index: int) -> void:
-	var history_lines: PackedStringArray = ["Ход раздачи"]
+	var history_mode := int(snapshot.get("history_mode", NetworkHost.HistoryMode.FULL))
+	var history_lines: PackedStringArray = []
+	if history_mode == NetworkHost.HistoryMode.LAST_TRICK_ONLY:
+		history_lines = _get_restricted_network_history_lines(snapshot, active_trick)
+		history_label.text = _format_suit_symbols_for_light_ui("\n".join(history_lines))
+		round_history_panel.visible = is_round_history_visible
+		round_history_toggle_button.text = "Последняя взятка"
+		round_history_toggle_button.tooltip_text = "Скрыть последнюю взятку" if is_round_history_visible else "Показать последнюю взятку"
+		round_history_toggle_button.disabled = false
+		return
+
+	history_lines.append("Ход раздачи")
 	var public_history: Array = snapshot.get("public_history", [])
 	for entry in public_history:
 		history_lines.append(str(entry))
@@ -2184,6 +2392,45 @@ func _refresh_network_main_history(snapshot: Dictionary, round_data: Dictionary,
 	round_history_toggle_button.text = "История"
 	round_history_toggle_button.tooltip_text = "Скрыть историю" if is_round_history_visible else "Показать историю"
 	round_history_toggle_button.disabled = false
+
+
+func _get_restricted_network_history_lines(snapshot: Dictionary, active_trick: Dictionary) -> PackedStringArray:
+	var lines := PackedStringArray(["Последняя взятка"])
+	var players_by_index := _get_network_players_by_index(snapshot)
+	var last_trick: Dictionary = snapshot.get("last_completed_trick", {})
+	var last_cards: Array = last_trick.get("cards", [])
+	var last_played_by: Array = last_trick.get("played_by", [])
+	if last_cards.is_empty():
+		lines.append("Завершённых взяток пока нет.")
+	else:
+		var winner_index := int(snapshot.get("last_trick_winner_index", -1))
+		if players_by_index.has(winner_index):
+			lines.append("Забрал: %s" % str((players_by_index[winner_index] as Dictionary).get("display_name", "игрок")))
+		for card_index in mini(last_cards.size(), last_played_by.size()):
+			var player_index := int(last_played_by[card_index])
+			var player_name := "Игрок %d" % (player_index + 1)
+			if players_by_index.has(player_index):
+				player_name = str((players_by_index[player_index] as Dictionary).get("display_name", player_name))
+			var card := _create_network_table_card(last_cards[card_index])
+			if card != null:
+				lines.append("%s — %s" % [player_name, card.get_card_name()])
+
+	var current_cards: Array = active_trick.get("played_cards", [])
+	var current_played_by: Array = active_trick.get("played_by", [])
+	lines.append("")
+	lines.append("Текущая взятка")
+	if current_cards.is_empty():
+		lines.append("На столе пока нет карт.")
+	else:
+		for card_index in mini(current_cards.size(), current_played_by.size()):
+			var player_index := int(current_played_by[card_index])
+			var player_name := "Игрок %d" % (player_index + 1)
+			if players_by_index.has(player_index):
+				player_name = str((players_by_index[player_index] as Dictionary).get("display_name", player_name))
+			var card := _create_network_table_card(current_cards[card_index])
+			if card != null:
+				lines.append("%s — %s" % [player_name, card.get_card_name()])
+	return lines
 
 
 func _refresh_network_main_action_controls(snapshot: Dictionary, round_data: Dictionary) -> void:
@@ -2702,20 +2949,20 @@ func _create_network_table_view() -> void:
 	network_table_view.visible = false
 	add_child(network_table_view)
 
-	var backdrop := ColorRect.new()
-	backdrop.color = Color(0.008, 0.05, 0.032, 1.0)
-	backdrop.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	backdrop.mouse_filter = Control.MOUSE_FILTER_STOP
-	network_table_view.add_child(backdrop)
+	network_table_backdrop = ColorRect.new()
+	network_table_backdrop.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	network_table_backdrop.mouse_filter = Control.MOUSE_FILTER_STOP
+	network_table_view.add_child(network_table_backdrop)
 
-	var table_surface := Panel.new()
-	table_surface.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	table_surface.add_theme_stylebox_override(
+	network_table_surface = Panel.new()
+	network_table_surface.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	network_table_surface.add_theme_stylebox_override(
 		"panel",
-		_create_flat_style(Color(0.025, 0.19, 0.095, 1.0), Color(0.66, 0.38, 0.1, 1.0), 8, 250, 10)
+		_create_flat_style(_get_felt_color().darkened(0.12), _get_table_rim_color().lightened(0.24), 8, 250, 10)
 	)
-	_set_control_layout(table_surface, 0.5, 0.5, 0.5, 0.5, -690.0, -335.0, 690.0, 330.0)
-	network_table_view.add_child(table_surface)
+	_set_control_layout(network_table_surface, 0.5, 0.5, 0.5, 0.5, -690.0, -335.0, 690.0, 330.0)
+	network_table_view.add_child(network_table_surface)
+	_apply_table_theme()
 
 	var history_panel := PanelContainer.new()
 	history_panel.add_theme_stylebox_override("panel", _create_flat_style(Color(0.965, 0.95, 0.89, 0.98), Color(0.45, 0.31, 0.12, 0.9), 2, 8, 3))
@@ -3793,6 +4040,7 @@ func _show_new_game_setup() -> void:
 
 	_add_menu_spacer(8.0)
 	_add_new_game_bot_difficulty_row()
+	_add_new_game_history_mode_row()
 	_add_menu_spacer(8.0)
 	_add_menu_button("Начать партию", _start_configured_new_game, true)
 	_add_menu_button("Назад", _build_main_menu_content)
@@ -3864,6 +4112,31 @@ func _add_new_game_bot_difficulty_row() -> void:
 	row.add_child(new_game_bot_difficulty_selector)
 
 
+func _add_new_game_history_mode_row() -> void:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 10)
+	menu_content.add_child(row)
+
+	var label := Label.new()
+	label.text = "История"
+	label.custom_minimum_size = Vector2(160.0, 38.0)
+	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	label.add_theme_font_size_override("font_size", 16)
+	label.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
+	row.add_child(label)
+
+	new_game_history_mode_selector = OptionButton.new()
+	new_game_history_mode_selector.name = "NewGameHistoryModeSelector"
+	new_game_history_mode_selector.custom_minimum_size = Vector2(0.0, 38.0)
+	new_game_history_mode_selector.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	new_game_history_mode_selector.add_theme_font_size_override("font_size", 16)
+	new_game_history_mode_selector.add_item(_get_history_mode_label(NetworkHost.HistoryMode.FULL))
+	new_game_history_mode_selector.add_item(_get_history_mode_label(NetworkHost.HistoryMode.LAST_TRICK_ONLY))
+	new_game_history_mode_selector.selected = match_history_mode
+	row.add_child(new_game_history_mode_selector)
+	_add_menu_label("В ограниченном режиме журнал показывает только последнюю завершённую взятку и карты текущей взятки.", 14, Color(0.72, 0.85, 0.76, 1.0))
+
+
 func _start_configured_new_game() -> void:
 	for player_index in PLAYER_NAMES.size():
 		configured_player_names[player_index] = _sanitize_player_name(new_game_name_inputs[player_index].text, str(PLAYER_NAMES[player_index]))
@@ -3871,6 +4144,11 @@ func _start_configured_new_game() -> void:
 		configured_avatar_indices[player_index] = clampi(new_game_avatar_selectors[player_index].selected, 0, max_avatar_index)
 
 	bot_difficulty = clampi(new_game_bot_difficulty_selector.selected, 0, BOT_DIFFICULTY_COUNT - 1)
+	match_history_mode = clampi(
+		new_game_history_mode_selector.selected,
+		NetworkHost.HistoryMode.FULL,
+		NetworkHost.HistoryMode.LAST_TRICK_ONLY
+	)
 	_save_persistent_settings()
 
 	_on_new_game_pressed()
@@ -3902,6 +4180,10 @@ func _get_bot_difficulty_label(difficulty: BotDifficulty) -> String:
 			return "Сложный — расчётливо"
 
 	return "Обычный — сбалансировано"
+
+
+func _get_history_mode_label(history_mode: int) -> String:
+	return "Только последняя взятка" if history_mode == NetworkHost.HistoryMode.LAST_TRICK_ONLY else "Полная история"
 
 
 func _sanitize_player_name(value: String, fallback: String) -> String:
@@ -4594,6 +4876,54 @@ func _show_settings_menu() -> void:
 	menu_content.add_child(card_deck_preview_container)
 	_refresh_card_deck_preview()
 
+	var table_theme_label := Label.new()
+	table_theme_label.text = "Оформление стола"
+	table_theme_label.add_theme_font_size_override("font_size", 18)
+	table_theme_label.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
+	menu_content.add_child(table_theme_label)
+
+	var felt_selector := OptionButton.new()
+	felt_selector.name = "TableFeltThemeSelector"
+	for felt_name in TABLE_FELT_NAMES:
+		felt_selector.add_item(felt_name)
+	felt_selector.selected = table_felt_theme
+	felt_selector.custom_minimum_size = Vector2(0.0, 42.0)
+	felt_selector.add_theme_font_size_override("font_size", 17)
+	felt_selector.item_selected.connect(_on_table_felt_theme_selected)
+	menu_content.add_child(felt_selector)
+
+	var surround_selector := OptionButton.new()
+	surround_selector.name = "TableSurroundThemeSelector"
+	for surround_name in TABLE_SURROUND_NAMES:
+		surround_selector.add_item(surround_name)
+	surround_selector.selected = table_surround_theme
+	surround_selector.custom_minimum_size = Vector2(0.0, 42.0)
+	surround_selector.add_theme_font_size_override("font_size", 17)
+	surround_selector.item_selected.connect(_on_table_surround_theme_selected)
+	menu_content.add_child(surround_selector)
+
+	var table_theme_hint := Label.new()
+	table_theme_hint.text = "Сукно и окружение видишь только ты. Выбор применяется сразу, сохраняется на этом устройстве и не меняет столы друзей."
+	table_theme_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	table_theme_hint.add_theme_font_size_override("font_size", 14)
+	table_theme_hint.add_theme_color_override("font_color", Color(0.72, 0.85, 0.76, 1.0))
+	menu_content.add_child(table_theme_hint)
+
+	table_theme_preview_surround = PanelContainer.new()
+	table_theme_preview_surround.name = "TableThemePreview"
+	table_theme_preview_surround.custom_minimum_size = Vector2(0.0, 126.0)
+	menu_content.add_child(table_theme_preview_surround)
+	var preview_margin := MarginContainer.new()
+	preview_margin.add_theme_constant_override("margin_left", 28)
+	preview_margin.add_theme_constant_override("margin_top", 20)
+	preview_margin.add_theme_constant_override("margin_right", 28)
+	preview_margin.add_theme_constant_override("margin_bottom", 20)
+	table_theme_preview_surround.add_child(preview_margin)
+	table_theme_preview_felt = Panel.new()
+	table_theme_preview_felt.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	preview_margin.add_child(table_theme_preview_felt)
+	_refresh_table_theme_preview()
+
 	var speed_label := Label.new()
 	speed_label.text = "Скорость ходов ботов"
 	speed_label.add_theme_font_size_override("font_size", 18)
@@ -5214,6 +5544,33 @@ func _on_card_deck_style_selected(selected_index: int) -> void:
 	_refresh_card_deck_preview()
 
 
+func _on_table_felt_theme_selected(selected_index: int) -> void:
+	table_felt_theme = clampi(selected_index, TableFeltTheme.GREEN, TableFeltTheme.BURGUNDY)
+	_apply_table_theme()
+	_save_persistent_settings()
+
+
+func _on_table_surround_theme_selected(selected_index: int) -> void:
+	table_surround_theme = clampi(selected_index, TableSurroundTheme.DARK_GREEN, TableSurroundTheme.WARM_FABRIC)
+	_apply_table_theme()
+	_save_persistent_settings()
+
+
+func _refresh_table_theme_preview() -> void:
+	if not is_instance_valid(table_theme_preview_surround) or not is_instance_valid(table_theme_preview_felt):
+		return
+	var surround_style := _create_flat_style(_get_surround_color(), _get_table_rim_color().lightened(0.28), 2, 12, 3)
+	surround_style.content_margin_left = 0.0
+	surround_style.content_margin_top = 0.0
+	surround_style.content_margin_right = 0.0
+	surround_style.content_margin_bottom = 0.0
+	table_theme_preview_surround.add_theme_stylebox_override("panel", surround_style)
+	table_theme_preview_felt.add_theme_stylebox_override(
+		"panel",
+		_create_flat_style(_get_felt_color(), _get_felt_border_color(), 3, 42, 0)
+	)
+
+
 func _refresh_card_deck_preview() -> void:
 	if not is_instance_valid(card_deck_preview_container):
 		return
@@ -5404,6 +5761,21 @@ func _load_persistent_settings() -> void:
 		CardArtworkResource.DeckStyle.JUMBO_FOUR_COLOR,
 		CardArtworkResource.DeckStyle.VECTOR_CLASSIC
 	)
+	table_felt_theme = clampi(
+		int(config.get_value("display", "table_felt_theme", table_felt_theme)),
+		TableFeltTheme.GREEN,
+		TableFeltTheme.BURGUNDY
+	)
+	table_surround_theme = clampi(
+		int(config.get_value("display", "table_surround_theme", table_surround_theme)),
+		TableSurroundTheme.DARK_GREEN,
+		TableSurroundTheme.WARM_FABRIC
+	)
+	match_history_mode = clampi(
+		int(config.get_value("game", "history_mode", match_history_mode)),
+		NetworkHost.HistoryMode.FULL,
+		NetworkHost.HistoryMode.LAST_TRICK_ONLY
+	)
 	tutorial_enabled = bool(config.get_value("game", "tutorial_enabled", tutorial_enabled))
 	auto_turn_enabled = bool(config.get_value("game", "auto_turn_enabled", auto_turn_enabled))
 	var saved_sound_volume: int = int(config.get_value("audio", "sound_volume", sound_volume_index))
@@ -5457,7 +5829,10 @@ func _save_persistent_settings() -> void:
 	config.set_value("game", "bot_speed", bot_speed_index)
 	config.set_value("game", "tutorial_enabled", tutorial_enabled)
 	config.set_value("game", "auto_turn_enabled", auto_turn_enabled)
+	config.set_value("game", "history_mode", match_history_mode)
 	config.set_value("display", "card_deck_style", card_deck_style)
+	config.set_value("display", "table_felt_theme", table_felt_theme)
+	config.set_value("display", "table_surround_theme", table_surround_theme)
 	config.set_value("audio", "sound_volume", sound_volume_index)
 	config.set_value("audio", "music_volume", music_volume_index)
 	config.set_value("audio", "music_volume_percent", music_volume_percent)
@@ -5540,6 +5915,7 @@ func _create_session_save_data() -> Dictionary:
 		"player_names": configured_player_names.duplicate(),
 		"avatar_indices": configured_avatar_indices.duplicate(),
 		"bot_difficulty": bot_difficulty,
+		"history_mode": match_history_mode,
 		"game": _serialize_game_state(),
 		"normal_round_index": normal_round_index,
 		"dark_round_index": dark_round_index,
@@ -5693,6 +6069,11 @@ func _restore_session_from_data(save_data: Dictionary, persist_settings: bool) -
 		configured_avatar_indices[HUMAN_PLAYER_INDEX] = 0
 
 	bot_difficulty = clampi(int(save_data.get("bot_difficulty", BotDifficulty.NORMAL)), 0, BOT_DIFFICULTY_COUNT - 1)
+	match_history_mode = clampi(
+		int(save_data.get("history_mode", NetworkHost.HistoryMode.FULL)),
+		NetworkHost.HistoryMode.FULL,
+		NetworkHost.HistoryMode.LAST_TRICK_ONLY
+	)
 	var restored_game := _deserialize_game_state(game_data_variant, configured_player_names)
 	if restored_game == null:
 		return false
@@ -8848,6 +9229,10 @@ func _format_score(score: int) -> String:
 
 
 func _refresh_history() -> void:
+	if match_history_mode == NetworkHost.HistoryMode.LAST_TRICK_ONLY:
+		history_label.text = _format_suit_symbols_for_light_ui("\n".join(_get_restricted_local_history_lines()))
+		call_deferred("_scroll_round_history_to_bottom")
+		return
 	if recent_actions.is_empty():
 		history_label.text = "Ход раздачи: —"
 		return
@@ -8856,10 +9241,44 @@ func _refresh_history() -> void:
 	call_deferred("_scroll_round_history_to_bottom")
 
 
+func _get_restricted_local_history_lines() -> PackedStringArray:
+	var lines := PackedStringArray(["Последняя взятка"])
+	if game.last_completed_trick_cards.is_empty():
+		lines.append("Завершённых взяток пока нет.")
+	else:
+		if game.last_trick_winner_index >= 0 and game.last_trick_winner_index < game.players.size():
+			lines.append("Забрал: %s" % game.players[game.last_trick_winner_index].display_name)
+		for card_index in mini(game.last_completed_trick_cards.size(), game.last_completed_trick_played_by.size()):
+			var player_index: int = game.last_completed_trick_played_by[card_index]
+			if player_index >= 0 and player_index < game.players.size():
+				lines.append("%s — %s" % [
+					game.players[player_index].display_name,
+					game.last_completed_trick_cards[card_index].get_card_name()
+				])
+
+	lines.append("")
+	lines.append("Текущая взятка")
+	if game.active_trick == null or game.active_trick.played_cards.is_empty():
+		lines.append("На столе пока нет карт.")
+	else:
+		for card_index in mini(game.active_trick.played_cards.size(), game.active_trick.played_by.size()):
+			var player_index: int = game.active_trick.played_by[card_index]
+			if player_index >= 0 and player_index < game.players.size():
+				lines.append("%s — %s" % [
+					game.players[player_index].display_name,
+					game.active_trick.played_cards[card_index].get_card_name()
+				])
+	return lines
+
+
 func _refresh_round_history_panel() -> void:
 	round_history_panel.visible = is_round_history_visible
-	round_history_toggle_button.text = "История"
-	round_history_toggle_button.tooltip_text = "Скрыть историю" if is_round_history_visible else "Показать историю"
+	round_history_toggle_button.text = "Последняя взятка" if match_history_mode == NetworkHost.HistoryMode.LAST_TRICK_ONLY else "История"
+	round_history_toggle_button.tooltip_text = (
+		"Скрыть последнюю взятку" if is_round_history_visible else "Показать последнюю взятку"
+	) if match_history_mode == NetworkHost.HistoryMode.LAST_TRICK_ONLY else (
+		"Скрыть историю" if is_round_history_visible else "Показать историю"
+	)
 	round_history_toggle_button.disabled = false
 
 

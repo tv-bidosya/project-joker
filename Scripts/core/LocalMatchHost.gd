@@ -29,8 +29,15 @@ enum UndoVote {
 }
 
 
+enum HistoryMode {
+	FULL,
+	LAST_TRICK_ONLY
+}
+
+
 var game: Game
 var revision := 0
+var history_mode: HistoryMode = HistoryMode.FULL
 var public_history: Array[String] = []
 var completed_round_history: Array[Dictionary] = []
 var public_table_events: Array[Dictionary] = []
@@ -102,9 +109,10 @@ func create_player_snapshot(player_index: int) -> Dictionary:
 	if game == null:
 		return {}
 	var snapshot := Snapshot.create_player_snapshot(game, player_index, revision)
-	snapshot["public_history"] = public_history.duplicate()
+	snapshot["history_mode"] = history_mode
+	snapshot["public_history"] = _get_visible_public_history()
 	snapshot["completed_rounds"] = completed_round_history.duplicate(true)
-	snapshot["public_table_events"] = public_table_events.duplicate(true)
+	snapshot["public_table_events"] = _get_visible_public_table_events()
 	snapshot["undo_state"] = _create_undo_state_snapshot(player_index)
 	snapshot["table_state_reset_id"] = undo_state_reset_id
 	return snapshot
@@ -124,12 +132,44 @@ func create_host_snapshot() -> Dictionary:
 	if game == null:
 		return {}
 	var snapshot := Snapshot.create_host_snapshot(game, revision)
-	snapshot["public_history"] = public_history.duplicate()
+	snapshot["history_mode"] = history_mode
+	snapshot["public_history"] = _get_visible_public_history()
 	snapshot["completed_rounds"] = completed_round_history.duplicate(true)
-	snapshot["public_table_events"] = public_table_events.duplicate(true)
+	snapshot["public_table_events"] = _get_visible_public_table_events()
 	snapshot["undo_state"] = _create_undo_state_snapshot(-1)
 	snapshot["table_state_reset_id"] = undo_state_reset_id
 	return snapshot
+
+
+func set_history_mode(selected_mode: int) -> void:
+	history_mode = clampi(selected_mode, HistoryMode.FULL, HistoryMode.LAST_TRICK_ONLY)
+
+
+func _get_visible_public_history() -> Array[String]:
+	if history_mode == HistoryMode.LAST_TRICK_ONLY:
+		return []
+	return public_history.duplicate()
+
+
+func _get_visible_public_table_events() -> Array[Dictionary]:
+	if history_mode == HistoryMode.FULL or game == null:
+		return public_table_events.duplicate(true)
+
+	var visible_events: Array[Dictionary] = []
+	var visible_card_event_count := game.last_completed_trick_cards.size()
+	if game.active_trick != null:
+		visible_card_event_count += game.active_trick.played_cards.size()
+	var remaining_card_events := visible_card_event_count
+	for event_index in range(public_table_events.size() - 1, -1, -1):
+		var event_data: Dictionary = public_table_events[event_index]
+		if str(event_data.get("kind", "")) == "played_card":
+			if remaining_card_events <= 0:
+				continue
+			remaining_card_events -= 1
+			visible_events.push_front(event_data.duplicate(true))
+		else:
+			visible_events.push_front(event_data.duplicate(true))
+	return visible_events
 
 
 func set_automatic_undo_approver_indices(player_indices: Array[int]) -> void:

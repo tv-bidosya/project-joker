@@ -46,6 +46,7 @@ var _local_display_name := "Игрок"
 var _local_auto_turn_enabled := false
 var _local_avatar_index := 0
 var _local_avatar_data := ""
+var _history_mode := MatchHost.HistoryMode.FULL
 
 
 func _init() -> void:
@@ -73,7 +74,8 @@ func start_from_current_lobby(
 	local_display_name: String = "Игрок",
 	local_auto_turn_enabled: bool = false,
 	local_avatar_index: int = 0,
-	local_avatar_data: String = ""
+	local_avatar_data: String = "",
+	history_mode: int = MatchHost.HistoryMode.FULL
 ) -> bool:
 	stop()
 	steam_bridge = bridge
@@ -83,6 +85,7 @@ func start_from_current_lobby(
 		_local_display_name = "Игрок"
 	_local_avatar_index = clampi(local_avatar_index, 0, 4)
 	_local_avatar_data = local_avatar_data if local_avatar_data.length() <= MAX_NETWORK_AVATAR_DATA_LENGTH else ""
+	_history_mode = clampi(history_mode, MatchHost.HistoryMode.FULL, MatchHost.HistoryMode.LAST_TRICK_ONLY)
 	if steam_bridge == null:
 		_set_status("Steam P2P недоступен: мост Steam не создан.")
 		return false
@@ -518,6 +521,7 @@ func _start_as_host() -> void:
 		player_names[player_index] = "Бот %d" % (bot_offset + 1)
 	var test_game := Game.new(player_names)
 	match_host = MatchHost.new(test_game)
+	match_host.set_history_mode(_history_mode)
 	match_host.set_automatic_undo_approver_indices(_local_bot_player_indices)
 	mode = Mode.HOST
 	_rebuild_host_lobby_seats()
