@@ -12,6 +12,8 @@ const SoundpadManifest = preload("res://Assets/Soundboard/soundpad_manifest.gd")
 const MAX_PUBLIC_TABLE_EVENTS := 48
 const SOCIAL_ACTION_USE_LIMIT := 3
 const SOCIAL_ACTION_COOLDOWN_MILLISECONDS := 120000
+const CHAT_MESSAGE_MAX_LENGTH := 180
+const CHAT_MESSAGE_COOLDOWN_MILLISECONDS := 800
 const NETWORK_REACTIONS := [
 	"😄", "😂", "🤣", "😍", "😘",
 	"😎", "🤔", "😮", "😢", "😡",
@@ -43,6 +45,7 @@ var completed_round_history: Array[Dictionary] = []
 var public_table_events: Array[Dictionary] = []
 var next_public_table_event_id := 1
 var social_action_state_by_player: Dictionary = {}
+var last_chat_message_milliseconds_by_player: Dictionary = {}
 var last_rejection_reason := "rule_rejected"
 var undo_action_records: Array[Dictionary] = []
 var next_undo_action_id := 1
@@ -363,7 +366,11 @@ func record_current_round_started() -> void:
 		return
 
 	public_history.clear()
-	public_table_events.clear()
+	var retained_chat_events: Array[Dictionary] = []
+	for event_data in public_table_events:
+		if str(event_data.get("kind", "")) == "chat":
+			retained_chat_events.append(event_data.duplicate(true))
+	public_table_events.assign(retained_chat_events)
 	var round := game.current_round
 	var dealer_name := _get_player_name(round.dealer_index)
 	public_history.append("%s. Сдающий: %s." % [_get_round_label(round), dealer_name])
@@ -460,7 +467,7 @@ func _apply_play_card_command(command) -> bool:
 
 func _apply_social_action_command(command) -> bool:
 	var kind := str(command.payload.get("kind", ""))
-	if kind not in ["reaction", "sticker", "soundpad"]:
+	if kind not in ["reaction", "sticker", "soundpad", "chat"]:
 		last_rejection_reason = "unsupported_social_action"
 		return false
 
@@ -492,10 +499,36 @@ func _apply_social_action_command(command) -> bool:
 				last_rejection_reason = "unsupported_sound"
 				return false
 			event["sound_id"] = sound_id
+		"chat":
+			var message := _sanitize_chat_message(str(command.payload.get("message", "")))
+			if message.is_empty():
+				last_rejection_reason = "empty_chat_message"
+				return false
+			if message.length() > CHAT_MESSAGE_MAX_LENGTH:
+				last_rejection_reason = "chat_message_too_long"
+				return false
+			if not _try_consume_chat_message(command.player_index):
+				return false
+			event["message"] = message
+			event["sent_at_milliseconds"] = Time.get_ticks_msec()
 
-	if not _try_consume_social_action(command.player_index, kind):
+	if kind != "chat" and not _try_consume_social_action(command.player_index, kind):
 		return false
 	_append_public_table_event(event)
+	return true
+
+
+func _sanitize_chat_message(message: String) -> String:
+	return message.replace("\r", " ").replace("\n", " ").replace("\t", " ").strip_edges()
+
+
+func _try_consume_chat_message(player_index: int) -> bool:
+	var now := Time.get_ticks_msec()
+	var last_message_milliseconds := int(last_chat_message_milliseconds_by_player.get(player_index, -CHAT_MESSAGE_COOLDOWN_MILLISECONDS))
+	if now - last_message_milliseconds < CHAT_MESSAGE_COOLDOWN_MILLISECONDS:
+		last_rejection_reason = "chat_cooldown"
+		return false
+	last_chat_message_milliseconds_by_player[player_index] = now
 	return true
 
 

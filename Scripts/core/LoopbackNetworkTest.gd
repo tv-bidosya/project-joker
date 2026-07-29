@@ -1054,9 +1054,10 @@ func submit_test_joker_choice(mode: Trick.JokerMode, declared_suit: int = -1, fo
 func submit_social_action(payload: Dictionary) -> bool:
 	if not is_running() or payload.is_empty():
 		return false
+	var is_chat_message := str(payload.get("kind", "")) == "chat"
 
 	if is_host():
-		if match_host == null or not lobby_round_started:
+		if match_host == null or (not lobby_round_started and not is_chat_message):
 			return false
 		var host_command := NetworkCommand.new(
 			NetworkCommand.Type.SOCIAL_ACTION,

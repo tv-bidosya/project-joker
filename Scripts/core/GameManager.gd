@@ -61,10 +61,12 @@ const AVATAR_ACTION_HIDE_DELAY_SECONDS := 1.8
 const STICKER_PICKER_IDLE_CLOSE_SECONDS := 5.0
 const SOCIAL_ACTION_USE_LIMIT := 3
 const SOCIAL_ACTION_COOLDOWN_SECONDS := 120.0
+const CHAT_LOCAL_SEND_COOLDOWN_MILLISECONDS := 800
+const CHAT_VISIBLE_MESSAGE_LIMIT := 40
 const BUILT_IN_AVATAR_COUNT := 4
 const CUSTOM_AVATAR_INDEX := BUILT_IN_AVATAR_COUNT
 const HUMAN_AVATAR_COUNT := BUILT_IN_AVATAR_COUNT + 1
-const GAME_VERSION := "0.3.6"
+const GAME_VERSION := "0.3.7"
 # Перед публичным экспортом поставь false: игрок сможет создать отчёт, но не
 # увидит внутреннюю кнопку его загрузки. После экспорта можно вернуть true.
 const DEVELOPER_REPORT_TOOLS_ENABLED := true
@@ -374,6 +376,16 @@ var soundpad_selected_category_id := ""
 var soundpad_bubble: PanelContainer
 var soundpad_bubble_label: Label
 var soundpad_bubble_tween: Tween
+var chat_toggle_button: Button
+var chat_panel: PanelContainer
+var chat_messages_scroll: ScrollContainer
+var chat_messages_container: VBoxContainer
+var chat_input: LineEdit
+var chat_send_button: Button
+var chat_status_label: Label
+var network_chat_messages: Array[Dictionary] = []
+var chat_unread_count := 0
+var chat_next_send_milliseconds := 0
 var trick_card_views: Array[CardView] = []
 var bot_card_back_holders: Array[Control] = []
 var deck_back_panels: Array[PanelContainer] = []
@@ -639,6 +651,7 @@ func _ready() -> void:
 	_create_reaction_controls()
 	_create_sticker_controls()
 	_create_soundpad_controls()
+	_create_chat_controls()
 	_create_sound_players()
 	_create_background_music_player()
 	music_player_panel.reparent(self)
@@ -1994,6 +2007,7 @@ func _refresh_network_main_common_controls(snapshot: Dictionary = {}) -> void:
 	_refresh_reaction_controls()
 	_refresh_sticker_controls()
 	_refresh_soundpad_controls()
+	_refresh_chat_controls()
 
 
 func _refresh_network_main_deck(snapshot: Dictionary, round_data: Dictionary) -> void:
@@ -2185,6 +2199,7 @@ func _process_network_public_table_events(snapshot: Dictionary, viewer_index: in
 	if stream_key != network_public_event_stream_key:
 		network_public_event_stream_key = stream_key
 		network_last_public_event_id = _get_latest_network_public_event_id(events)
+		_rebuild_network_chat_messages(events, snapshot)
 		network_card_event_queue.clear()
 		network_card_play_presentation_active = false
 		network_visual_round_number = -1
@@ -2229,6 +2244,8 @@ func _present_network_public_table_event(event: Dictionary, viewer_index: int) -
 			_present_network_sticker_event(event, viewer_index)
 		"soundpad":
 			_present_network_soundpad_event(event, viewer_index)
+		"chat":
+			_present_network_chat_event(event, viewer_index)
 
 
 func _present_next_network_card_event(viewer_index: int) -> void:
@@ -2299,14 +2316,20 @@ func _present_network_completed_trick(winner_player_index: int, viewer_index: in
 func _present_network_reaction_event(event: Dictionary, viewer_index: int) -> void:
 	if not is_instance_valid(reaction_bubble):
 		return
-	var relative_slot := posmod(int(event.get("actor_player_index", -1)) - viewer_index, PLAYER_NAMES.size())
+	var actor_player_index := int(event.get("actor_player_index", -1))
+	if _is_network_player_sound_muted(actor_player_index):
+		return
+	var relative_slot := posmod(actor_player_index - viewer_index, PLAYER_NAMES.size())
 	if relative_slot < 0 or relative_slot >= avatar_badges.size():
 		return
 	_show_reaction_bubble(str(event.get("reaction", "")), relative_slot)
 
 
 func _present_network_sticker_event(event: Dictionary, viewer_index: int) -> void:
-	var source_relative := posmod(int(event.get("actor_player_index", -1)) - viewer_index, PLAYER_NAMES.size())
+	var actor_player_index := int(event.get("actor_player_index", -1))
+	if _is_network_player_sound_muted(actor_player_index):
+		return
+	var source_relative := posmod(actor_player_index - viewer_index, PLAYER_NAMES.size())
 	var target_relative := posmod(int(event.get("target_player_index", -1)) - viewer_index, PLAYER_NAMES.size())
 	if source_relative < 0 or source_relative >= avatar_badges.size() or target_relative < 0 or target_relative >= avatar_badges.size():
 		return
@@ -2317,13 +2340,14 @@ func _present_network_sticker_event(event: Dictionary, viewer_index: int) -> voi
 func _present_network_soundpad_event(event: Dictionary, viewer_index: int) -> void:
 	var actor_player_index := int(event.get("actor_player_index", -1))
 	var sound_id := str(event.get("sound_id", ""))
-	if not _is_network_player_sound_muted(actor_player_index):
-		for sound_data in soundpad_sounds:
-			if str(sound_data.get("path", "")) == sound_id:
-				var sound_stream: AudioStream = sound_data.get("stream", null) as AudioStream
-				if sound_stream != null:
-					_play_soundpad_stream(sound_stream)
-				break
+	if _is_network_player_sound_muted(actor_player_index):
+		return
+	for sound_data in soundpad_sounds:
+		if str(sound_data.get("path", "")) == sound_id:
+			var sound_stream: AudioStream = sound_data.get("stream", null) as AudioStream
+			if sound_stream != null:
+				_play_soundpad_stream(sound_stream)
+			break
 	if not is_instance_valid(soundpad_bubble):
 		return
 	var relative_slot := posmod(actor_player_index - viewer_index, PLAYER_NAMES.size())
@@ -2332,6 +2356,19 @@ func _present_network_soundpad_event(event: Dictionary, viewer_index: int) -> vo
 	var badge_rect := avatar_badges[relative_slot].get_global_rect()
 	soundpad_bubble.global_position = badge_rect.get_center() - soundpad_bubble.size * 0.5 + Vector2(42.0, -42.0)
 	_show_soundpad_bubble()
+
+
+func _present_network_chat_event(event: Dictionary, viewer_index: int) -> void:
+	var players_by_index := _get_network_players_by_index(_get_network_main_snapshot())
+	var actor_player_index := int(event.get("actor_player_index", -1))
+	var player_name := "Игрок %d" % (actor_player_index + 1)
+	if players_by_index.has(actor_player_index):
+		player_name = str((players_by_index[actor_player_index] as Dictionary).get("display_name", player_name))
+	_append_network_chat_message(event, player_name)
+	if not is_instance_valid(chat_panel) or not chat_panel.visible:
+		if actor_player_index != viewer_index:
+			chat_unread_count += 1
+	_refresh_chat_controls()
 
 
 func _is_network_player_sound_muted(player_index: int) -> bool:
@@ -7828,6 +7865,7 @@ func _refresh_ui() -> void:
 	_refresh_reaction_controls()
 	_refresh_sticker_controls()
 	_refresh_soundpad_controls()
+	_refresh_chat_controls()
 	_refresh_social_action_buttons()
 	_refresh_first_turn_roll_panel()
 
@@ -8285,9 +8323,9 @@ func _refresh_player_avatar_badges() -> void:
 			avatar_mute_buttons[player_index].set_meta("network_player_index", player_index)
 			avatar_mute_buttons[player_index].text = "🔇" if is_muted else "🔊"
 			avatar_mute_buttons[player_index].tooltip_text = (
-				"Включить звуки этого игрока"
+				"Показывать реакции, подарки и звуки этого игрока"
 				if is_muted
-				else "Отключить звуки этого игрока"
+				else "Скрыть реакции, подарки и звуки этого игрока"
 			)
 		if player_index < avatar_gift_buttons.size():
 			avatar_gift_buttons[player_index].set_meta("network_player_index", player_index)
@@ -8309,9 +8347,9 @@ func _refresh_avatar_mute_buttons(snapshot: Dictionary, viewer_index: int) -> vo
 		mute_button.set_meta("network_player_index", player_index)
 		mute_button.text = "🔇" if is_muted else "🔊"
 		mute_button.tooltip_text = (
-			"Включить звуки этого игрока только для себя"
+			"Показывать реакции, подарки и звуки этого игрока только у себя"
 			if is_muted
-			else "Отключить звуки этого игрока только для себя"
+			else "Скрыть реакции, подарки и звуки этого игрока только у себя"
 		)
 		var should_show_actions := (
 			_is_steam_p2p_main_table_active()
@@ -8327,9 +8365,9 @@ func _refresh_avatar_mute_buttons(snapshot: Dictionary, viewer_index: int) -> vo
 			var player_data: Dictionary = players_by_index.get(player_index, {})
 			var player_name := str(player_data.get("display_name", "Игрок"))
 			avatar_badges[relative_slot].tooltip_text = (
-				"%s · звук отключён у тебя"
+				"%s · реакции, подарки и звук скрыты у тебя"
 				if is_muted
-				else "%s · наведи для управления звуком"
+				else "%s · наведи для личного мута"
 			) % player_name
 
 
@@ -8393,6 +8431,9 @@ func _on_avatar_mute_button_pressed(relative_slot: int) -> void:
 		muted_network_player_indices.erase(player_index)
 	else:
 		muted_network_player_indices[player_index] = true
+		_hide_reaction_bubble()
+		_hide_all_sticker_flyers()
+		_hide_soundpad_bubble()
 	var snapshot := _get_network_main_snapshot()
 	if _is_steam_p2p_main_table_active() and not snapshot.is_empty():
 		_refresh_avatar_mute_buttons(snapshot, int(snapshot.get("recipient_player_index", 0)))
@@ -8470,6 +8511,7 @@ func _on_avatar_gift_button_pressed(relative_slot: int) -> void:
 		return
 	reaction_picker.visible = false
 	soundpad_picker.visible = false
+	chat_panel.visible = false
 	sticker_picker.visible = true
 	_restart_sticker_picker_auto_close()
 
@@ -9842,11 +9884,238 @@ func _create_social_controls_container() -> void:
 		0.5,
 		1.0,
 		112.0,
-		-396.0,
+		-438.0,
 		156.0,
 		-314.0
 	)
 	players_container.add_child(social_controls_container)
+
+
+func _create_chat_controls() -> void:
+	chat_toggle_button = Button.new()
+	chat_toggle_button.name = "ChatToggleButton"
+	chat_toggle_button.text = "💬"
+	chat_toggle_button.tooltip_text = "Открыть чат стола"
+	chat_toggle_button.visible = false
+	chat_toggle_button.z_index = 30
+	chat_toggle_button.mouse_filter = Control.MOUSE_FILTER_STOP
+	chat_toggle_button.custom_minimum_size = Vector2(44.0, 40.0)
+	chat_toggle_button.add_theme_font_size_override("font_size", 22)
+	_apply_bare_social_icon_button_style(chat_toggle_button)
+	chat_toggle_button.pressed.connect(_on_chat_toggle_pressed)
+	social_controls_container.add_child(chat_toggle_button)
+
+	chat_panel = PanelContainer.new()
+	chat_panel.name = "NetworkChatPanel"
+	chat_panel.visible = false
+	chat_panel.z_index = 33
+	chat_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	var chat_style := _create_flat_style(Color(0.012, 0.05, 0.035, 0.985), Color(0.63, 0.47, 0.16, 0.96), 2, 10, 4)
+	chat_style.content_margin_left = 12.0
+	chat_style.content_margin_top = 10.0
+	chat_style.content_margin_right = 12.0
+	chat_style.content_margin_bottom = 10.0
+	chat_panel.add_theme_stylebox_override("panel", chat_style)
+	_set_control_layout(chat_panel, 0.5, 1.0, 0.5, 1.0, 168.0, -598.0, 558.0, -314.0)
+	players_container.add_child(chat_panel)
+
+	var content := VBoxContainer.new()
+	content.add_theme_constant_override("separation", 7)
+	chat_panel.add_child(content)
+
+	var header := HBoxContainer.new()
+	content.add_child(header)
+	var title := Label.new()
+	title.text = "ЧАТ СТОЛА"
+	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	title.add_theme_font_size_override("font_size", 17)
+	title.add_theme_color_override("font_color", Color(1.0, 0.84, 0.42, 1.0))
+	header.add_child(title)
+	var close_button := Button.new()
+	close_button.text = "×"
+	close_button.tooltip_text = "Закрыть чат"
+	close_button.custom_minimum_size = Vector2(32.0, 28.0)
+	close_button.add_theme_font_size_override("font_size", 22)
+	_apply_bare_social_icon_button_style(close_button)
+	close_button.pressed.connect(_close_chat_panel)
+	header.add_child(close_button)
+
+	chat_messages_scroll = ScrollContainer.new()
+	chat_messages_scroll.name = "ChatMessagesScroll"
+	chat_messages_scroll.custom_minimum_size = Vector2(0.0, 166.0)
+	chat_messages_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	chat_messages_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	content.add_child(chat_messages_scroll)
+	chat_messages_container = VBoxContainer.new()
+	chat_messages_container.name = "ChatMessages"
+	chat_messages_container.custom_minimum_size = Vector2(340.0, 0.0)
+	chat_messages_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	chat_messages_container.add_theme_constant_override("separation", 5)
+	chat_messages_scroll.add_child(chat_messages_container)
+
+	var input_row := HBoxContainer.new()
+	input_row.add_theme_constant_override("separation", 7)
+	content.add_child(input_row)
+	chat_input = LineEdit.new()
+	chat_input.name = "ChatInput"
+	chat_input.placeholder_text = "Сообщение всем игрокам…"
+	chat_input.max_length = NetworkHost.CHAT_MESSAGE_MAX_LENGTH
+	chat_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	chat_input.custom_minimum_size = Vector2(0.0, 38.0)
+	chat_input.add_theme_font_size_override("font_size", 15)
+	chat_input.text_submitted.connect(_on_chat_text_submitted)
+	input_row.add_child(chat_input)
+	chat_send_button = Button.new()
+	chat_send_button.name = "ChatSendButton"
+	chat_send_button.text = "Отправить"
+	chat_send_button.custom_minimum_size = Vector2(94.0, 38.0)
+	chat_send_button.add_theme_font_size_override("font_size", 14)
+	_apply_table_action_button_style(chat_send_button)
+	chat_send_button.pressed.connect(_on_chat_send_pressed)
+	input_row.add_child(chat_send_button)
+
+	chat_status_label = Label.new()
+	chat_status_label.text = "До %d символов · не чаще одного сообщения в секунду" % NetworkHost.CHAT_MESSAGE_MAX_LENGTH
+	chat_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	chat_status_label.add_theme_font_size_override("font_size", 12)
+	chat_status_label.add_theme_color_override("font_color", Color(0.68, 0.8, 0.7, 1.0))
+	content.add_child(chat_status_label)
+	_refresh_network_chat_log()
+
+
+func _can_show_network_chat() -> bool:
+	return _is_steam_p2p_main_table_active() and not _get_network_main_snapshot().is_empty()
+
+
+func _on_chat_toggle_pressed() -> void:
+	if not _can_show_network_chat():
+		return
+	if chat_panel.visible:
+		_close_chat_panel()
+		return
+	reaction_picker.visible = false
+	_close_sticker_picker()
+	soundpad_picker.visible = false
+	chat_panel.visible = true
+	chat_unread_count = 0
+	_refresh_chat_controls()
+	chat_input.grab_focus()
+	call_deferred("_scroll_network_chat_to_bottom")
+
+
+func _close_chat_panel() -> void:
+	if is_instance_valid(chat_panel):
+		chat_panel.visible = false
+	_refresh_chat_controls()
+
+
+func _on_chat_text_submitted(_submitted_text: String) -> void:
+	_on_chat_send_pressed()
+
+
+func _on_chat_send_pressed() -> void:
+	if not _can_show_network_chat() or not is_instance_valid(chat_input):
+		return
+	var message := chat_input.text.replace("\r", " ").replace("\n", " ").replace("\t", " ").strip_edges()
+	if message.is_empty():
+		chat_status_label.text = "Введите сообщение."
+		return
+	var now := Time.get_ticks_msec()
+	if now < chat_next_send_milliseconds:
+		chat_status_label.text = "Слишком быстро — подождите секунду."
+		return
+	if _submit_network_social_action({"kind": "chat", "message": message}):
+		chat_input.clear()
+		chat_next_send_milliseconds = now + CHAT_LOCAL_SEND_COOLDOWN_MILLISECONDS
+		chat_status_label.text = "Сообщение отправлено."
+	else:
+		chat_status_label.text = "Сообщение не отправлено: сетевой стол пока недоступен."
+
+
+func _rebuild_network_chat_messages(events: Array, snapshot: Dictionary) -> void:
+	network_chat_messages.clear()
+	var players_by_index := _get_network_players_by_index(snapshot)
+	for event_variant in events:
+		if not (event_variant is Dictionary):
+			continue
+		var event: Dictionary = event_variant
+		if str(event.get("kind", "")) != "chat":
+			continue
+		var actor_player_index := int(event.get("actor_player_index", -1))
+		var player_name := "Игрок %d" % (actor_player_index + 1)
+		if players_by_index.has(actor_player_index):
+			player_name = str((players_by_index[actor_player_index] as Dictionary).get("display_name", player_name))
+		_append_network_chat_message(event, player_name, false)
+	chat_unread_count = 0
+	_refresh_network_chat_log()
+
+
+func _append_network_chat_message(event: Dictionary, player_name: String, refresh_log := true) -> void:
+	var event_id := int(event.get("event_id", -1))
+	for message_data in network_chat_messages:
+		if int(message_data.get("event_id", -2)) == event_id:
+			return
+	network_chat_messages.append({
+		"event_id": event_id,
+		"actor_player_index": int(event.get("actor_player_index", -1)),
+		"player_name": player_name,
+		"message": str(event.get("message", ""))
+	})
+	while network_chat_messages.size() > CHAT_VISIBLE_MESSAGE_LIMIT:
+		network_chat_messages.pop_front()
+	if refresh_log:
+		_refresh_network_chat_log()
+
+
+func _refresh_network_chat_log() -> void:
+	if not is_instance_valid(chat_messages_container):
+		return
+	_clear_children(chat_messages_container)
+	if network_chat_messages.is_empty():
+		var empty_label := Label.new()
+		empty_label.text = "Сообщений пока нет."
+		empty_label.add_theme_font_size_override("font_size", 14)
+		empty_label.add_theme_color_override("font_color", Color(0.66, 0.78, 0.68, 1.0))
+		chat_messages_container.add_child(empty_label)
+		return
+	for message_data in network_chat_messages:
+		var message_label := Label.new()
+		message_label.text = "%s: %s" % [
+			str(message_data.get("player_name", "Игрок")),
+			str(message_data.get("message", ""))
+		]
+		message_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		message_label.add_theme_font_size_override("font_size", 14)
+		message_label.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
+		chat_messages_container.add_child(message_label)
+	call_deferred("_scroll_network_chat_to_bottom")
+
+
+func _scroll_network_chat_to_bottom() -> void:
+	if not is_instance_valid(chat_messages_scroll):
+		return
+	await get_tree().process_frame
+	if is_instance_valid(chat_messages_scroll):
+		chat_messages_scroll.scroll_vertical = roundi(chat_messages_scroll.get_v_scroll_bar().max_value)
+
+
+func _refresh_chat_controls() -> void:
+	if not is_instance_valid(chat_toggle_button) or not is_instance_valid(chat_panel):
+		return
+	var can_show := _can_show_network_chat()
+	chat_toggle_button.visible = can_show
+	if not can_show:
+		chat_panel.visible = false
+	chat_toggle_button.text = "💬" if chat_unread_count <= 0 else "💬 %d" % chat_unread_count
+	chat_toggle_button.tooltip_text = (
+		"Чат стола · новых сообщений: %d" % chat_unread_count
+		if chat_unread_count > 0
+		else "Открыть чат стола"
+	)
+	if is_instance_valid(chat_input):
+		chat_input.editable = can_show
+	if is_instance_valid(chat_send_button):
+		chat_send_button.disabled = not can_show
 
 
 func _get_social_emoji_texture(symbol: String) -> Texture2D:
@@ -10007,6 +10276,7 @@ func _on_reaction_toggle_pressed() -> void:
 
 	_close_sticker_picker()
 	soundpad_picker.visible = false
+	chat_panel.visible = false
 	reaction_picker.visible = not reaction_picker.visible
 
 
@@ -10227,6 +10497,7 @@ func _on_sticker_toggle_pressed() -> void:
 
 	reaction_picker.visible = false
 	soundpad_picker.visible = false
+	chat_panel.visible = false
 	sticker_selected_target_index = -1
 	_build_sticker_target_picker()
 	sticker_picker.visible = not sticker_picker.visible
@@ -10584,6 +10855,7 @@ func _on_soundpad_toggle_pressed() -> void:
 
 	reaction_picker.visible = false
 	_close_sticker_picker()
+	chat_panel.visible = false
 	soundpad_selected_category_id = ""
 	_build_soundpad_category_picker()
 	soundpad_picker.visible = not soundpad_picker.visible
