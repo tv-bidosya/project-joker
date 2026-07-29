@@ -71,6 +71,8 @@ func _run() -> void:
 	main_scene._on_avatar_mute_hover_entered(1)
 	assert(main_scene.avatar_gift_buttons[1].visible, "Gift access must move to the hovered avatar.")
 	assert(main_scene.avatar_mute_buttons[1].visible, "Mute access must also appear for a local bot.")
+	assert(main_scene.avatar_gift_buttons[1].get_theme_stylebox("normal") is StyleBoxEmpty, "Avatar gift action must not have a circular background.")
+	assert(main_scene.avatar_mute_buttons[1].get_theme_stylebox("normal") is StyleBoxEmpty, "Avatar mute action must not have a circular background.")
 	await create_timer(0.25).timeout
 	var action_tray_rect: Rect2 = main_scene.avatar_action_trays[1].get_global_rect()
 	var left_avatar_rect: Rect2 = main_scene.avatar_badges[1].get_global_rect()

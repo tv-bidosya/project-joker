@@ -41,6 +41,33 @@ func _run() -> void:
 	assert(main_scene.phase_label.text.contains("Мизерная"), "The network header must name a misere round")
 	assert(main_scene.trump_label.get_parsed_text().contains("козырь ♠"), "Misere must show its scheduled trump")
 
+	var winning_joker := Card.new()
+	winning_joker.is_joker = true
+	main_scene.game.last_completed_trick_cards.assign([winning_joker])
+	main_scene.game.last_completed_trick_played_by.assign([1])
+	main_scene.game.last_completed_trick_joker_mode = Trick.JokerMode.JOKER_WINS
+	assert(main_scene._did_local_joker_win_last_trick(1), "A taking Joker must trigger the local celebration")
+	assert(not main_scene._did_local_joker_win_last_trick(0), "The celebration must belong only to the Joker winner")
+	var network_joker_snapshot := {
+		"last_completed_trick": {
+			"cards": [{"is_joker": true}],
+			"played_by": [2],
+			"joker_mode": Trick.JokerMode.JOKER_WINS
+		}
+	}
+	assert(main_scene._did_network_joker_win_last_trick(network_joker_snapshot, 2))
+	network_joker_snapshot["last_completed_trick"]["joker_mode"] = Trick.JokerMode.NORMAL_CARD_WINS
+	assert(
+		not main_scene._did_network_joker_win_last_trick(network_joker_snapshot, 2),
+		"A discarded low Joker must never trigger the celebration"
+	)
+	main_scene._show_joker_celebration(1)
+	assert(main_scene.joker_celebration.visible, "The winning Joker must reveal its celebration overlay")
+	assert(main_scene.joker_celebration_image.texture != null, "The celebration must use the bundled original jester art")
+	assert(main_scene.joker_celebration_sparkles.size() == 8, "The celebration must include animated gold sparkles")
+	await create_timer(2.0).timeout
+	assert(not main_scene.joker_celebration.visible, "The Joker celebration must dismiss itself")
+
 	assert(main_scene.avatar_mute_buttons.size() == 4, "Every avatar must own a local sound toggle")
 	assert(main_scene.avatar_gift_buttons.size() == 4, "Every avatar must own a contextual gift button")
 	var steam_match := SteamP2PMatch.new()

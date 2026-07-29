@@ -34,6 +34,9 @@ const LoopbackNetwork = preload("res://Scripts/core/LoopbackNetworkTest.gd")
 const SteamBridge = preload("res://Scripts/core/SteamBridge.gd")
 const SteamP2PMatch = preload("res://Scripts/core/SteamP2PMatch.gd")
 const CardArtworkResource = preload("res://Scripts/ui/CardArtwork.gd")
+const Dice3DViewResource = preload("res://Scripts/ui/Dice3DView.gd")
+const FLUENT_EMOJI_LICENSE = preload("res://Assets/Social/FluentEmoji3D/license_notice.gd")
+const JOKER_CELEBRATION_TEXTURE = preload("res://Assets/Effects/Joker/laughing_jester.png")
 const SCORE_SHEET_NUMBER_COLUMN_WIDTH := 46.0
 const SCORE_SHEET_MODE_COLUMN_WIDTH := 132.0
 const SCORE_SHEET_CARDS_COLUMN_WIDTH := 52.0
@@ -78,7 +81,6 @@ const LOCAL_UNDO_VOTE_INTERVAL_SECONDS := 0.28
 const LOCAL_UNDO_VOTE_RESULT_HOLD_SECONDS := 0.45
 const FIRST_TURN_ROLL_BOT_REROLL_DELAY_SECONDS := 1.8
 const TURN_REMINDER_DELAY_SECONDS := 10.0
-const DICE_FACE_TEXTS := ["⚀", "⚁", "⚂", "⚃", "⚄", "⚅"]
 const UNSET_SCORE_DISPLAY := -2147483648
 const AVATAR_TURN_GLOW_SHADER_CODE := """
 shader_type canvas_item;
@@ -110,6 +112,67 @@ void fragment() {
 	COLOR = vec4(color, alpha);
 }
 """
+const SOCIAL_EMOJI_SHINE_SHADER_CODE := """
+shader_type canvas_item;
+render_mode unshaded;
+
+uniform float shine_progress = -0.5;
+
+void fragment() {
+	vec4 source = texture(TEXTURE, UV);
+	float diagonal = UV.x + UV.y;
+	float shine = 1.0 - smoothstep(0.0, 0.11, abs(diagonal - shine_progress));
+	vec3 lit_color = source.rgb + vec3(0.34, 0.29, 0.18) * shine * source.a;
+	COLOR = vec4(lit_color, source.a);
+}
+"""
+const JOKER_CELEBRATION_GLOW_SHADER_CODE := """
+shader_type canvas_item;
+render_mode unshaded;
+
+void fragment() {
+	vec2 point = UV - vec2(0.5);
+	float radius = length(point);
+	float halo = 1.0 - smoothstep(0.08, 0.5, radius);
+	float angle = atan(point.y, point.x);
+	float rays = pow(max(cos(angle * 10.0 - TIME * 2.4), 0.0), 10.0);
+	float pulse = 0.82 + 0.18 * sin(TIME * 6.0);
+	float alpha = (halo * 0.34 + halo * rays * 0.28) * pulse;
+	COLOR = vec4(1.0, 0.66, 0.12, alpha);
+}
+"""
+const FLUENT_EMOJI_TEXTURE_PATHS := {
+	"😄": "res://Assets/Social/FluentEmoji3D/beaming_face_with_smiling_eyes_3d.png",
+	"😂": "res://Assets/Social/FluentEmoji3D/face_with_tears_of_joy_3d.png",
+	"🤣": "res://Assets/Social/FluentEmoji3D/rolling_on_the_floor_laughing_3d.png",
+	"😍": "res://Assets/Social/FluentEmoji3D/smiling_face_with_heart-eyes_3d.png",
+	"😘": "res://Assets/Social/FluentEmoji3D/face_blowing_a_kiss_3d.png",
+	"😎": "res://Assets/Social/FluentEmoji3D/smiling_face_with_sunglasses_3d.png",
+	"🤔": "res://Assets/Social/FluentEmoji3D/thinking_face_3d.png",
+	"👏": "res://Assets/Social/FluentEmoji3D/clapping_hands_3d_default.png",
+	"😮": "res://Assets/Social/FluentEmoji3D/face_with_open_mouth_3d.png",
+	"😢": "res://Assets/Social/FluentEmoji3D/crying_face_3d.png",
+	"😡": "res://Assets/Social/FluentEmoji3D/pouting_face_3d.png",
+	"🤬": "res://Assets/Social/FluentEmoji3D/face_with_symbols_on_mouth_3d.png",
+	"😈": "res://Assets/Social/FluentEmoji3D/smiling_face_with_horns_3d.png",
+	"🤡": "res://Assets/Social/FluentEmoji3D/clown_face_3d.png",
+	"🤦": "res://Assets/Social/FluentEmoji3D/person_facepalming_3d_default.png",
+	"🤷": "res://Assets/Social/FluentEmoji3D/person_shrugging_3d_default.png",
+	"👍": "res://Assets/Social/FluentEmoji3D/thumbs_up_3d_default.png",
+	"👎": "res://Assets/Social/FluentEmoji3D/thumbs_down_3d_default.png",
+	"🔥": "res://Assets/Social/FluentEmoji3D/fire_3d.png",
+	"🖕": "res://Assets/Social/FluentEmoji3D/middle_finger_3d_default.png",
+	"🍫": "res://Assets/Social/FluentEmoji3D/chocolate_bar_3d.png",
+	"☕": "res://Assets/Social/FluentEmoji3D/hot_beverage_3d.png",
+	"🍺": "res://Assets/Social/FluentEmoji3D/beer_mug_3d.png",
+	"💋": "res://Assets/Social/FluentEmoji3D/kiss_mark_3d.png",
+	"♥": "res://Assets/Social/FluentEmoji3D/red_heart_3d.png",
+	"🌹": "res://Assets/Social/FluentEmoji3D/rose_3d.png",
+	"🍰": "res://Assets/Social/FluentEmoji3D/shortcake_3d.png",
+	"🧸": "res://Assets/Social/FluentEmoji3D/teddy_bear_3d.png",
+	"🏆": "res://Assets/Social/FluentEmoji3D/trophy_3d.png",
+	"💩": "res://Assets/Social/FluentEmoji3D/pile_of_poo_3d.png"
+}
 
 
 enum HandSortMode {
@@ -230,6 +293,8 @@ var reaction_toggle_button: Button
 var reaction_picker: PanelContainer
 var reaction_bubble: PanelContainer
 var reaction_bubble_label: Label
+var reaction_bubble_image: TextureRect
+var reaction_bubble_shadow: TextureRect
 var reaction_bubble_tween: Tween
 var sticker_toggle_button: Button
 var sticker_picker: PanelContainer
@@ -241,7 +306,15 @@ var sticker_selected_target_index := -1
 var sticker_flyers: Array[PanelContainer] = []
 var sticker_flyer_labels: Array[Label] = []
 var sticker_flyer_images: Array[TextureRect] = []
+var sticker_flyer_shadows: Array[TextureRect] = []
 var sticker_flyer_tweens: Dictionary = {}
+var social_emoji_texture_cache: Dictionary = {}
+var joker_celebration: Control
+var joker_celebration_glow: ColorRect
+var joker_celebration_shadow: TextureRect
+var joker_celebration_image: TextureRect
+var joker_celebration_sparkles: Array[Label] = []
+var joker_celebration_tween: Tween
 var soundpad_toggle_button: Button
 var soundpad_picker: PanelContainer
 var soundpad_picker_title: Label
@@ -498,6 +571,7 @@ func _ready() -> void:
 	_create_table_surface()
 	_create_player_panels()
 	_create_player_avatar_badges()
+	_create_joker_celebration_effect()
 	_create_trick_slots()
 	_create_bot_card_backs()
 	_create_deck_visual()
@@ -1980,13 +2054,16 @@ func _present_next_network_card_event(viewer_index: int) -> void:
 			card_view.visible = true
 			await get_tree().process_frame
 			var target_position := card_view.global_position
+			var target_rotation := card_view.rotation
 			card_view.pivot_offset = card_view.size * 0.5
 			card_view.global_position = _get_played_card_source_global_position(relative_slot, card_view.size)
+			card_view.rotation = target_rotation + deg_to_rad(_get_card_flight_start_angle(relative_slot))
 			card_view.scale = Vector2(0.78, 0.78)
 			card_view.modulate = Color(1.0, 1.0, 1.0, 0.86)
 			var tween := create_tween()
 			tween.set_parallel(true)
 			tween.tween_property(card_view, "global_position", target_position, CARD_FLY_DURATION).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+			tween.tween_property(card_view, "rotation", target_rotation, CARD_FLY_DURATION).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 			tween.tween_property(card_view, "scale", Vector2.ONE, CARD_FLY_DURATION).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 			tween.tween_property(card_view, "modulate", Color.WHITE, CARD_FLY_DURATION)
 			await tween.finished
@@ -2014,6 +2091,8 @@ func _present_network_completed_trick(winner_player_index: int, viewer_index: in
 	var players_by_index := _get_network_players_by_index(snapshot)
 	var winner_data: Dictionary = players_by_index.get(winner_player_index, {})
 	action_label.text = "Взятку забирает %s." % str(winner_data.get("display_name", "игрок"))
+	if _did_network_joker_win_last_trick(snapshot, winner_player_index):
+		_show_joker_celebration(relative_winner_index)
 	await get_tree().create_timer(TRICK_WINNER_HOLD_DURATION).timeout
 	_set_trick_winner_highlight(relative_winner_index, false)
 	await _animate_network_trick_collection(relative_winner_index)
@@ -2026,18 +2105,7 @@ func _present_network_reaction_event(event: Dictionary, viewer_index: int) -> vo
 	var relative_slot := posmod(int(event.get("actor_player_index", -1)) - viewer_index, PLAYER_NAMES.size())
 	if relative_slot < 0 or relative_slot >= avatar_badges.size():
 		return
-	reaction_bubble_label.text = str(event.get("reaction", ""))
-	reaction_bubble.visible = true
-	reaction_bubble.modulate = Color.WHITE
-	var badge_rect := avatar_badges[relative_slot].get_global_rect()
-	reaction_bubble.global_position = badge_rect.get_center() - reaction_bubble.size * 0.5 + Vector2(0.0, -64.0)
-	if is_instance_valid(reaction_bubble_tween):
-		reaction_bubble_tween.kill()
-	var start_position := reaction_bubble.position
-	reaction_bubble_tween = create_tween()
-	reaction_bubble_tween.tween_property(reaction_bubble, "position", start_position + Vector2(0.0, -24.0), 0.28)
-	reaction_bubble_tween.parallel().tween_property(reaction_bubble, "modulate:a", 0.0, REACTION_DISPLAY_DURATION)
-	reaction_bubble_tween.tween_callback(_hide_reaction_bubble)
+	_show_reaction_bubble(str(event.get("reaction", "")), relative_slot)
 
 
 func _present_network_sticker_event(event: Dictionary, viewer_index: int) -> void:
@@ -2045,11 +2113,8 @@ func _present_network_sticker_event(event: Dictionary, viewer_index: int) -> voi
 	var target_relative := posmod(int(event.get("target_player_index", -1)) - viewer_index, PLAYER_NAMES.size())
 	if source_relative < 0 or source_relative >= avatar_badges.size() or target_relative < 0 or target_relative >= avatar_badges.size():
 		return
-	_show_sticker_flyer(
-		{"symbol": str(event.get("sticker", ""))},
-		source_relative,
-		target_relative
-	)
+	var sticker_symbol := str(event.get("sticker", ""))
+	_show_sticker_flyer(_get_builtin_sticker_by_symbol(sticker_symbol), source_relative, target_relative)
 
 
 func _present_network_soundpad_event(event: Dictionary, viewer_index: int) -> void:
@@ -2297,7 +2362,8 @@ func _refresh_network_main_hand(snapshot: Dictionary, round_data: Dictionary) ->
 
 	var cards: Array[Card] = []
 	var card_keys_by_instance: Dictionary = {}
-	for card_data_variant in private_hand:
+	for card_index in private_hand.size():
+		var card_data_variant: Variant = private_hand[card_index]
 		if not (card_data_variant is Dictionary):
 			continue
 		var card_data: Dictionary = card_data_variant
@@ -2311,9 +2377,11 @@ func _refresh_network_main_hand(snapshot: Dictionary, round_data: Dictionary) ->
 	var undo_pending: bool = bool((snapshot.get("undo_state", {}) as Dictionary).get("pending", false))
 	var presentation_locked := network_card_play_presentation_active or network_round_finish_presentation_active or undo_pending
 	var displayed_cards: Array[Card] = _sort_cards_for_display(cards, trump, hand_sort_mode)
-	for card in displayed_cards:
+	for display_index in displayed_cards.size():
+		var card: Card = displayed_cards[display_index]
 		var card_view := CardView.new()
 		card_view.set_card(card)
+		card_view.set_hand_presentation(display_index, displayed_cards.size())
 		var card_key: String = str(card_keys_by_instance.get(card, ""))
 		var card_is_available := _is_network_table_card_available(card_key)
 		var joker_is_available := card.is_joker and _can_submit_loopback_test_joker()
@@ -2377,6 +2445,8 @@ func _present_network_round_finish(result_key: String, winner_player_index: int,
 		var players_by_index := _get_network_players_by_index(snapshot)
 		var winner_data: Dictionary = players_by_index.get(winner_player_index, {})
 		action_label.text = "Взятку забирает %s." % str(winner_data.get("display_name", "игрок"))
+		if _did_network_joker_win_last_trick(snapshot, winner_player_index):
+			_show_joker_celebration(relative_winner_index)
 		await get_tree().create_timer(TRICK_WINNER_HOLD_DURATION).timeout
 		if not _is_network_round_result_key_current(result_key):
 			network_round_finish_presentation_active = false
@@ -2423,6 +2493,7 @@ func _animate_network_trick_collection(relative_winner_index: int) -> void:
 		card_view.pivot_offset = card_view.size * 0.5
 		var stack_offset := Vector2(float(player_index * 3), float(player_index * 2))
 		tween.tween_property(card_view, "global_position", destination_position + stack_offset, TRICK_COLLECTION_DURATION).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+		tween.tween_property(card_view, "rotation", deg_to_rad(float(player_index - relative_winner_index) * 4.0), TRICK_COLLECTION_DURATION)
 		tween.tween_property(card_view, "scale", Vector2(0.36, 0.36), TRICK_COLLECTION_DURATION)
 		tween.tween_property(card_view, "modulate", Color(1.0, 1.0, 1.0, 0.0), TRICK_COLLECTION_DURATION)
 
@@ -2431,6 +2502,7 @@ func _animate_network_trick_collection(relative_winner_index: int) -> void:
 
 	for card_view in trick_card_views:
 		card_view.visible = false
+		card_view.rotation = 0.0
 		card_view.scale = Vector2.ONE
 		card_view.modulate = Color.WHITE
 
@@ -3067,6 +3139,7 @@ func _refresh_network_table_trick(snapshot: Dictionary, viewer_index: int, activ
 		var card_view := CardView.new()
 		card_view.set_card(card)
 		card_view.set_card_size(Vector2(82.0, 118.0))
+		card_view.set_table_presentation(relative_slot)
 		card_view.set_winner_highlight(player_index == winner_index)
 		_place_network_table_trick_card(card_view, relative_slot)
 		network_table_trick_layer.add_child(card_view)
@@ -3088,7 +3161,8 @@ func _refresh_network_table_hand(private_hand: Array) -> void:
 	if not is_instance_valid(network_table_hand_container):
 		return
 	_clear_children(network_table_hand_container)
-	for card_data_variant in private_hand:
+	for card_index in private_hand.size():
+		var card_data_variant: Variant = private_hand[card_index]
 		if not (card_data_variant is Dictionary):
 			continue
 		var card_data: Dictionary = card_data_variant
@@ -3098,6 +3172,7 @@ func _refresh_network_table_hand(private_hand: Array) -> void:
 		var card_view := CardView.new()
 		card_view.set_card(card)
 		card_view.set_card_size(Vector2(86.0, 124.0))
+		card_view.set_hand_presentation(card_index, private_hand.size())
 		var card_key: String = str(card_data.get("card_key", ""))
 		var card_is_available := _is_network_table_card_available(card_key)
 		var joker_is_available := card.is_joker and _can_submit_loopback_test_joker()
@@ -4929,21 +5004,9 @@ func _add_first_turn_roll_player_slot(
 	name_label.add_theme_color_override("font_color", Color(1.0, 0.9, 0.52, 1.0) if is_winner else Color(0.9, 0.96, 0.9, 1.0))
 	content.add_child(name_label)
 
-	var dice_label := Label.new()
-	dice_label.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	dice_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	dice_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	dice_label.add_theme_font_size_override("font_size", 42)
-	dice_label.add_theme_color_override("font_color", Color(1.0, 0.86, 0.34, 1.0) if is_winner else Color(0.96, 0.97, 0.91, 1.0))
-	if roll_value >= 1 and roll_value <= DICE_FACE_TEXTS.size():
-		dice_label.text = "%s  %d" % [DICE_FACE_TEXTS[roll_value - 1], roll_value]
-	elif not is_contender:
-		dice_label.text = "—"
-	elif has_submitted and phase == LoopbackNetwork.FirstTurnRollPhase.WAITING:
-		dice_label.text = "🎲"
-	else:
-		dice_label.text = "?"
-	content.add_child(dice_label)
+	var dice_view = Dice3DViewResource.new()
+	content.add_child(dice_view)
+	dice_view.configure(roll_value, is_contender, has_submitted, is_winner)
 
 	var state_label := Label.new()
 	state_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -7245,6 +7308,8 @@ func _present_pending_play() -> void:
 	_set_trick_winner_highlight(winner_player_index, true)
 	action_text = "Взятку забирает %s." % game.players[winner_player_index].display_name
 	action_label.text = action_text
+	if _did_local_joker_win_last_trick(winner_player_index):
+		_show_joker_celebration(winner_player_index)
 	await get_tree().create_timer(TRICK_WINNER_HOLD_DURATION).timeout
 	_set_trick_winner_highlight(winner_player_index, false)
 	await _animate_trick_collection(winner_player_index)
@@ -7262,14 +7327,17 @@ func _animate_played_card(player_index: int) -> void:
 
 	await get_tree().process_frame
 	var target_position: Vector2 = card_view.global_position
+	var target_rotation := card_view.rotation
 	var source_position: Vector2 = _get_played_card_source_global_position(player_index, card_view.size)
 	card_view.pivot_offset = card_view.size * 0.5
 	card_view.global_position = source_position
+	card_view.rotation = target_rotation + deg_to_rad(_get_card_flight_start_angle(player_index))
 	card_view.scale = Vector2(0.78, 0.78)
 	card_view.modulate = Color(1.0, 1.0, 1.0, 0.86)
 	var tween: Tween = create_tween()
 	tween.set_parallel(true)
 	tween.tween_property(card_view, "global_position", target_position, CARD_FLY_DURATION).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tween.tween_property(card_view, "rotation", target_rotation, CARD_FLY_DURATION).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 	tween.tween_property(card_view, "scale", Vector2.ONE, CARD_FLY_DURATION).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 	tween.tween_property(card_view, "modulate", Color.WHITE, CARD_FLY_DURATION)
 	await tween.finished
@@ -7287,6 +7355,11 @@ func _get_played_card_source_global_position(player_index: int, card_size: Vecto
 
 	var source_rect: Rect2 = source_control.get_global_rect()
 	return source_rect.get_center() - card_size * 0.5
+
+
+func _get_card_flight_start_angle(relative_slot: int) -> float:
+	var start_angles := [-5.0, 7.0, -4.0, -7.0]
+	return float(start_angles[clampi(relative_slot, 0, start_angles.size() - 1)])
 
 
 func _animate_trick_collection(winner_player_index: int) -> void:
@@ -7308,6 +7381,7 @@ func _animate_trick_collection(winner_player_index: int) -> void:
 		card_view.pivot_offset = card_view.size * 0.5
 		var stack_offset := Vector2(float(player_index * 3), float(player_index * 2))
 		tween.tween_property(card_view, "global_position", destination_position + stack_offset, TRICK_COLLECTION_DURATION).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+		tween.tween_property(card_view, "rotation", deg_to_rad(float(player_index - winner_player_index) * 4.0), TRICK_COLLECTION_DURATION)
 		tween.tween_property(card_view, "scale", Vector2(0.36, 0.36), TRICK_COLLECTION_DURATION)
 		tween.tween_property(card_view, "modulate", Color(1.0, 1.0, 1.0, 0.0), TRICK_COLLECTION_DURATION)
 
@@ -7316,6 +7390,7 @@ func _animate_trick_collection(winner_player_index: int) -> void:
 
 	for card_view in trick_card_views:
 		card_view.visible = false
+		card_view.rotation = 0.0
 		card_view.scale = Vector2.ONE
 		card_view.modulate = Color.WHITE
 
@@ -7338,10 +7413,12 @@ func _reset_trick_presentation() -> void:
 	pending_card_animation_player_index = -1
 	pending_trick_winner_player_index = -1
 	show_last_completed_trick = false
+	_reset_joker_celebration()
 
 	for card_view in trick_card_views:
 		card_view.set_winner_highlight(false)
 		card_view.visible = false
+		card_view.rotation = 0.0
 		card_view.scale = Vector2.ONE
 		card_view.modulate = Color.WHITE
 
@@ -7771,14 +7848,7 @@ func _create_player_avatar_badges() -> void:
 		gift_button.tooltip_text = "Отправить подарок"
 		gift_button.custom_minimum_size = Vector2(40.0, 40.0)
 		gift_button.add_theme_font_size_override("font_size", 18)
-		gift_button.add_theme_stylebox_override(
-			"normal",
-			_create_flat_style(Color(0.025, 0.07, 0.045, 0.98), Color(0.9, 0.7, 0.2, 0.95), 1, 20, 3)
-		)
-		gift_button.add_theme_stylebox_override(
-			"hover",
-			_create_flat_style(Color(0.12, 0.19, 0.11, 1.0), Color(1.0, 0.82, 0.34, 1.0), 2, 20, 4)
-		)
+		_apply_bare_social_icon_button_style(gift_button)
 		gift_button.pressed.connect(_on_avatar_gift_button_pressed.bind(player_index))
 		gift_button.mouse_entered.connect(_on_avatar_mute_hover_entered.bind(player_index))
 		gift_button.mouse_exited.connect(_on_avatar_mute_hover_exited.bind(player_index))
@@ -7790,14 +7860,7 @@ func _create_player_avatar_badges() -> void:
 		mute_button.text = "🔊"
 		mute_button.custom_minimum_size = Vector2(40.0, 40.0)
 		mute_button.add_theme_font_size_override("font_size", 18)
-		mute_button.add_theme_stylebox_override(
-			"normal",
-			_create_flat_style(Color(0.025, 0.07, 0.045, 0.96), Color(0.9, 0.7, 0.2, 0.9), 1, 20, 3)
-		)
-		mute_button.add_theme_stylebox_override(
-			"hover",
-			_create_flat_style(Color(0.12, 0.19, 0.11, 1.0), Color(1.0, 0.82, 0.34, 1.0), 2, 20, 4)
-		)
+		_apply_bare_social_icon_button_style(mute_button)
 		mute_button.pressed.connect(_on_avatar_mute_button_pressed.bind(player_index))
 		mute_button.mouse_entered.connect(_on_avatar_mute_hover_entered.bind(player_index))
 		mute_button.mouse_exited.connect(_on_avatar_mute_hover_exited.bind(player_index))
@@ -8061,6 +8124,177 @@ func _place_player_avatar_badge(badge: PanelContainer, player_index: int) -> voi
 			_set_control_layout(badge, 0.5, 0.0, 0.5, 0.0, -217.0, 74.0, -113.0, 178.0)
 		3:
 			_set_control_layout(badge, 1.0, 0.0, 1.0, 0.0, -291.0, 348.0, -187.0, 452.0)
+
+
+func _create_joker_celebration_effect() -> void:
+	joker_celebration = Control.new()
+	joker_celebration.name = "JokerCelebration"
+	joker_celebration.visible = false
+	joker_celebration.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	joker_celebration.z_index = 92
+	_set_control_layout(joker_celebration, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 260.0, 260.0)
+	joker_celebration.pivot_offset = Vector2(130.0, 130.0)
+
+	joker_celebration_glow = ColorRect.new()
+	joker_celebration_glow.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var glow_shader := Shader.new()
+	glow_shader.code = JOKER_CELEBRATION_GLOW_SHADER_CODE
+	var glow_material := ShaderMaterial.new()
+	glow_material.shader = glow_shader
+	joker_celebration_glow.material = glow_material
+	_set_control_layout(joker_celebration_glow, 0.0, 0.0, 1.0, 1.0, -18.0, -18.0, 18.0, 18.0)
+	joker_celebration.add_child(joker_celebration_glow)
+
+	joker_celebration_shadow = TextureRect.new()
+	joker_celebration_shadow.texture = JOKER_CELEBRATION_TEXTURE
+	joker_celebration_shadow.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	joker_celebration_shadow.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	joker_celebration_shadow.modulate = Color(0.0, 0.0, 0.0, 0.38)
+	joker_celebration_shadow.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_set_control_layout(joker_celebration_shadow, 0.0, 0.0, 1.0, 1.0, 9.0, 13.0, 9.0, 13.0)
+	joker_celebration.add_child(joker_celebration_shadow)
+
+	joker_celebration_image = TextureRect.new()
+	joker_celebration_image.texture = JOKER_CELEBRATION_TEXTURE
+	joker_celebration_image.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	joker_celebration_image.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	joker_celebration_image.material = _create_social_emoji_shine_material()
+	joker_celebration_image.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_set_control_layout(joker_celebration_image, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0)
+	joker_celebration.add_child(joker_celebration_image)
+
+	joker_celebration_sparkles.clear()
+	var sparkle_offsets := [
+		Vector2(-104.0, -70.0),
+		Vector2(101.0, -82.0),
+		Vector2(-118.0, 5.0),
+		Vector2(116.0, 14.0),
+		Vector2(-84.0, 91.0),
+		Vector2(91.0, 96.0),
+		Vector2(-27.0, -115.0),
+		Vector2(34.0, -108.0)
+	]
+	for sparkle_index in sparkle_offsets.size():
+		var sparkle := Label.new()
+		sparkle.text = "✦" if sparkle_index % 2 == 0 else "◆"
+		sparkle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		sparkle.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		sparkle.add_theme_font_size_override("font_size", 22 if sparkle_index % 2 == 0 else 14)
+		sparkle.add_theme_color_override("font_color", Color(1.0, 0.79, 0.24, 1.0))
+		sparkle.add_theme_color_override("font_shadow_color", Color(0.18, 0.07, 0.0, 0.8))
+		sparkle.add_theme_constant_override("shadow_offset_x", 2)
+		sparkle.add_theme_constant_override("shadow_offset_y", 2)
+		sparkle.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		sparkle.size = Vector2(32.0, 32.0)
+		sparkle.pivot_offset = sparkle.size * 0.5
+		sparkle.set_meta("target_offset", sparkle_offsets[sparkle_index])
+		joker_celebration.add_child(sparkle)
+		joker_celebration_sparkles.append(sparkle)
+
+	players_container.add_child(joker_celebration)
+
+
+func _show_joker_celebration(relative_slot: int) -> void:
+	if (
+		not is_instance_valid(joker_celebration)
+		or relative_slot < 0
+		or relative_slot >= avatar_badges.size()
+	):
+		return
+	if is_instance_valid(joker_celebration_tween):
+		joker_celebration_tween.kill()
+
+	var target_position := _get_joker_celebration_position(relative_slot)
+	joker_celebration.position = target_position + Vector2(0.0, 28.0)
+	joker_celebration.scale = Vector2(0.28, 0.28)
+	joker_celebration.rotation = deg_to_rad(-11.0)
+	joker_celebration.modulate = Color(1.0, 1.0, 1.0, 0.0)
+	joker_celebration.visible = true
+
+	var center := joker_celebration.size * 0.5 - Vector2(16.0, 16.0)
+	for sparkle in joker_celebration_sparkles:
+		sparkle.position = center
+		sparkle.scale = Vector2(0.2, 0.2)
+		sparkle.modulate = Color(1.0, 1.0, 1.0, 0.0)
+
+	var shine_material := joker_celebration_image.material as ShaderMaterial
+	if shine_material != null:
+		shine_material.set_shader_parameter("shine_progress", -0.5)
+
+	joker_celebration_tween = create_tween().set_parallel(true)
+	joker_celebration_tween.tween_property(joker_celebration, "position", target_position, 0.34).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	joker_celebration_tween.tween_property(joker_celebration, "scale", Vector2(1.08, 1.08), 0.32).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	joker_celebration_tween.tween_property(joker_celebration, "rotation", deg_to_rad(4.0), 0.3).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	joker_celebration_tween.tween_property(joker_celebration, "modulate:a", 1.0, 0.16)
+	if shine_material != null:
+		joker_celebration_tween.tween_property(shine_material, "shader_parameter/shine_progress", 2.25, 0.62)
+	for sparkle in joker_celebration_sparkles:
+		var target_offset: Vector2 = sparkle.get_meta("target_offset", Vector2.ZERO)
+		joker_celebration_tween.tween_property(sparkle, "position", center + target_offset, 0.48).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+		joker_celebration_tween.tween_property(sparkle, "scale", Vector2.ONE, 0.34).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+		joker_celebration_tween.tween_property(sparkle, "modulate:a", 1.0, 0.18)
+	joker_celebration_tween.set_parallel(false)
+	joker_celebration_tween.tween_property(joker_celebration, "scale", Vector2.ONE, 0.13)
+	joker_celebration_tween.parallel().tween_property(joker_celebration, "rotation", deg_to_rad(-2.0), 0.13)
+	joker_celebration_tween.tween_property(joker_celebration, "rotation", deg_to_rad(2.0), 0.12)
+	joker_celebration_tween.tween_property(joker_celebration, "rotation", 0.0, 0.12)
+	joker_celebration_tween.tween_interval(0.58)
+	joker_celebration_tween.tween_property(joker_celebration, "modulate:a", 0.0, 0.28)
+	joker_celebration_tween.parallel().tween_property(joker_celebration, "scale", Vector2(0.82, 0.82), 0.28)
+	joker_celebration_tween.parallel().tween_property(joker_celebration, "position", target_position + Vector2(0.0, -18.0), 0.28)
+	joker_celebration_tween.tween_callback(_finish_joker_celebration)
+
+
+func _get_joker_celebration_position(relative_slot: int) -> Vector2:
+	var badge_center := avatar_badges[relative_slot].get_global_rect().get_center()
+	var seat_offset := Vector2(0.0, -178.0)
+	if relative_slot == 2:
+		seat_offset = Vector2(0.0, 174.0)
+	var desired_center := badge_center + seat_offset
+	var viewport_size := get_viewport_rect().size
+	var half_size := joker_celebration.size * 0.5
+	desired_center.x = clampf(desired_center.x, half_size.x + 12.0, viewport_size.x - half_size.x - 12.0)
+	desired_center.y = clampf(desired_center.y, half_size.y + 12.0, viewport_size.y - half_size.y - 12.0)
+	return desired_center - half_size
+
+
+func _finish_joker_celebration() -> void:
+	joker_celebration_tween = null
+	if is_instance_valid(joker_celebration):
+		joker_celebration.visible = false
+
+
+func _reset_joker_celebration() -> void:
+	if is_instance_valid(joker_celebration_tween):
+		joker_celebration_tween.kill()
+	joker_celebration_tween = null
+	if is_instance_valid(joker_celebration):
+		joker_celebration.visible = false
+
+
+func _did_local_joker_win_last_trick(winner_player_index: int) -> bool:
+	if game.last_completed_trick_joker_mode != Trick.JokerMode.JOKER_WINS:
+		return false
+	for card_index in game.last_completed_trick_cards.size():
+		if (
+			game.last_completed_trick_cards[card_index].is_joker
+			and card_index < game.last_completed_trick_played_by.size()
+		):
+			return game.last_completed_trick_played_by[card_index] == winner_player_index
+	return false
+
+
+func _did_network_joker_win_last_trick(snapshot: Dictionary, winner_player_index: int) -> bool:
+	var completed_trick: Dictionary = snapshot.get("last_completed_trick", {})
+	if int(completed_trick.get("joker_mode", Trick.JokerMode.NONE)) != Trick.JokerMode.JOKER_WINS:
+		return false
+	var cards: Array = completed_trick.get("cards", [])
+	var played_by: Array = completed_trick.get("played_by", [])
+	for card_index in cards.size():
+		var card_data: Dictionary = cards[card_index] if cards[card_index] is Dictionary else {}
+		if bool(card_data.get("is_joker", false)) and card_index < played_by.size():
+			return int(played_by[card_index]) == winner_player_index
+	return false
 
 
 func _refresh_table() -> void:
@@ -8847,9 +9081,11 @@ func _refresh_hand() -> void:
 	var human_player := game.players[HUMAN_PLAYER_INDEX]
 	var displayed_cards := _sort_cards_for_display(human_player.hand, game.current_round.trump, hand_sort_mode)
 
-	for card in displayed_cards:
+	for display_index in displayed_cards.size():
+		var card: Card = displayed_cards[display_index]
 		var card_view := CardView.new()
 		card_view.set_card(card)
+		card_view.set_hand_presentation(display_index, displayed_cards.size())
 		card_view.set_interactive(
 			true,
 			is_bug_report_review_mode or not _is_human_turn() or not _is_card_available_to_human(card) or pending_joker_card != null
@@ -8991,6 +9227,7 @@ func _create_trick_slots() -> void:
 		var card_view := CardView.new()
 		card_view.set_card_size(Vector2(108.0, 132.0))
 		card_view.set_interactive(false, false)
+		card_view.set_table_presentation(player_index)
 		_place_trick_slot(card_view, player_index)
 		card_view.visible = false
 		trick_slots.add_child(card_view)
@@ -9193,6 +9430,47 @@ func _create_social_controls_container() -> void:
 	players_container.add_child(social_controls_container)
 
 
+func _get_social_emoji_texture(symbol: String) -> Texture2D:
+	if social_emoji_texture_cache.has(symbol):
+		return social_emoji_texture_cache[symbol] as Texture2D
+	var texture_path := str(FLUENT_EMOJI_TEXTURE_PATHS.get(symbol, ""))
+	if texture_path.is_empty():
+		return null
+	var texture := ResourceLoader.load(texture_path, "Texture2D") as Texture2D
+	if texture != null:
+		social_emoji_texture_cache[symbol] = texture
+	return texture
+
+
+func _create_social_emoji_shine_material() -> ShaderMaterial:
+	var shader := Shader.new()
+	shader.code = SOCIAL_EMOJI_SHINE_SHADER_CODE
+	var material := ShaderMaterial.new()
+	material.shader = shader
+	material.set_shader_parameter("shine_progress", -0.5)
+	return material
+
+
+func _apply_bare_social_icon_button_style(button: Button) -> void:
+	button.flat = true
+	for state_name in [&"normal", &"hover", &"pressed", &"focus", &"disabled"]:
+		button.add_theme_stylebox_override(state_name, StyleBoxEmpty.new())
+	button.add_theme_color_override("icon_normal_color", Color.WHITE)
+	button.add_theme_color_override("icon_hover_color", Color(1.15, 1.15, 1.08))
+	button.add_theme_color_override("icon_pressed_color", Color(0.9, 0.82, 0.68))
+	button.add_theme_color_override("font_hover_color", Color(1.0, 0.88, 0.48))
+	button.add_theme_color_override("font_pressed_color", Color(0.92, 0.79, 0.4))
+	button.mouse_entered.connect(_on_bare_social_icon_hover.bind(button, true))
+	button.mouse_exited.connect(_on_bare_social_icon_hover.bind(button, false))
+
+
+func _on_bare_social_icon_hover(button: Button, hovered: bool) -> void:
+	if not is_instance_valid(button):
+		return
+	button.pivot_offset = button.size * 0.5
+	button.scale = Vector2(1.1, 1.1) if hovered and not button.disabled else Vector2.ONE
+
+
 func _create_reaction_controls() -> void:
 	reaction_toggle_button = Button.new()
 	reaction_toggle_button.text = "☺"
@@ -9217,19 +9495,51 @@ func _create_reaction_controls() -> void:
 		"panel",
 		_create_flat_style(Color(0.012, 0.075, 0.045, 0.96), Color(0.64, 0.47, 0.14, 0.96), 2, 10, 5)
 	)
-	_set_control_layout(reaction_picker, 0.5, 1.0, 0.5, 1.0, 128.0, -456.0, 428.0, -402.0)
+	_set_control_layout(reaction_picker, 0.5, 1.0, 0.5, 1.0, 116.0, -624.0, 440.0, -402.0)
 
-	var reaction_row := HBoxContainer.new()
-	reaction_row.add_theme_constant_override("separation", 4)
-	reaction_picker.add_child(reaction_row)
-	for reaction in PackedStringArray(["😄", "👏", "😮", "😢", "🖕"]):
+	var reaction_grid := GridContainer.new()
+	reaction_grid.columns = 5
+	reaction_grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	reaction_grid.add_theme_constant_override("h_separation", 4)
+	reaction_grid.add_theme_constant_override("v_separation", 4)
+	reaction_picker.add_child(reaction_grid)
+	var reaction_tooltips := {
+		"😄": "Смех",
+		"😂": "До слёз",
+		"🤣": "Катаюсь от смеха",
+		"😍": "В восторге",
+		"😘": "Воздушный поцелуй",
+		"😎": "Круто",
+		"🤔": "Задумался",
+		"👏": "Аплодисменты",
+		"😮": "Удивление",
+		"😢": "Грусть",
+		"😡": "Злюсь",
+		"🤬": "Очень злюсь",
+		"😈": "Коварный план",
+		"🤡": "Ну ты клоун",
+		"🤦": "Рукалицо",
+		"🤷": "Не знаю",
+		"👍": "Одобряю",
+		"👎": "Не одобряю",
+		"🔥": "Огонь",
+		"🖕": "Средний палец"
+	}
+	for reaction in NetworkHost.NETWORK_REACTIONS:
 		var reaction_button := Button.new()
-		reaction_button.text = reaction
-		reaction_button.tooltip_text = "Отправить реакцию"
+		var reaction_texture := _get_social_emoji_texture(reaction)
+		reaction_button.text = reaction if reaction_texture == null else ""
+		reaction_button.icon = reaction_texture
+		reaction_button.expand_icon = reaction_texture != null
+		reaction_button.tooltip_text = str(reaction_tooltips.get(reaction, "Отправить реакцию"))
 		reaction_button.custom_minimum_size = Vector2(56.0, 42.0)
+		reaction_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		reaction_button.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		reaction_button.add_theme_font_size_override("font_size", 24)
+		reaction_button.add_theme_constant_override("icon_max_width", 34)
+		_apply_bare_social_icon_button_style(reaction_button)
 		reaction_button.pressed.connect(_on_reaction_selected.bind(reaction))
-		reaction_row.add_child(reaction_button)
+		reaction_grid.add_child(reaction_button)
 	players_container.add_child(reaction_picker)
 
 	reaction_bubble = PanelContainer.new()
@@ -9238,15 +9548,39 @@ func _create_reaction_controls() -> void:
 	reaction_bubble.z_index = 31
 	reaction_bubble.add_theme_stylebox_override(
 		"panel",
-		_create_flat_style(Color(0.025, 0.11, 0.065, 0.94), Color(0.94, 0.75, 0.28, 1.0), 2, 18, 7)
+		StyleBoxEmpty.new()
 	)
 	_set_control_layout(reaction_bubble, 0.5, 1.0, 0.5, 1.0, -48.0, -514.0, 48.0, -418.0)
+	reaction_bubble.pivot_offset = Vector2(48.0, 48.0)
+
+	var reaction_visual_root := Control.new()
+	reaction_visual_root.custom_minimum_size = Vector2(82.0, 82.0)
+	reaction_visual_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	reaction_bubble.add_child(reaction_visual_root)
+
+	reaction_bubble_shadow = TextureRect.new()
+	reaction_bubble_shadow.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	reaction_bubble_shadow.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	reaction_bubble_shadow.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	reaction_bubble_shadow.modulate = Color(0.0, 0.0, 0.0, 0.34)
+	_set_control_layout(reaction_bubble_shadow, 0.0, 0.0, 1.0, 1.0, 5.0, 7.0, 5.0, 7.0)
+	reaction_visual_root.add_child(reaction_bubble_shadow)
+
+	reaction_bubble_image = TextureRect.new()
+	reaction_bubble_image.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	reaction_bubble_image.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	reaction_bubble_image.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	reaction_bubble_image.material = _create_social_emoji_shine_material()
+	_set_control_layout(reaction_bubble_image, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0)
+	reaction_visual_root.add_child(reaction_bubble_image)
 
 	reaction_bubble_label = Label.new()
 	reaction_bubble_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	reaction_bubble_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	reaction_bubble_label.add_theme_font_size_override("font_size", 42)
-	reaction_bubble.add_child(reaction_bubble_label)
+	reaction_bubble_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_set_control_layout(reaction_bubble_label, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0)
+	reaction_visual_root.add_child(reaction_bubble_label)
 	players_container.add_child(reaction_bubble)
 
 
@@ -9272,18 +9606,49 @@ func _on_reaction_selected(reaction: String) -> void:
 		return
 
 	reaction_picker.visible = false
+	_show_reaction_bubble(reaction, HUMAN_PLAYER_INDEX)
+
+
+func _show_reaction_bubble(reaction: String, relative_slot: int) -> void:
+	if (
+		not is_instance_valid(reaction_bubble)
+		or relative_slot < 0
+		or relative_slot >= avatar_badges.size()
+	):
+		return
+	var reaction_texture := _get_social_emoji_texture(reaction)
+	reaction_bubble_image.texture = reaction_texture
+	reaction_bubble_image.visible = reaction_texture != null
+	reaction_bubble_shadow.texture = reaction_texture
+	reaction_bubble_shadow.visible = reaction_texture != null
 	reaction_bubble_label.text = reaction
+	reaction_bubble_label.visible = reaction_texture == null
 	reaction_bubble.visible = true
 	reaction_bubble.modulate = Color.WHITE
-	_set_control_layout(reaction_bubble, 0.5, 1.0, 0.5, 1.0, -48.0, -514.0, 48.0, -418.0)
+	reaction_bubble.scale = Vector2(0.58, 0.58)
+	reaction_bubble.rotation = deg_to_rad(-9.0)
+	var badge_rect := avatar_badges[relative_slot].get_global_rect()
+	reaction_bubble.global_position = badge_rect.get_center() - reaction_bubble.size * 0.5 + Vector2(0.0, -64.0)
 
 	if is_instance_valid(reaction_bubble_tween):
 		reaction_bubble_tween.kill()
 
 	var start_position: Vector2 = reaction_bubble.position
-	reaction_bubble_tween = create_tween()
-	reaction_bubble_tween.tween_property(reaction_bubble, "position", start_position + Vector2(0.0, -24.0), 0.28)
-	reaction_bubble_tween.parallel().tween_property(reaction_bubble, "modulate:a", 0.0, REACTION_DISPLAY_DURATION)
+	var shine_material := reaction_bubble_image.material as ShaderMaterial
+	if shine_material != null:
+		shine_material.set_shader_parameter("shine_progress", -0.5)
+	reaction_bubble_tween = create_tween().set_parallel(true)
+	reaction_bubble_tween.tween_property(reaction_bubble, "position", start_position + Vector2(0.0, -18.0), 0.3).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	reaction_bubble_tween.tween_property(reaction_bubble, "scale", Vector2(1.12, 1.12), 0.26).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	reaction_bubble_tween.tween_property(reaction_bubble, "rotation", deg_to_rad(4.0), 0.26).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	if shine_material != null:
+		reaction_bubble_tween.tween_property(shine_material, "shader_parameter/shine_progress", 2.25, 0.5)
+	reaction_bubble_tween.set_parallel(false)
+	reaction_bubble_tween.tween_property(reaction_bubble, "scale", Vector2.ONE, 0.12)
+	reaction_bubble_tween.parallel().tween_property(reaction_bubble, "rotation", 0.0, 0.12)
+	reaction_bubble_tween.tween_interval(0.45)
+	reaction_bubble_tween.tween_property(reaction_bubble, "modulate:a", 0.0, 0.22)
+	reaction_bubble_tween.parallel().tween_property(reaction_bubble, "position", start_position + Vector2(0.0, -30.0), 0.22)
 	reaction_bubble_tween.tween_callback(_hide_reaction_bubble)
 
 
@@ -9389,34 +9754,53 @@ func _create_sticker_controls() -> void:
 	sticker_flyers.clear()
 	sticker_flyer_labels.clear()
 	sticker_flyer_images.clear()
+	sticker_flyer_shadows.clear()
 	sticker_flyer_tweens.clear()
 	for _player_index in PLAYER_NAMES.size():
 		var flyer := PanelContainer.new()
 		flyer.visible = false
-		flyer.size = Vector2(60.0, 60.0)
+		flyer.size = Vector2(72.0, 72.0)
 		flyer.pivot_offset = flyer.size * 0.5
 		flyer.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		flyer.z_index = 32
 		flyer.add_theme_stylebox_override(
 			"panel",
-			_create_flat_style(Color(0.04, 0.055, 0.12, 0.97), Color(0.83, 0.72, 0.98, 1.0), 2, 18, 7)
+			StyleBoxEmpty.new()
 		)
+
+		var flyer_visual_root := Control.new()
+		flyer_visual_root.custom_minimum_size = Vector2(62.0, 62.0)
+		flyer_visual_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		flyer.add_child(flyer_visual_root)
+
+		var flyer_shadow := TextureRect.new()
+		flyer_shadow.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		flyer_shadow.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		flyer_shadow.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		flyer_shadow.modulate = Color(0.0, 0.0, 0.0, 0.34)
+		_set_control_layout(flyer_shadow, 0.0, 0.0, 1.0, 1.0, 5.0, 7.0, 5.0, 7.0)
+		flyer_visual_root.add_child(flyer_shadow)
 
 		var flyer_image := TextureRect.new()
 		flyer_image.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 		flyer_image.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 		flyer_image.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		flyer_image.visible = false
-		flyer.add_child(flyer_image)
+		flyer_image.material = _create_social_emoji_shine_material()
+		_set_control_layout(flyer_image, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0)
+		flyer_visual_root.add_child(flyer_image)
 
 		var flyer_label := Label.new()
 		flyer_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		flyer_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 		flyer_label.add_theme_font_size_override("font_size", 31)
-		flyer.add_child(flyer_label)
+		flyer_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_set_control_layout(flyer_label, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0)
+		flyer_visual_root.add_child(flyer_label)
 		players_container.add_child(flyer)
 		sticker_flyers.append(flyer)
 		sticker_flyer_images.append(flyer_image)
+		sticker_flyer_shadows.append(flyer_shadow)
 		sticker_flyer_labels.append(flyer_label)
 
 
@@ -9513,12 +9897,17 @@ func _build_sticker_choice_picker() -> void:
 	sticker_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	sticker_picker_content.add_child(sticker_scroll)
 
+	var sticker_grid_center := CenterContainer.new()
+	sticker_grid_center.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	sticker_grid_center.custom_minimum_size = Vector2(0.0, 84.0)
+	sticker_scroll.add_child(sticker_grid_center)
+
 	var sticker_grid := GridContainer.new()
 	sticker_grid.columns = 5
-	sticker_grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	sticker_grid.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	sticker_grid.add_theme_constant_override("h_separation", 4)
 	sticker_grid.add_theme_constant_override("v_separation", 4)
-	sticker_scroll.add_child(sticker_grid)
+	sticker_grid_center.add_child(sticker_grid)
 	var stickers := _get_network_available_stickers() if _is_steam_p2p_main_table_active() else _get_available_stickers()
 	for sticker in stickers:
 		var sticker_button := Button.new()
@@ -9528,12 +9917,17 @@ func _build_sticker_choice_picker() -> void:
 		sticker_button.expand_icon = sticker_texture != null
 		sticker_button.tooltip_text = str(sticker.get("tooltip", "Отправить стикер"))
 		sticker_button.custom_minimum_size = Vector2(58.0, 42.0)
+		sticker_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		sticker_button.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		sticker_button.alignment = HORIZONTAL_ALIGNMENT_CENTER
 		sticker_button.add_theme_font_size_override("font_size", 23)
+		sticker_button.add_theme_constant_override("icon_max_width", 40)
+		_apply_bare_social_icon_button_style(sticker_button)
 		sticker_button.pressed.connect(_on_sticker_selected.bind(sticker))
 		sticker_grid.add_child(sticker_button)
 
 
-func _get_available_stickers() -> Array[Dictionary]:
+func _get_builtin_stickers() -> Array[Dictionary]:
 	var stickers: Array[Dictionary] = [
 		{"symbol": "🍫", "tooltip": "Шоколад"},
 		{"symbol": "☕", "tooltip": "Кофе"},
@@ -9546,6 +9940,13 @@ func _get_available_stickers() -> Array[Dictionary]:
 		{"symbol": "🏆", "tooltip": "Кубок"},
 		{"symbol": "💩", "tooltip": "Сюрприз"}
 	]
+	for sticker in stickers:
+		sticker["texture"] = _get_social_emoji_texture(str(sticker.get("symbol", "")))
+	return stickers
+
+
+func _get_available_stickers() -> Array[Dictionary]:
+	var stickers := _get_builtin_stickers()
 	var sticker_directory: DirAccess = DirAccess.open("res://Assets/Stickers")
 	if sticker_directory == null:
 		return stickers
@@ -9570,18 +9971,14 @@ func _get_available_stickers() -> Array[Dictionary]:
 
 
 func _get_network_available_stickers() -> Array[Dictionary]:
-	return [
-		{"symbol": "🍫", "tooltip": "Шоколад"},
-		{"symbol": "☕", "tooltip": "Кофе"},
-		{"symbol": "🍺", "tooltip": "Пиво"},
-		{"symbol": "💋", "tooltip": "Поцелуй"},
-		{"symbol": "♥", "tooltip": "Сердечко"},
-		{"symbol": "🌹", "tooltip": "Роза"},
-		{"symbol": "🍰", "tooltip": "Тортик"},
-		{"symbol": "🧸", "tooltip": "Мишка"},
-		{"symbol": "🏆", "tooltip": "Кубок"},
-		{"symbol": "💩", "tooltip": "Сюрприз"}
-	]
+	return _get_builtin_stickers()
+
+
+func _get_builtin_sticker_by_symbol(symbol: String) -> Dictionary:
+	for sticker in _get_builtin_stickers():
+		if str(sticker.get("symbol", "")) == symbol:
+			return sticker
+	return {"symbol": symbol, "tooltip": "Подарок"}
 
 
 func _on_sticker_selected(sticker: Dictionary) -> void:
@@ -9617,15 +10014,21 @@ func _show_sticker_flyer(sticker: Dictionary, source_player_index: int, target_p
 
 	var flyer := sticker_flyers[target_player_index]
 	var flyer_image := sticker_flyer_images[target_player_index]
+	var flyer_shadow := sticker_flyer_shadows[target_player_index]
 	var flyer_label := sticker_flyer_labels[target_player_index]
 	var sticker_texture: Texture2D = sticker.get("texture", null) as Texture2D
+	if sticker_texture == null:
+		sticker_texture = _get_social_emoji_texture(str(sticker.get("symbol", "")))
 	flyer_image.texture = sticker_texture
 	flyer_image.visible = sticker_texture != null
+	flyer_shadow.texture = sticker_texture
+	flyer_shadow.visible = sticker_texture != null
 	flyer_label.visible = sticker_texture == null
 	flyer_label.text = str(sticker.get("symbol", ""))
 	flyer.visible = true
 	flyer.modulate = Color.WHITE
-	flyer.scale = Vector2.ONE
+	flyer.scale = Vector2(0.54, 0.54)
+	flyer.rotation = deg_to_rad(-10.0)
 
 	var existing_tween: Tween = sticker_flyer_tweens.get(target_player_index) as Tween
 	if is_instance_valid(existing_tween):
@@ -9636,11 +10039,22 @@ func _show_sticker_flyer(sticker: Dictionary, source_player_index: int, target_p
 	var target_center := avatar_badges[target_player_index].get_global_rect().get_center()
 	flyer.global_position = source_center - flyer_size * 0.5
 
-	var flyer_tween := create_tween()
+	var shine_material := flyer_image.material as ShaderMaterial
+	if shine_material != null:
+		shine_material.set_shader_parameter("shine_progress", -0.5)
+	var flyer_tween := create_tween().set_parallel(true)
 	sticker_flyer_tweens[target_player_index] = flyer_tween
-	flyer_tween.tween_property(flyer, "global_position", target_center - flyer_size * 0.5, STICKER_FLY_DURATION)
+	flyer_tween.tween_property(flyer, "global_position", target_center - flyer_size * 0.5, STICKER_FLY_DURATION).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	flyer_tween.tween_property(flyer, "scale", Vector2(1.14, 1.14), 0.42).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	flyer_tween.tween_property(flyer, "rotation", deg_to_rad(4.0), 0.42).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	if shine_material != null:
+		flyer_tween.tween_property(shine_material, "shader_parameter/shine_progress", 2.25, 0.55)
+	flyer_tween.set_parallel(false)
+	flyer_tween.tween_property(flyer, "scale", Vector2.ONE, 0.16)
+	flyer_tween.parallel().tween_property(flyer, "rotation", 0.0, 0.16)
 	flyer_tween.tween_interval(STICKER_HOLD_DURATION)
 	flyer_tween.tween_property(flyer, "modulate:a", 0.0, 0.22)
+	flyer_tween.parallel().tween_property(flyer, "scale", Vector2(0.82, 0.82), 0.22)
 	flyer_tween.tween_callback(_hide_sticker_flyer.bind(target_player_index))
 
 
