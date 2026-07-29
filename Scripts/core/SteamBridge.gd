@@ -4,14 +4,30 @@ extends RefCounted
 
 signal lobby_status_changed
 signal lobby_joined_successfully
+signal lobby_browser_updated
+
+
+enum LobbyVisibility {
+	PRIVATE,
+	FRIENDS_ONLY,
+	PUBLIC,
+}
 
 
 const STEAM_SINGLETON_NAME := &"Steam"
 const TEST_APP_ID := 480
+const LOBBY_TYPE_PRIVATE := 0
 const LOBBY_TYPE_FRIENDS_ONLY := 1
+const LOBBY_TYPE_PUBLIC := 2
 const LOBBY_MEMBER_LIMIT := 4
 const STEAM_RESULT_OK := 1
 const LOBBY_JOIN_RESPONSE_SUCCESS := 1
+const LOBBY_COMPARISON_EQUAL := 0
+const LOBBY_DISTANCE_WORLDWIDE := 3
+const FRIEND_FLAG_IMMEDIATE := 4
+const LOBBY_BROWSER_RESULT_LIMIT := 50
+const LOBBY_STATE_WAITING := "waiting"
+const LOBBY_STATE_PLAYING := "playing"
 const P2P_MATCH_CHANNEL := 42
 const P2P_SEND_RELIABLE := 2
 const MAX_P2P_PACKET_BYTES := 32 * 1024
@@ -29,6 +45,14 @@ var _lobby_id := 0
 var _lobby_status := "Steam-комната ещё не создана."
 var _local_lobby_ready := false
 var _pending_join_source := ""
+var _pending_lobby_visibility: LobbyVisibility = LobbyVisibility.FRIENDS_ONLY
+var _public_lobbies: Array[Dictionary] = []
+var _friend_lobbies: Array[Dictionary] = []
+var _friend_lobby_ids: Dictionary = {}
+var _known_public_lobby_ids: Dictionary = {}
+var _requested_summary_lobby_ids: Dictionary = {}
+var _unavailable_lobby_ids: Dictionary = {}
+var _lobby_browser_status := "Список комнат ещё не обновлялся."
 
 
 func is_p2p_transport_available() -> bool:
@@ -245,6 +269,10 @@ func process_callbacks() -> void:
 
 
 func create_friends_lobby() -> Dictionary:
+	return create_lobby(LobbyVisibility.FRIENDS_ONLY)
+
+
+func create_lobby(visibility: int = LobbyVisibility.FRIENDS_ONLY) -> Dictionary:
 	if not _initialized:
 		_lobby_status = "Сначала подключи Steam-клиент."
 		lobby_status_changed.emit()
@@ -261,10 +289,83 @@ func create_friends_lobby() -> Dictionary:
 		return get_lobby_state()
 
 	_ensure_lobby_callbacks(steam_api)
-	_lobby_status = "Создаём закрытую Steam-комнату на четыре места…"
-	steam_api.call(&"createLobby", LOBBY_TYPE_FRIENDS_ONLY, LOBBY_MEMBER_LIMIT)
+	_pending_lobby_visibility = clampi(
+		visibility,
+		LobbyVisibility.PRIVATE,
+		LobbyVisibility.PUBLIC
+	)
+	_lobby_status = "Создаём Steam-комнату «%s» на четыре места…" % _get_visibility_label(_pending_lobby_visibility)
+	steam_api.call(&"createLobby", _get_steam_lobby_type(_pending_lobby_visibility), LOBBY_MEMBER_LIMIT)
 	lobby_status_changed.emit()
 	return get_lobby_state()
+
+
+func request_lobby_browser() -> Dictionary:
+	if not _initialized:
+		_lobby_browser_status = "Steam не подключён. Запусти игру через Steam и обнови список."
+		lobby_browser_updated.emit()
+		return get_lobby_browser_state()
+
+	var steam_api := _get_steam_api()
+	if steam_api == null:
+		_lobby_browser_status = "Steam API недоступен."
+		lobby_browser_updated.emit()
+		return get_lobby_browser_state()
+
+	_collect_friend_lobby_ids(steam_api)
+	if (
+		not steam_api.has_method(&"requestLobbyList")
+		or not steam_api.has_method(&"addRequestLobbyListStringFilter")
+	):
+		_lobby_browser_status = "Эта версия Steam API не поддерживает поиск комнат."
+		lobby_browser_updated.emit()
+		return get_lobby_browser_state()
+
+	steam_api.call(&"addRequestLobbyListStringFilter", "project", "project_joker", LOBBY_COMPARISON_EQUAL)
+	steam_api.call(&"addRequestLobbyListStringFilter", "protocol", "5", LOBBY_COMPARISON_EQUAL)
+	steam_api.call(&"addRequestLobbyListStringFilter", "state", LOBBY_STATE_WAITING, LOBBY_COMPARISON_EQUAL)
+	if steam_api.has_method(&"addRequestLobbyListFilterSlotsAvailable"):
+		steam_api.call(&"addRequestLobbyListFilterSlotsAvailable", 1)
+	if steam_api.has_method(&"addRequestLobbyListDistanceFilter"):
+		steam_api.call(&"addRequestLobbyListDistanceFilter", LOBBY_DISTANCE_WORLDWIDE)
+	if steam_api.has_method(&"addRequestLobbyListResultCountFilter"):
+		steam_api.call(&"addRequestLobbyListResultCountFilter", LOBBY_BROWSER_RESULT_LIMIT)
+	_lobby_browser_status = "Ищем открытые комнаты…"
+	steam_api.call(&"requestLobbyList")
+	lobby_browser_updated.emit()
+	return get_lobby_browser_state()
+
+
+func request_lobby_summary(lobby_id: int) -> bool:
+	var steam_api := _get_steam_api()
+	if not _initialized or lobby_id <= 0 or steam_api == null or not steam_api.has_method(&"requestLobbyData"):
+		return false
+	_unavailable_lobby_ids.erase(lobby_id)
+	_requested_summary_lobby_ids[lobby_id] = true
+	return bool(steam_api.call(&"requestLobbyData", lobby_id))
+
+
+func get_lobby_summary(lobby_id: int) -> Dictionary:
+	if lobby_id <= 0:
+		return {}
+	var summary := _create_lobby_summary(lobby_id)
+	if summary.is_empty():
+		return {
+			"lobby_id": lobby_id,
+			"available": false,
+			"confirmed_missing": _unavailable_lobby_ids.has(lobby_id),
+		}
+	summary["available"] = true
+	return summary
+
+
+func get_lobby_browser_state() -> Dictionary:
+	return {
+		"initialized": _initialized,
+		"status": _lobby_browser_status,
+		"public_lobbies": _public_lobbies.duplicate(true),
+		"friend_lobbies": _friend_lobbies.duplicate(true),
+	}
 
 
 func open_lobby_invite_overlay() -> Dictionary:
@@ -423,6 +524,23 @@ func set_lobby_history_mode(history_mode: int) -> Dictionary:
 	return get_lobby_state()
 
 
+func set_lobby_match_state(match_state: String) -> Dictionary:
+	if _lobby_id <= 0:
+		return get_lobby_state()
+	var safe_state := match_state if match_state in [LOBBY_STATE_WAITING, LOBBY_STATE_PLAYING] else LOBBY_STATE_WAITING
+	var steam_api := _get_steam_api()
+	if (
+		steam_api == null
+		or not steam_api.has_method(&"setLobbyData")
+		or not steam_api.has_method(&"getLobbyOwner")
+		or int(steam_api.call(&"getLobbyOwner", _lobby_id)) != get_local_steam_id()
+	):
+		return get_lobby_state()
+	steam_api.call(&"setLobbyData", _lobby_id, "state", safe_state)
+	lobby_status_changed.emit()
+	return get_lobby_state()
+
+
 func leave_lobby() -> Dictionary:
 	if _lobby_id <= 0:
 		_lobby_status = "Активной Steam-комнаты нет."
@@ -435,7 +553,7 @@ func leave_lobby() -> Dictionary:
 	_lobby_id = 0
 	_local_lobby_ready = false
 	_pending_join_source = ""
-	_lobby_status = "Ты вышел из тестовой Steam-комнаты."
+	_lobby_status = "Ты вышел из Steam-комнаты."
 	lobby_status_changed.emit()
 	return get_lobby_state()
 
@@ -447,6 +565,10 @@ func get_lobby_state() -> Dictionary:
 	var fill_empty_seats_with_bots := false
 	var bot_difficulty := 1
 	var history_mode := 0
+	var visibility := LobbyVisibility.FRIENDS_ONLY
+	var match_state := LOBBY_STATE_WAITING
+	var host_name := ""
+	var protocol := 0
 	var members: Array[Dictionary] = []
 	var steam_api := _get_steam_api()
 	if _lobby_id > 0 and steam_api != null:
@@ -464,6 +586,16 @@ func get_lobby_state() -> Dictionary:
 			var saved_history_mode := str(steam_api.call(&"getLobbyData", _lobby_id, "pj_history_mode"))
 			if not saved_history_mode.is_empty():
 				history_mode = clampi(int(saved_history_mode), 0, 1)
+			visibility = clampi(
+				int(steam_api.call(&"getLobbyData", _lobby_id, "pj_visibility")),
+				LobbyVisibility.PRIVATE,
+				LobbyVisibility.PUBLIC
+			)
+			match_state = str(steam_api.call(&"getLobbyData", _lobby_id, "state"))
+			if match_state.is_empty():
+				match_state = LOBBY_STATE_WAITING
+			host_name = str(steam_api.call(&"getLobbyData", _lobby_id, "host_name"))
+			protocol = int(steam_api.call(&"getLobbyData", _lobby_id, "protocol"))
 		members = _get_lobby_members(steam_api, member_count, lobby_owner)
 
 	return {
@@ -478,6 +610,11 @@ func get_lobby_state() -> Dictionary:
 		"fill_empty_seats_with_bots": fill_empty_seats_with_bots,
 		"bot_difficulty": bot_difficulty,
 		"history_mode": history_mode,
+		"visibility": visibility,
+		"visibility_label": _get_visibility_label(visibility),
+		"match_state": match_state,
+		"host_name": host_name,
+		"protocol": protocol,
 		"bot_count": maxi(0, member_limit - member_count) if fill_empty_seats_with_bots else 0,
 	}
 
@@ -500,6 +637,8 @@ func _ensure_lobby_callbacks(steam_api: Object) -> void:
 		steam_api.connect(&"lobby_chat_update", _on_lobby_chat_update)
 	if steam_api.has_signal(&"lobby_data_update"):
 		steam_api.connect(&"lobby_data_update", _on_lobby_data_update)
+	if steam_api.has_signal(&"lobby_match_list"):
+		steam_api.connect(&"lobby_match_list", _on_lobby_match_list)
 	if steam_api.has_signal(&"lobby_invite"):
 		steam_api.connect(&"lobby_invite", _on_lobby_invite)
 	if steam_api.has_signal(&"join_requested"):
@@ -518,12 +657,15 @@ func _on_lobby_created(result: int, lobby_id: int) -> void:
 		return
 
 	_lobby_id = lobby_id
-	_lobby_status = "Закрытая Steam-комната создана. Ожидаем игроков."
+	_lobby_status = "Steam-комната «%s» создана. Ожидаем игроков." % _get_visibility_label(_pending_lobby_visibility)
 	var steam_api := _get_steam_api()
 	if steam_api != null:
 		steam_api.call(&"setLobbyData", _lobby_id, "project", "project_joker")
 		steam_api.call(&"setLobbyData", _lobby_id, "protocol", "5")
-		steam_api.call(&"setLobbyData", _lobby_id, "mode", "prototype")
+		steam_api.call(&"setLobbyData", _lobby_id, "mode", "standard")
+		steam_api.call(&"setLobbyData", _lobby_id, "state", LOBBY_STATE_WAITING)
+		steam_api.call(&"setLobbyData", _lobby_id, "pj_visibility", str(_pending_lobby_visibility))
+		steam_api.call(&"setLobbyData", _lobby_id, "host_name", _persona_name.left(40))
 		steam_api.call(&"setLobbyData", _lobby_id, "max_seats", str(LOBBY_MEMBER_LIMIT))
 		steam_api.call(&"setLobbyData", _lobby_id, "pj_fill_bots", "0")
 		steam_api.call(&"setLobbyData", _lobby_id, "pj_bot_difficulty", "1")
@@ -560,6 +702,33 @@ func _on_lobby_chat_update(lobby_id: int, _changed_id: int, _making_change_id: i
 func _on_lobby_data_update(success: int, lobby_id: int, _member_id: int) -> void:
 	if success == STEAM_RESULT_OK and lobby_id == _lobby_id:
 		lobby_status_changed.emit()
+	if _requested_summary_lobby_ids.has(lobby_id) and success != STEAM_RESULT_OK:
+		_requested_summary_lobby_ids.erase(lobby_id)
+		_unavailable_lobby_ids[lobby_id] = true
+		lobby_browser_updated.emit()
+	elif success == STEAM_RESULT_OK and (
+		_friend_lobby_ids.has(lobby_id)
+		or _known_public_lobby_ids.has(lobby_id)
+		or _requested_summary_lobby_ids.has(lobby_id)
+	):
+		_requested_summary_lobby_ids.erase(lobby_id)
+		_unavailable_lobby_ids.erase(lobby_id)
+		_rebuild_browser_lobbies()
+		lobby_browser_updated.emit()
+
+
+func _on_lobby_match_list(lobbies: Array) -> void:
+	_known_public_lobby_ids.clear()
+	for lobby_id_variant in lobbies:
+		var lobby_id := int(lobby_id_variant)
+		if lobby_id > 0:
+			_known_public_lobby_ids[lobby_id] = true
+	_rebuild_browser_lobbies()
+	_lobby_browser_status = "Открытых комнат найдено: %d. Комнат друзей: %d." % [
+		_public_lobbies.size(),
+		_friend_lobbies.size(),
+	]
+	lobby_browser_updated.emit()
 
 
 func _on_lobby_invite(inviter_id: int, _lobby_id_from_invite: int, _game_id: int) -> void:
@@ -613,6 +782,125 @@ func _get_persona_name(steam_id: int) -> String:
 		if not persona_name.is_empty():
 			return persona_name
 	return "Игрок %d" % steam_id
+
+
+func _collect_friend_lobby_ids(steam_api: Object) -> void:
+	_friend_lobby_ids.clear()
+	if (
+		not steam_api.has_method(&"getFriendCount")
+		or not steam_api.has_method(&"getFriendByIndex")
+		or not steam_api.has_method(&"getFriendGamePlayed")
+	):
+		_friend_lobbies.clear()
+		return
+
+	var friend_count := int(steam_api.call(&"getFriendCount", FRIEND_FLAG_IMMEDIATE))
+	for friend_index in friend_count:
+		var friend_steam_id := int(steam_api.call(&"getFriendByIndex", friend_index, FRIEND_FLAG_IMMEDIATE))
+		if friend_steam_id <= 0:
+			continue
+		var game_info_variant: Variant = steam_api.call(&"getFriendGamePlayed", friend_steam_id)
+		if not (game_info_variant is Dictionary):
+			continue
+		var game_info: Dictionary = game_info_variant
+		var friend_lobby_id := _extract_friend_lobby_id(game_info)
+		if friend_lobby_id <= 0:
+			continue
+		_friend_lobby_ids[friend_lobby_id] = _get_persona_name(friend_steam_id)
+		if steam_api.has_method(&"requestLobbyData"):
+			steam_api.call(&"requestLobbyData", friend_lobby_id)
+	_rebuild_browser_lobbies()
+
+
+func _extract_friend_lobby_id(game_info: Dictionary) -> int:
+	for key in ["lobby", "lobby_id", "steam_id_lobby", "steamIDLobby"]:
+		if game_info.has(key):
+			var lobby_id := int(game_info.get(key, 0))
+			if lobby_id > 0:
+				return lobby_id
+	return 0
+
+
+func _rebuild_browser_lobbies() -> void:
+	_public_lobbies.clear()
+	for lobby_id_variant in _known_public_lobby_ids.keys():
+		var summary := _create_lobby_summary(int(lobby_id_variant))
+		if not summary.is_empty() and str(summary.get("match_state", "")) == LOBBY_STATE_WAITING:
+			_public_lobbies.append(summary)
+
+	_friend_lobbies.clear()
+	for lobby_id_variant in _friend_lobby_ids.keys():
+		var lobby_id := int(lobby_id_variant)
+		var summary := _create_lobby_summary(lobby_id)
+		if summary.is_empty():
+			continue
+		summary["friend_name"] = str(_friend_lobby_ids[lobby_id])
+		_friend_lobbies.append(summary)
+	_sort_lobby_summaries(_public_lobbies)
+	_sort_lobby_summaries(_friend_lobbies)
+
+
+func _sort_lobby_summaries(lobbies: Array[Dictionary]) -> void:
+	lobbies.sort_custom(
+		func(first: Dictionary, second: Dictionary) -> bool:
+			var first_count := int(first.get("member_count", 0))
+			var second_count := int(second.get("member_count", 0))
+			if first_count != second_count:
+				return first_count > second_count
+			return int(first.get("lobby_id", 0)) < int(second.get("lobby_id", 0))
+	)
+
+
+func _create_lobby_summary(lobby_id: int) -> Dictionary:
+	var steam_api := _get_steam_api()
+	if not _initialized or lobby_id <= 0 or steam_api == null or not steam_api.has_method(&"getLobbyData"):
+		return {}
+	var project_name := str(steam_api.call(&"getLobbyData", lobby_id, "project"))
+	var protocol := int(steam_api.call(&"getLobbyData", lobby_id, "protocol"))
+	if project_name != "project_joker" or protocol != 5:
+		return {}
+
+	var member_count := int(steam_api.call(&"getNumLobbyMembers", lobby_id)) if steam_api.has_method(&"getNumLobbyMembers") else 0
+	var member_limit := int(steam_api.call(&"getLobbyMemberLimit", lobby_id)) if steam_api.has_method(&"getLobbyMemberLimit") else LOBBY_MEMBER_LIMIT
+	var visibility := clampi(
+		int(steam_api.call(&"getLobbyData", lobby_id, "pj_visibility")),
+		LobbyVisibility.PRIVATE,
+		LobbyVisibility.PUBLIC
+	)
+	var match_state := str(steam_api.call(&"getLobbyData", lobby_id, "state"))
+	if match_state.is_empty():
+		match_state = LOBBY_STATE_WAITING
+	return {
+		"lobby_id": lobby_id,
+		"host_name": str(steam_api.call(&"getLobbyData", lobby_id, "host_name")),
+		"member_count": member_count,
+		"member_limit": member_limit if member_limit > 0 else LOBBY_MEMBER_LIMIT,
+		"visibility": visibility,
+		"visibility_label": _get_visibility_label(visibility),
+		"match_state": match_state,
+		"fill_empty_seats_with_bots": str(steam_api.call(&"getLobbyData", lobby_id, "pj_fill_bots")) == "1",
+		"bot_difficulty": clampi(int(steam_api.call(&"getLobbyData", lobby_id, "pj_bot_difficulty")), 0, 2),
+		"history_mode": clampi(int(steam_api.call(&"getLobbyData", lobby_id, "pj_history_mode")), 0, 1),
+		"protocol": protocol,
+	}
+
+
+func _get_steam_lobby_type(visibility: int) -> int:
+	match visibility:
+		LobbyVisibility.PRIVATE:
+			return LOBBY_TYPE_PRIVATE
+		LobbyVisibility.PUBLIC:
+			return LOBBY_TYPE_PUBLIC
+	return LOBBY_TYPE_FRIENDS_ONLY
+
+
+func _get_visibility_label(visibility: int) -> String:
+	match visibility:
+		LobbyVisibility.PRIVATE:
+			return "по приглашению"
+		LobbyVisibility.PUBLIC:
+			return "открытая"
+	return "только для друзей"
 
 
 func _get_launch_lobby_id() -> int:

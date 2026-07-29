@@ -66,9 +66,10 @@ const CHAT_VISIBLE_MESSAGE_LIMIT := 40
 const BUILT_IN_AVATAR_COUNT := 4
 const CUSTOM_AVATAR_INDEX := BUILT_IN_AVATAR_COUNT
 const HUMAN_AVATAR_COUNT := BUILT_IN_AVATAR_COUNT + 1
+const LOCAL_BOT_AVATAR_INDICES: Array[int] = [1, 2, 0]
 const GAME_VERSION := "0.3.8"
-# Перед публичным экспортом поставь false: игрок сможет создать отчёт, но не
-# увидит внутреннюю кнопку его загрузки. После экспорта можно вернуть true.
+# Внутренний просмотр отчётов доступен только при запуске из редактора и может
+# быть дополнительно отключён этим переключателем. Создание отчёта игроком не зависит от него.
 const DEVELOPER_REPORT_TOOLS_ENABLED := true
 const PERSISTENT_SETTINGS_PATH := "user://project_joker_settings.cfg"
 const SESSION_SAVE_PATH := "user://project_joker_session.save"
@@ -260,6 +261,13 @@ enum TableSurroundTheme {
 }
 
 
+enum OnlineHubTab {
+	OPEN_TABLES,
+	CREATE_ROOM,
+	MY_GAMES
+}
+
+
 @onready var phase_label: Label = %PhaseLabel
 @onready var trump_label: RichTextLabel = %TrumpLabel
 @onready var background: ColorRect = %Background
@@ -322,6 +330,13 @@ var steam_p2p_prepare_with_bots_button: Button
 var steam_p2p_start_round_button: Button
 var steam_p2p_open_table_button: Button
 var steam_lobby_leave_button: Button
+var online_hub_tab: OnlineHubTab = OnlineHubTab.OPEN_TABLES
+var online_hub_is_open := false
+var online_lobby_visibility_selector: OptionButton
+var active_online_lobby_id := 0
+var active_online_host_steam_id := 0
+var active_online_match_started := false
+var pending_online_reconnect := false
 var player_labels: Array[Label] = []
 var player_stats_labels: Array[RichTextLabel] = []
 var player_score_labels: Array[Label] = []
@@ -485,7 +500,6 @@ var configured_avatar_indices: Array[int] = [0, 1, 2, 3]
 var custom_profile_avatar_path := ""
 var network_avatar_texture_cache: Dictionary = {}
 var new_game_name_inputs: Array[LineEdit] = []
-var new_game_avatar_selectors: Array[OptionButton] = []
 var new_game_bot_difficulty_selector: OptionButton
 var new_game_history_mode_selector: OptionButton
 var profile_name_input: LineEdit
@@ -495,7 +509,6 @@ var profile_avatar_preview: TextureRect
 var profile_avatar_preview_placeholder: Label
 var profile_avatar_file_dialog: FileDialog
 var pending_profile_avatar_path := ""
-var is_avatar_file_dialog_for_new_game := false
 var bug_report_file_dialog: FileDialog
 var bug_report_description_input: TextEdit
 var bug_report_status_label: Label
@@ -624,6 +637,7 @@ func _ready() -> void:
 	bot_random.randomize()
 	steam_bridge.lobby_status_changed.connect(_refresh_steam_lobby_status)
 	steam_bridge.lobby_joined_successfully.connect(_on_steam_lobby_joined_successfully)
+	steam_bridge.lobby_browser_updated.connect(_on_steam_lobby_browser_updated)
 	_run_joker_rule_checks()
 	_run_score_rule_checks()
 	_run_dark_round_checks()
@@ -1061,18 +1075,19 @@ func _on_menu_backdrop_gui_input(event: InputEvent) -> void:
 
 
 func _build_main_menu_content() -> void:
+	online_hub_is_open = false
 	_clear_children(menu_content)
-	_add_menu_title("PROJECT JOKER", "Локальная карточная партия для четырёх игроков · %s" % _get_build_version_text())
+	_add_menu_title("PROJECT JOKER", "Карточная игра для четырёх игроков · %s" % _get_build_version_text())
 	_add_menu_spacer(18.0)
 	if _has_saved_session():
 		_add_menu_button("Продолжить партию", _on_continue_saved_game_pressed, true)
-	_add_menu_button("Новая партия", _show_new_game_setup, true)
+	_add_menu_button("Новая игра с ботами", _show_new_game_setup, true)
+	_add_menu_button("Играть по сети", _show_online_hub.bind(OnlineHubTab.OPEN_TABLES, true), true)
 	_add_menu_button("Обучение", _show_tutorial_menu)
 	_add_menu_button("Профиль", _show_profile_menu)
 	_add_menu_button("Статистика", _show_statistics_menu)
 	if _developer_report_tools_enabled():
 		_add_menu_button("Инструменты разработчика", _show_developer_tools_menu)
-	_add_menu_button("Правила", _show_rules_menu)
 	_add_menu_button("Настройки", _show_settings_menu)
 	_add_menu_button("Выход", _on_quit_pressed)
 	_add_menu_spacer(12.0)
@@ -1080,7 +1095,7 @@ func _build_main_menu_content() -> void:
 
 
 func _developer_report_tools_enabled() -> bool:
-	return DEVELOPER_REPORT_TOOLS_ENABLED
+	return DEVELOPER_REPORT_TOOLS_ENABLED and OS.has_feature("editor")
 
 
 func _get_build_version_text() -> String:
@@ -1088,6 +1103,7 @@ func _get_build_version_text() -> String:
 
 
 func _show_developer_tools_menu() -> void:
+	online_hub_is_open = false
 	_clear_children(menu_content)
 	_add_menu_title("Инструменты разработчика", "Локальные проверки, отчёты и подготовка Steam — эти пункты не войдут в публичное меню")
 	_add_menu_spacer(14.0)
@@ -1100,7 +1116,283 @@ func _show_developer_tools_menu() -> void:
 	_add_menu_button("Назад", _build_main_menu_content)
 
 
+func _show_online_hub(tab: int = OnlineHubTab.OPEN_TABLES, request_refresh := false) -> void:
+	is_pause_menu_open = false
+	online_hub_is_open = true
+	online_hub_tab = clampi(tab, OnlineHubTab.OPEN_TABLES, OnlineHubTab.MY_GAMES)
+	menu_overlay.visible = true
+	_clear_children(menu_content)
+	_add_menu_title("Играть по сети", "Открытые столы, комнаты друзей и возвращение в незавершённую партию")
+	_add_menu_spacer(10.0)
+	_add_online_hub_tabs()
+	_add_menu_spacer(12.0)
+
+	var lobby_state: Dictionary = steam_bridge.get_lobby_state()
+	if not bool(lobby_state.get("initialized", false)):
+		steam_bridge.initialize_for_diagnostics()
+
+	match online_hub_tab:
+		OnlineHubTab.CREATE_ROOM:
+			_build_online_create_room_tab()
+		OnlineHubTab.MY_GAMES:
+			_build_online_my_games_tab()
+		_:
+			_build_online_open_tables_tab()
+
+	_add_menu_spacer(14.0)
+	_add_menu_button("Назад", _build_main_menu_content)
+	if request_refresh and online_hub_tab == OnlineHubTab.OPEN_TABLES:
+		call_deferred("_request_online_lobby_browser")
+
+
+func _add_online_hub_tabs() -> void:
+	var tabs := HBoxContainer.new()
+	tabs.add_theme_constant_override("separation", 8)
+	menu_content.add_child(tabs)
+	var tab_labels := ["Открытые столы", "Создать комнату", "Мои игры"]
+	for tab_index in tab_labels.size():
+		var button := _create_menu_button(
+			tab_labels[tab_index],
+			_show_online_hub.bind(tab_index, tab_index == OnlineHubTab.OPEN_TABLES),
+			tab_index == online_hub_tab
+		)
+		button.name = "OnlineHubTab%d" % tab_index
+		button.custom_minimum_size = Vector2(0.0, 42.0)
+		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		button.add_theme_font_size_override("font_size", 16)
+		button.disabled = tab_index == online_hub_tab
+		tabs.add_child(button)
+
+
+func _build_online_open_tables_tab() -> void:
+	var browser_state: Dictionary = steam_bridge.get_lobby_browser_state()
+	var initialized := bool(browser_state.get("initialized", false))
+	_add_menu_label(
+		str(browser_state.get("status", "Список комнат ещё не обновлялся.")),
+		15,
+		Color(0.72, 0.9, 0.62, 1.0) if initialized else Color(0.95, 0.68, 0.48, 1.0)
+	)
+	_add_menu_button("Обновить список", _request_online_lobby_browser, true)
+
+	var friend_lobbies: Array = browser_state.get("friend_lobbies", [])
+	var public_lobbies: Array = browser_state.get("public_lobbies", [])
+	_add_menu_spacer(8.0)
+	_add_menu_label("Комнаты друзей", 19, Color(0.97, 0.86, 0.55, 1.0))
+	if friend_lobbies.is_empty():
+		_add_menu_label("Сейчас друзья не находятся в доступных комнатах Project Joker.", 14, Color(0.72, 0.85, 0.76, 1.0))
+	else:
+		for lobby_variant in friend_lobbies:
+			if lobby_variant is Dictionary:
+				_add_online_lobby_button(lobby_variant as Dictionary, true)
+
+	_add_menu_spacer(8.0)
+	_add_menu_label("Открытые столы", 19, Color(0.97, 0.86, 0.55, 1.0))
+	if public_lobbies.is_empty():
+		_add_menu_label("Открытых столов пока нет. Можно создать свой и дождаться игроков.", 14, Color(0.72, 0.85, 0.76, 1.0))
+	else:
+		for lobby_variant in public_lobbies:
+			if lobby_variant is Dictionary:
+				_add_online_lobby_button(lobby_variant as Dictionary, false)
+
+
+func _add_online_lobby_button(summary: Dictionary, is_friend_lobby: bool) -> void:
+	var lobby_id := int(summary.get("lobby_id", 0))
+	if lobby_id <= 0:
+		return
+	var match_state := str(summary.get("match_state", SteamBridge.LOBBY_STATE_WAITING))
+	var host_name := str(summary.get("host_name", "")).strip_edges()
+	if host_name.is_empty():
+		host_name = "Steam-игрок"
+	var friend_prefix := "%s · " % str(summary.get("friend_name", "Друг")) if is_friend_lobby else ""
+	var state_text := "идёт партия" if match_state == SteamBridge.LOBBY_STATE_PLAYING else "ожидает игроков"
+	var label_text := "%s%s · %d/%d · %s · %s" % [
+		friend_prefix,
+		host_name,
+		int(summary.get("member_count", 0)),
+		int(summary.get("member_limit", 4)),
+		state_text,
+		_get_history_mode_label(int(summary.get("history_mode", NetworkHost.HistoryMode.FULL))),
+	]
+	var is_saved_match := lobby_id == active_online_lobby_id
+	var button := _add_menu_button(
+		("%sПереподключиться: " % ("★ " if is_saved_match else "")) + label_text
+			if match_state == SteamBridge.LOBBY_STATE_PLAYING and is_saved_match
+			else label_text,
+		_on_join_online_lobby_pressed.bind(lobby_id, match_state == SteamBridge.LOBBY_STATE_PLAYING),
+		is_saved_match
+	)
+	button.disabled = match_state == SteamBridge.LOBBY_STATE_PLAYING and not is_saved_match
+	button.tooltip_text = "Активная партия доступна только её первоначальным участникам." if button.disabled else "Войти в Steam-комнату"
+
+
+func _build_online_create_room_tab() -> void:
+	var lobby_state: Dictionary = steam_bridge.get_lobby_state()
+	var current_lobby_id := int(lobby_state.get("lobby_id", 0))
+	if current_lobby_id > 0:
+		_add_menu_label("Ты уже находишься в Steam-комнате.", 16, Color(0.72, 0.9, 0.62, 1.0))
+		_add_menu_button("Вернуться в комнату", _show_steam_lobby_menu, true)
+		return
+
+	_add_menu_label("Кто сможет увидеть и открыть комнату", 17)
+	online_lobby_visibility_selector = OptionButton.new()
+	online_lobby_visibility_selector.name = "OnlineLobbyVisibilitySelector"
+	online_lobby_visibility_selector.add_item("Открытая — видна всем", SteamBridge.LobbyVisibility.PUBLIC)
+	online_lobby_visibility_selector.add_item("Только для друзей", SteamBridge.LobbyVisibility.FRIENDS_ONLY)
+	online_lobby_visibility_selector.add_item("По приглашению", SteamBridge.LobbyVisibility.PRIVATE)
+	online_lobby_visibility_selector.select(1)
+	online_lobby_visibility_selector.custom_minimum_size = Vector2(0.0, 44.0)
+	online_lobby_visibility_selector.add_theme_font_size_override("font_size", 17)
+	menu_content.add_child(online_lobby_visibility_selector)
+	_add_menu_label(
+		"Открытая комната появится в общем списке. Комнату для друзей можно найти через друга или Steam. "
+		+ "Комната по приглашению нигде не показывается. Пароль добавим позже, если после тестов он действительно понадобится.",
+		14,
+		Color(0.72, 0.85, 0.76, 1.0)
+	)
+	_add_menu_spacer(10.0)
+	_add_menu_button("Создать комнату", _on_create_online_lobby_pressed, true)
+
+
+func _build_online_my_games_tab() -> void:
+	var current_lobby_state: Dictionary = steam_bridge.get_lobby_state()
+	var current_lobby_id := int(current_lobby_state.get("lobby_id", 0))
+	if current_lobby_id > 0:
+		_add_menu_label("Текущая Steam-комната", 19, Color(0.97, 0.86, 0.55, 1.0))
+		_add_menu_label(_get_online_lobby_summary_text(current_lobby_state), 16)
+		_add_menu_button(
+			"Открыть игровой стол" if steam_p2p_match != null and steam_p2p_match.is_running() else "Вернуться в комнату",
+			_on_return_to_current_online_game,
+			true
+		)
+		return
+
+	if active_online_lobby_id <= 0:
+		_add_menu_label("Незавершённых сетевых партий пока нет.", 16, Color(0.72, 0.85, 0.76, 1.0))
+		_add_menu_label("После входа в комнату она появится здесь автоматически.", 14, Color(0.72, 0.85, 0.76, 1.0))
+		return
+
+	var saved_summary: Dictionary = steam_bridge.get_lobby_summary(active_online_lobby_id)
+	_add_menu_label("Последняя активная игра", 19, Color(0.97, 0.86, 0.55, 1.0))
+	if bool(saved_summary.get("available", false)):
+		_add_menu_label(_get_online_lobby_summary_text(saved_summary), 16)
+	elif bool(saved_summary.get("confirmed_missing", false)):
+		_add_menu_label(
+			"Комната %d сейчас недоступна. Возможно, хост закрыл игру или потерял соединение." % active_online_lobby_id,
+			16,
+			Color(0.95, 0.68, 0.48, 1.0)
+		)
+	else:
+		_add_menu_label(
+			"Комната %d сохранена. Проверяем, продолжает ли хост держать партию…" % active_online_lobby_id,
+			16
+		)
+		steam_bridge.request_lobby_summary(active_online_lobby_id)
+	_add_menu_button(
+		"Переподключиться к партии" if active_online_match_started else "Вернуться в комнату",
+		_on_join_online_lobby_pressed.bind(active_online_lobby_id, active_online_match_started),
+		true
+	)
+	_add_menu_button("Убрать из списка", _forget_active_online_game)
+	_add_menu_label(
+		"Возврат возможен, пока хост остаётся в сети. Если хост закрыл игру, первая версия не сможет восстановить матч.",
+		14,
+		Color(0.72, 0.85, 0.76, 1.0)
+	)
+
+
+func _get_online_lobby_summary_text(summary: Dictionary) -> String:
+	var lobby_id := int(summary.get("lobby_id", 0))
+	var state_text := "партия идёт" if str(summary.get("match_state", "")) == SteamBridge.LOBBY_STATE_PLAYING else "ожидание игроков"
+	var host_name := str(summary.get("host_name", "")).strip_edges()
+	if host_name.is_empty():
+		host_name = "неизвестен"
+	return "Комната %d · хост: %s · %s · участников %d/%d" % [
+		lobby_id,
+		host_name,
+		state_text,
+		int(summary.get("member_count", 0)),
+		int(summary.get("member_limit", 4)),
+	]
+
+
+func _request_online_lobby_browser() -> void:
+	steam_bridge.request_lobby_browser()
+
+
+func _on_steam_lobby_browser_updated() -> void:
+	if not online_hub_is_open:
+		return
+	call_deferred("_show_online_hub", online_hub_tab, false)
+
+
+func _on_create_online_lobby_pressed() -> void:
+	var selected_visibility := SteamBridge.LobbyVisibility.FRIENDS_ONLY
+	if is_instance_valid(online_lobby_visibility_selector):
+		selected_visibility = online_lobby_visibility_selector.get_selected_id()
+	var lobby_state: Dictionary = steam_bridge.get_lobby_state()
+	if not bool(lobby_state.get("initialized", false)):
+		steam_bridge.initialize_for_diagnostics()
+	steam_bridge.create_lobby(selected_visibility)
+	_show_steam_lobby_menu()
+
+
+func _on_join_online_lobby_pressed(lobby_id: int, reconnect_to_match := false) -> void:
+	if lobby_id <= 0:
+		return
+	var lobby_state: Dictionary = steam_bridge.get_lobby_state()
+	if not bool(lobby_state.get("initialized", false)):
+		steam_bridge.initialize_for_diagnostics()
+	pending_online_reconnect = reconnect_to_match
+	steam_bridge.join_lobby(lobby_id, "списку комнат")
+	_show_steam_lobby_menu()
+
+
+func _on_return_to_current_online_game() -> void:
+	if steam_p2p_match != null and steam_p2p_match.is_running():
+		_on_open_steam_p2p_table_pressed()
+		return
+	_show_steam_lobby_menu()
+
+
+func _forget_active_online_game() -> void:
+	_clear_active_online_game_reference()
+	_show_online_hub(OnlineHubTab.MY_GAMES)
+
+
+func _clear_active_online_game_reference() -> void:
+	active_online_lobby_id = 0
+	active_online_host_steam_id = 0
+	active_online_match_started = false
+	pending_online_reconnect = false
+	_save_persistent_settings()
+
+
+func _remember_current_online_lobby() -> void:
+	var lobby_state: Dictionary = steam_bridge.get_lobby_state()
+	var lobby_id := int(lobby_state.get("lobby_id", 0))
+	if lobby_id <= 0:
+		return
+	active_online_lobby_id = lobby_id
+	active_online_host_steam_id = int(lobby_state.get("lobby_owner", active_online_host_steam_id))
+	if str(lobby_state.get("match_state", "")) == SteamBridge.LOBBY_STATE_PLAYING:
+		active_online_match_started = true
+	_save_persistent_settings()
+
+
+func _attempt_pending_online_reconnect() -> void:
+	if not pending_online_reconnect:
+		return
+	pending_online_reconnect = false
+	if steam_p2p_match != null and steam_p2p_match.is_running():
+		_on_open_steam_p2p_table_pressed()
+		return
+	_on_prepare_steam_p2p_pressed()
+	if steam_p2p_match != null and steam_p2p_match.is_running():
+		_on_open_steam_p2p_table_pressed()
+
+
 func _show_steam_diagnostics_menu() -> void:
+	online_hub_is_open = false
 	_clear_children(menu_content)
 	_add_menu_title("Steam · диагностика", "Безопасная проверка среды — без App ID, ключей, лобби и подключения игроков")
 	_add_menu_spacer(12.0)
@@ -1149,9 +1441,12 @@ func _on_initialize_steam_diagnostics_pressed() -> void:
 
 func _show_steam_lobby_menu() -> void:
 	is_pause_menu_open = false
+	online_hub_is_open = false
 	menu_overlay.visible = true
 	_clear_children(menu_content)
-	_add_menu_title("Приватная Steam-комната", "Четыре места · друзья через Steam · свободные места можно заполнить ботами")
+	var initial_lobby_state: Dictionary = steam_bridge.get_lobby_state()
+	var initial_visibility := str(initial_lobby_state.get("visibility_label", "только для друзей"))
+	_add_menu_title("Steam-комната", "Четыре места · %s · свободные места можно заполнить ботами" % initial_visibility)
 	_add_menu_spacer(12.0)
 
 	steam_lobby_status_label = Label.new()
@@ -1232,7 +1527,7 @@ func _show_steam_lobby_menu() -> void:
 	_add_menu_spacer(10.0)
 	_add_menu_label("Приглашение открывает стандартный Steam Overlay. Хост может заполнить свободные места ботами или дождаться четырёх людей. Все живые участники отмечают готовность и подключаются к игровому столу, после чего хост начинает полноценную партию. Хост проверяет команды и отправляет каждому только его закрытую руку.", 14, Color(0.72, 0.85, 0.76, 1.0))
 	_add_menu_spacer(14.0)
-	_add_menu_button("Назад", _show_developer_tools_menu)
+	_add_menu_button("Назад к сетевой игре", _show_online_hub.bind(OnlineHubTab.OPEN_TABLES, true))
 	_refresh_steam_lobby_status()
 
 
@@ -1245,7 +1540,12 @@ func _on_steam_lobby_joined_successfully() -> void:
 	_reset_loopback_network_joker_selection()
 	if is_instance_valid(network_table_view):
 		network_table_view.visible = false
+	_remember_current_online_lobby()
 	_show_steam_lobby_menu()
+	if pending_online_reconnect:
+		steam_bridge.set_local_lobby_ready(true)
+		var reconnect_timer := get_tree().create_timer(0.7)
+		reconnect_timer.timeout.connect(_attempt_pending_online_reconnect)
 
 
 func _on_create_steam_lobby_pressed() -> void:
@@ -1257,11 +1557,16 @@ func _on_create_steam_lobby_pressed() -> void:
 
 
 func _on_leave_steam_lobby_pressed() -> void:
+	var lobby_state: Dictionary = steam_bridge.get_lobby_state()
+	var local_was_host: bool = int(lobby_state.get("lobby_owner", 0)) == steam_bridge.get_local_steam_id()
+	var keep_reconnect_reference: bool = active_online_match_started and not local_was_host
 	if steam_p2p_match != null and steam_p2p_match.is_running():
 		steam_p2p_match.stop()
 	steam_p2p_table_presentation = false
 	steam_p2p_main_table_presentation = false
 	steam_bridge.leave_lobby()
+	if not keep_reconnect_reference:
+		_clear_active_online_game_reference()
 	_refresh_steam_lobby_status()
 
 
@@ -1281,7 +1586,7 @@ func _on_prepare_steam_p2p_pressed() -> void:
 	muted_network_player_indices.clear()
 	avatar_mute_hovered_slots.clear()
 	var lobby_state: Dictionary = steam_bridge.get_lobby_state()
-	steam_p2p_match.start_from_current_lobby(
+	var started: bool = steam_p2p_match.start_from_current_lobby(
 		steam_bridge,
 		bool(lobby_state.get("fill_empty_seats_with_bots", false)),
 		int(lobby_state.get("bot_difficulty", bot_difficulty)),
@@ -1291,6 +1596,11 @@ func _on_prepare_steam_p2p_pressed() -> void:
 		_get_local_network_avatar_data(),
 		int(lobby_state.get("history_mode", match_history_mode))
 	)
+	if started:
+		active_online_match_started = true
+		_remember_current_online_lobby()
+		if steam_p2p_match.is_host():
+			steam_bridge.set_lobby_match_state(SteamBridge.LOBBY_STATE_PLAYING)
 	_refresh_steam_lobby_status()
 
 
@@ -1365,17 +1675,21 @@ func _refresh_steam_lobby_status() -> void:
 	var bot_count := int(lobby_state.get("bot_count", 0))
 	var local_is_host: bool = int(lobby_state.get("lobby_owner", 0)) == steam_bridge.get_local_steam_id()
 	var members: Array = lobby_state.get("members", [])
+	var visibility_label := str(lobby_state.get("visibility_label", "только для друзей"))
+	var lobby_match_state := str(lobby_state.get("match_state", SteamBridge.LOBBY_STATE_WAITING))
 	bot_difficulty = lobby_bot_difficulty
 	match_history_mode = lobby_history_mode
 	var network_bot_difficulty_name: String = ["лёгкий", "обычный", "сложный"][lobby_bot_difficulty]
 
 	steam_lobby_status_label.text = lobby_status
 	if lobby_id > 0:
-		steam_lobby_details_label.text = "Комната: %d\nУчастники: %d из %d\nИстория: %s\nТип: закрытая для друзей · Project Joker · протокол %d" % [
+		steam_lobby_details_label.text = "Комната: %d\nУчастники: %d из %d\nИстория: %s\nДоступ: %s · состояние: %s · протокол %d" % [
 			lobby_id,
 			member_count,
 			member_limit,
 			_get_history_mode_label(lobby_history_mode),
+			visibility_label,
+			"партия идёт" if lobby_match_state == SteamBridge.LOBBY_STATE_PLAYING else "ожидание",
 			LoopbackNetwork.PROTOCOL_VERSION
 		]
 	else:
@@ -4104,9 +4418,8 @@ func _show_new_game_setup() -> void:
 	menu_overlay.visible = true
 	_clear_children(menu_content)
 	new_game_name_inputs.clear()
-	new_game_avatar_selectors.clear()
-	_add_menu_title("Новая партия", "Укажи имена и выбери аватары игроков")
-	_add_menu_label("Для своего профиля можно сразу выбрать личную картинку или настроить её позже в разделе «Профиль».", 14, Color(0.72, 0.85, 0.76, 1.0))
+	_add_menu_title("Новая игра с ботами", "Укажи имена игроков и параметры локальной партии")
+	_add_menu_label("Твой аватар берётся из профиля. У ботов всегда используются Солнце, Луна и Лис.", 14, Color(0.72, 0.85, 0.76, 1.0))
 
 	for player_index in PLAYER_NAMES.size():
 		_add_new_game_player_row(player_index)
@@ -4142,24 +4455,57 @@ func _add_new_game_player_row(player_index: int) -> void:
 	row.add_child(name_input)
 	new_game_name_inputs.append(name_input)
 
-	var avatar_selector := OptionButton.new()
-	avatar_selector.custom_minimum_size = Vector2(156.0, 38.0)
-	avatar_selector.add_theme_font_size_override("font_size", 16)
-	var avatar_option_count := HUMAN_AVATAR_COUNT if player_index == HUMAN_PLAYER_INDEX else BUILT_IN_AVATAR_COUNT
-	for avatar_index in avatar_option_count:
-		avatar_selector.add_item(_get_avatar_option_label(avatar_index))
-	avatar_selector.selected = clampi(configured_avatar_indices[player_index], 0, avatar_option_count - 1)
-	row.add_child(avatar_selector)
-	new_game_avatar_selectors.append(avatar_selector)
+	var avatar_index := configured_avatar_indices[HUMAN_PLAYER_INDEX]
+	if player_index != HUMAN_PLAYER_INDEX:
+		avatar_index = LOCAL_BOT_AVATAR_INDICES[player_index - 1]
+	_add_new_game_avatar_preview(row, player_index, avatar_index)
 
-	if player_index == HUMAN_PLAYER_INDEX:
-		var upload_avatar_button := Button.new()
-		upload_avatar_button.text = "Загрузить"
-		upload_avatar_button.tooltip_text = "Выбрать свою картинку"
-		upload_avatar_button.custom_minimum_size = Vector2(94.0, 38.0)
-		upload_avatar_button.add_theme_font_size_override("font_size", 14)
-		upload_avatar_button.pressed.connect(_open_new_game_avatar_file_dialog)
-		row.add_child(upload_avatar_button)
+
+func _add_new_game_avatar_preview(row: HBoxContainer, player_index: int, avatar_index: int) -> void:
+	var preview_panel := PanelContainer.new()
+	preview_panel.name = "NewGameAvatarPreview%d" % player_index
+	preview_panel.custom_minimum_size = Vector2(48.0, 48.0)
+	preview_panel.tooltip_text = "Аватар из профиля" if player_index == HUMAN_PLAYER_INDEX else "Фиксированный аватар бота"
+	preview_panel.set_meta("avatar_index", avatar_index)
+	preview_panel.add_theme_stylebox_override(
+		"panel",
+		_create_flat_style(Color(0.028, 0.073, 0.052, 1.0), Color(0.75, 0.58, 0.2, 1.0), 1, 7, 1)
+	)
+	row.add_child(preview_panel)
+
+	var preview_content := Control.new()
+	preview_content.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	preview_panel.add_child(preview_content)
+
+	var preview_texture := TextureRect.new()
+	preview_texture.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	preview_texture.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	preview_texture.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+	preview_texture.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var custom_avatar_path := custom_profile_avatar_path if player_index == HUMAN_PLAYER_INDEX else ""
+	preview_texture.texture = _load_avatar_texture_from_path(
+		_get_avatar_texture_path_for_index(avatar_index, custom_avatar_path)
+	)
+	preview_content.add_child(preview_texture)
+
+	if preview_texture.texture == null:
+		var placeholder := Label.new()
+		placeholder.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		placeholder.text = _get_avatar_symbol_for_index(avatar_index)
+		placeholder.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		placeholder.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		placeholder.add_theme_font_size_override("font_size", 24)
+		placeholder.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
+		placeholder.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		preview_content.add_child(placeholder)
+
+	var avatar_label := Label.new()
+	avatar_label.text = "Профиль" if player_index == HUMAN_PLAYER_INDEX else _get_avatar_option_label(avatar_index)
+	avatar_label.custom_minimum_size = Vector2(76.0, 38.0)
+	avatar_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	avatar_label.add_theme_font_size_override("font_size", 14)
+	avatar_label.add_theme_color_override("font_color", Color(0.72, 0.85, 0.76, 1.0))
+	row.add_child(avatar_label)
 
 
 func _add_new_game_bot_difficulty_row() -> void:
@@ -4213,8 +4559,8 @@ func _add_new_game_history_mode_row() -> void:
 func _start_configured_new_game() -> void:
 	for player_index in PLAYER_NAMES.size():
 		configured_player_names[player_index] = _sanitize_player_name(new_game_name_inputs[player_index].text, str(PLAYER_NAMES[player_index]))
-		var max_avatar_index := CUSTOM_AVATAR_INDEX if player_index == HUMAN_PLAYER_INDEX else BUILT_IN_AVATAR_COUNT - 1
-		configured_avatar_indices[player_index] = clampi(new_game_avatar_selectors[player_index].selected, 0, max_avatar_index)
+		if player_index != HUMAN_PLAYER_INDEX:
+			configured_avatar_indices[player_index] = LOCAL_BOT_AVATAR_INDICES[player_index - 1]
 
 	bot_difficulty = clampi(new_game_bot_difficulty_selector.selected, 0, BOT_DIFFICULTY_COUNT - 1)
 	match_history_mode = clampi(
@@ -4516,20 +4862,11 @@ func _capture_bug_report_timeline(label: String) -> void:
 
 
 func _open_profile_avatar_file_dialog() -> void:
-	is_avatar_file_dialog_for_new_game = false
-	if profile_avatar_file_dialog != null:
-		profile_avatar_file_dialog.popup_centered_ratio(0.75)
-
-
-func _open_new_game_avatar_file_dialog() -> void:
-	is_avatar_file_dialog_for_new_game = true
 	if profile_avatar_file_dialog != null:
 		profile_avatar_file_dialog.popup_centered_ratio(0.75)
 
 
 func _on_profile_avatar_file_selected(source_path: String) -> void:
-	var apply_to_new_game := is_avatar_file_dialog_for_new_game
-	is_avatar_file_dialog_for_new_game = false
 	var image: Image = Image.load_from_file(source_path)
 	if image == null or image.is_empty():
 		if is_instance_valid(profile_avatar_status_label):
@@ -4548,14 +4885,6 @@ func _on_profile_avatar_file_selected(source_path: String) -> void:
 	if save_result != OK or not FileAccess.file_exists(CUSTOM_PROFILE_AVATAR_PATH):
 		if is_instance_valid(profile_avatar_status_label):
 			profile_avatar_status_label.text = "Не удалось сохранить личный аватар."
-		return
-
-	if apply_to_new_game:
-		custom_profile_avatar_path = CUSTOM_PROFILE_AVATAR_PATH
-		configured_avatar_indices[HUMAN_PLAYER_INDEX] = CUSTOM_AVATAR_INDEX
-		if new_game_avatar_selectors.size() > HUMAN_PLAYER_INDEX:
-			new_game_avatar_selectors[HUMAN_PLAYER_INDEX].selected = CUSTOM_AVATAR_INDEX
-		_save_persistent_settings()
 		return
 
 	pending_profile_avatar_path = CUSTOM_PROFILE_AVATAR_PATH
@@ -4860,7 +5189,7 @@ func _refresh_profile_music_playlist() -> void:
 		profile_music_playlist_container.add_child(remaining_label)
 
 
-func _show_rules_menu() -> void:
+func _show_rules_menu(return_to_tutorial := false) -> void:
 	menu_overlay.visible = true
 	_clear_children(menu_content)
 	_add_menu_title("Правила партии", "Краткая памятка — полный документ остаётся в Game Design Document")
@@ -4876,7 +5205,7 @@ func _show_rules_menu() -> void:
 	_add_menu_label("• Джокер можно использовать как сильнейшую карту или как сброс; при первом ходе он позволяет объявить масть и условие розыгрыша.", 15)
 	_add_menu_label("• При равенстве очков выше место у игрока, который точнее выполнил заказы за всю партию.", 15)
 	_add_menu_spacer(8.0)
-	_add_menu_button("Назад", _return_from_menu_subpage)
+	_add_menu_button("Назад", _show_tutorial_menu if return_to_tutorial else _return_from_menu_subpage)
 
 
 func _show_tutorial_menu() -> void:
@@ -4890,6 +5219,7 @@ func _show_tutorial_menu() -> void:
 	_add_menu_label("• Джокер: при первом ходе можно объявить масть и условие; в середине взятки он может забирать или быть сбросом.", 16)
 	_add_menu_label("• После раздачи сверяй заказ, взятые карты и очки в итогах справа или в расписке.", 16)
 	_add_menu_spacer(10.0)
+	_add_menu_button("Правила игры", _show_rules_menu.bind(true))
 	_add_menu_button("Включить подсказки", _on_tutorial_enable_pressed)
 	_add_menu_button("Отключить подсказки", _on_tutorial_disable_pressed)
 	_add_menu_button("Назад", _return_from_menu_subpage, true)
@@ -5849,6 +6179,9 @@ func _load_persistent_settings() -> void:
 		NetworkHost.HistoryMode.FULL,
 		NetworkHost.HistoryMode.LAST_TRICK_ONLY
 	)
+	active_online_lobby_id = maxi(0, int(config.get_value("online", "active_lobby_id", 0)))
+	active_online_host_steam_id = maxi(0, int(config.get_value("online", "active_host_steam_id", 0)))
+	active_online_match_started = bool(config.get_value("online", "active_match_started", false))
 	tutorial_enabled = bool(config.get_value("game", "tutorial_enabled", tutorial_enabled))
 	auto_turn_enabled = bool(config.get_value("game", "auto_turn_enabled", auto_turn_enabled))
 	var saved_sound_volume: int = int(config.get_value("audio", "sound_volume", sound_volume_index))
@@ -5903,6 +6236,9 @@ func _save_persistent_settings() -> void:
 	config.set_value("game", "tutorial_enabled", tutorial_enabled)
 	config.set_value("game", "auto_turn_enabled", auto_turn_enabled)
 	config.set_value("game", "history_mode", match_history_mode)
+	config.set_value("online", "active_lobby_id", active_online_lobby_id)
+	config.set_value("online", "active_host_steam_id", active_online_host_steam_id)
+	config.set_value("online", "active_match_started", active_online_match_started)
 	config.set_value("display", "card_deck_style", card_deck_style)
 	config.set_value("display", "table_felt_theme", table_felt_theme)
 	config.set_value("display", "table_surround_theme", table_surround_theme)
