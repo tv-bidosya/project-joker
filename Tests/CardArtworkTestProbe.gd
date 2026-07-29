@@ -102,6 +102,22 @@ func _init() -> void:
 	assert(card_view.position == root_position_before_hover, "2.5D hover must not move the clickable card hitbox")
 	assert(card_view.is_hovered, "Interactive cards must enter the 2.5D hover pose")
 	card_view._on_mouse_exited()
+	card_view.set_interactive(true, true)
+	var unavailable_style := card_view.availability_overlay.get_theme_stylebox("panel") as StyleBoxFlat
+	assert(
+		card_view.availability_overlay.visible
+		and unavailable_style != null
+		and unavailable_style.bg_color.a > 0.5,
+		"An unavailable card must use an explicit dark overlay that also affects finished artwork"
+	)
+	card_view.set_visually_unavailable(false)
+	assert(not card_view.availability_overlay.visible, "A temporarily locked but legal card must remain visually neutral")
+	card_view.set_availability_hint(true, false)
+	assert(
+		not card_view.availability_overlay.visible and card_view.modulate == Color.WHITE,
+		"An available card must keep its normal artwork without a glow or tint"
+	)
+	card_view.set_availability_hint(false, false)
 	card_view.set_status("ЗАБИРАЕТ")
 	assert(card_view.status_badge.visible, "Joker action badge must be visible")
 	var take_style := card_view.status_badge.get_theme_stylebox("panel") as StyleBoxFlat

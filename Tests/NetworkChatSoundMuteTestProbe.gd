@@ -65,18 +65,42 @@ func _run() -> void:
 	main_scene.steam_p2p_table_presentation = true
 	main_scene.steam_p2p_main_table_presentation = true
 	main_scene._refresh_network_main_table()
+	await process_frame
 	assert(main_scene.chat_toggle_button.visible, "The Steam table must expose a room chat button")
-	assert(main_scene.social_controls_container.size.y >= 124.0, "Three social controls must fit without overlapping")
-	assert(
-		main_scene.chat_panel.offset_left >= main_scene.social_controls_container.offset_right,
-		"The chat panel must open to the right of the social controls"
+	assert(main_scene.chat_panel.visible, "The room chat must open by default on the Steam table")
+	assert(main_scene.chat_panel.size.y <= 330.0, "The docked chat must use the compact lower-right height")
+	var chat_style := main_scene.chat_panel.get_theme_stylebox("panel") as StyleBoxFlat
+	assert(chat_style != null and chat_style.bg_color.r > 0.9, "The chat must use the light history-style background")
+	var chat_title := main_scene.chat_panel.find_child("ChatTitle", true, false) as Label
+	assert(chat_title != null and chat_title.text == "ЧАТ", "The compact panel title must stay concise")
+	assert(main_scene.social_controls_container.size.y <= 110.0, "Three social controls must form a compact stack")
+	var player_panel_center_y: float = (
+		float(main_scene.player_panels[0].position.y)
+		+ float(main_scene.player_panels[0].size.y) * 0.5
 	)
+	var social_controls_center_y: float = (
+		float(main_scene.social_controls_container.position.y)
+		+ float(main_scene.social_controls_container.size.y) * 0.5
+	)
+	assert(
+		absf(player_panel_center_y - social_controls_center_y) <= 10.0,
+		"The social controls must stay centred beside the local player panel"
+	)
+	assert(
+		is_equal_approx(main_scene.chat_panel.anchor_left, 1.0)
+		and main_scene.chat_panel.offset_right <= -20.0,
+		"The chat panel must be docked in the right lane"
+	)
+	var maximum_hand_right: float = float(main_scene.players_container.size.x) * 0.5 + 436.0
+	var chat_panel_left: float = float(main_scene.players_container.size.x) + float(main_scene.chat_panel.offset_left)
+	assert(chat_panel_left > maximum_hand_right, "The docked chat must not overlap a centred nine-card hand")
+	main_scene._close_chat_panel()
 
 	main_scene._present_network_chat_event({
 		"event_id": 50,
 		"kind": "chat",
 		"actor_player_index": 1,
-		"message": "Виден даже при визуальном муте"
+		"message": "Виден даже при муте саундпада"
 	}, 0)
 	assert(main_scene.network_chat_messages.size() == 1, "A network chat event must be appended to the local chat log")
 	assert(main_scene.chat_unread_count == 1, "A hidden chat panel must count unread remote messages")
@@ -84,20 +108,25 @@ func _run() -> void:
 	main_scene.muted_network_player_indices[1] = true
 	main_scene._hide_reaction_bubble()
 	main_scene._present_network_reaction_event({"actor_player_index": 1, "reaction": "😄"}, 0)
-	assert(not main_scene.reaction_bubble.visible, "A muted player's reaction must stay hidden locally")
+	assert(main_scene.reaction_bubble.visible, "Soundpad mute must not hide a player's reaction")
 	main_scene._hide_all_sticker_flyers()
 	main_scene._present_network_sticker_event({
 		"actor_player_index": 1,
 		"target_player_index": 0,
 		"sticker": "🌹"
 	}, 0)
-	assert(not main_scene.sticker_flyers[0].visible, "A muted player's gift must stay hidden locally")
+	assert(main_scene.sticker_flyers[0].visible, "Soundpad mute must not hide a player's gift")
+	var test_sound := AudioStreamWAV.new()
+	main_scene.soundpad_sounds.clear()
+	main_scene.soundpad_sounds.append({"path": "test-muted-sound", "stream": test_sound})
 	main_scene._hide_soundpad_bubble()
 	main_scene._present_network_soundpad_event({
 		"actor_player_index": 1,
-		"sound_id": ""
+		"sound_id": "test-muted-sound"
 	}, 0)
-	assert(not main_scene.soundpad_bubble.visible, "A muted player's sound bubble must stay hidden locally")
+	assert(main_scene.soundpad_bubble.visible, "Soundpad mute must keep the visual sound cue")
+	for soundpad_player: AudioStreamPlayer in main_scene.soundpad_players:
+		assert(soundpad_player.stream == null, "Soundpad mute must suppress only the remote audio stream")
 
-	print("NETWORK_CHAT_MUTE_TEST_PASS")
+	print("NETWORK_CHAT_SOUND_MUTE_TEST_PASS")
 	quit()

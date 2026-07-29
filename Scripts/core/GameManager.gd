@@ -66,7 +66,7 @@ const CHAT_VISIBLE_MESSAGE_LIMIT := 40
 const BUILT_IN_AVATAR_COUNT := 4
 const CUSTOM_AVATAR_INDEX := BUILT_IN_AVATAR_COUNT
 const HUMAN_AVATAR_COUNT := BUILT_IN_AVATAR_COUNT + 1
-const GAME_VERSION := "0.3.7"
+const GAME_VERSION := "0.3.8"
 # Перед публичным экспортом поставь false: игрок сможет создать отчёт, но не
 # увидит внутреннюю кнопку его загрузки. После экспорта можно вернуть true.
 const DEVELOPER_REPORT_TOOLS_ENABLED := true
@@ -386,6 +386,7 @@ var chat_status_label: Label
 var network_chat_messages: Array[Dictionary] = []
 var chat_unread_count := 0
 var chat_next_send_milliseconds := 0
+var network_chat_was_available := false
 var trick_card_views: Array[CardView] = []
 var bot_card_back_holders: Array[Control] = []
 var deck_back_panels: Array[PanelContainer] = []
@@ -1941,7 +1942,7 @@ func _refresh_network_main_header(snapshot: Dictionary, round_data: Dictionary, 
 		if loopback_network_joker_selection_open:
 			action_text_network = "Выбери условие для Джокера."
 		elif active_player_index == int(snapshot.get("recipient_player_index", -1)):
-			action_text_network = "Твой ход: выбери подсвеченную карту в руке."
+			action_text_network = "Твой ход: выбери доступную карту в руке."
 		elif players_by_index.has(active_player_index):
 			action_text_network = "Ходит %s" % str((players_by_index[active_player_index] as Dictionary).get("display_name", "игрок"))
 	elif not bool(undo_state.get("pending", false)) and state == Round.State.FINISHED:
@@ -2317,8 +2318,6 @@ func _present_network_reaction_event(event: Dictionary, viewer_index: int) -> vo
 	if not is_instance_valid(reaction_bubble):
 		return
 	var actor_player_index := int(event.get("actor_player_index", -1))
-	if _is_network_player_sound_muted(actor_player_index):
-		return
 	var relative_slot := posmod(actor_player_index - viewer_index, PLAYER_NAMES.size())
 	if relative_slot < 0 or relative_slot >= avatar_badges.size():
 		return
@@ -2327,8 +2326,6 @@ func _present_network_reaction_event(event: Dictionary, viewer_index: int) -> vo
 
 func _present_network_sticker_event(event: Dictionary, viewer_index: int) -> void:
 	var actor_player_index := int(event.get("actor_player_index", -1))
-	if _is_network_player_sound_muted(actor_player_index):
-		return
 	var source_relative := posmod(actor_player_index - viewer_index, PLAYER_NAMES.size())
 	var target_relative := posmod(int(event.get("target_player_index", -1)) - viewer_index, PLAYER_NAMES.size())
 	if source_relative < 0 or source_relative >= avatar_badges.size() or target_relative < 0 or target_relative >= avatar_badges.size():
@@ -2340,14 +2337,13 @@ func _present_network_sticker_event(event: Dictionary, viewer_index: int) -> voi
 func _present_network_soundpad_event(event: Dictionary, viewer_index: int) -> void:
 	var actor_player_index := int(event.get("actor_player_index", -1))
 	var sound_id := str(event.get("sound_id", ""))
-	if _is_network_player_sound_muted(actor_player_index):
-		return
-	for sound_data in soundpad_sounds:
-		if str(sound_data.get("path", "")) == sound_id:
-			var sound_stream: AudioStream = sound_data.get("stream", null) as AudioStream
-			if sound_stream != null:
-				_play_soundpad_stream(sound_stream)
-			break
+	if not _is_network_player_sound_muted(actor_player_index):
+		for sound_data in soundpad_sounds:
+			if str(sound_data.get("path", "")) == sound_id:
+				var sound_stream: AudioStream = sound_data.get("stream", null) as AudioStream
+				if sound_stream != null:
+					_play_soundpad_stream(sound_stream)
+				break
 	if not is_instance_valid(soundpad_bubble):
 		return
 	var relative_slot := posmod(actor_player_index - viewer_index, PLAYER_NAMES.size())
@@ -2661,16 +2657,35 @@ func _refresh_network_main_hand(snapshot: Dictionary, round_data: Dictionary) ->
 	var undo_pending: bool = bool((snapshot.get("undo_state", {}) as Dictionary).get("pending", false))
 	var presentation_locked := network_card_play_presentation_active or network_round_finish_presentation_active or undo_pending
 	var displayed_cards: Array[Card] = _sort_cards_for_display(cards, trump, hand_sort_mode)
+	var rule_availability_by_card: Dictionary = {}
+	var has_rule_available_card := false
+	for card: Card in displayed_cards:
+		var card_key: String = str(card_keys_by_instance.get(card, ""))
+		var rule_available := (
+			_can_submit_loopback_test_joker()
+			if card.is_joker
+			else _is_network_table_card_available(card_key)
+		)
+		rule_availability_by_card[card] = rule_available
+		has_rule_available_card = has_rule_available_card or rule_available
 	for display_index in displayed_cards.size():
 		var card: Card = displayed_cards[display_index]
 		var card_view := CardView.new()
 		card_view.set_card(card)
 		card_view.set_hand_presentation(display_index, displayed_cards.size())
 		var card_key: String = str(card_keys_by_instance.get(card, ""))
-		var card_is_available := _is_network_table_card_available(card_key)
-		var joker_is_available := card.is_joker and _can_submit_loopback_test_joker()
-		var interactive := (joker_is_available if card.is_joker else card_is_available) and not presentation_locked
+		var rule_available: bool = bool(rule_availability_by_card.get(card, false))
+		var interactive := rule_available and not presentation_locked
 		card_view.set_interactive(interactive, not interactive or loopback_network_joker_selection_open)
+		var show_availability_hint := (
+			has_rule_available_card
+			and not presentation_locked
+			and not loopback_network_joker_selection_open
+		)
+		card_view.set_availability_hint(
+			show_availability_hint and rule_available,
+			show_availability_hint and not rule_available
+		)
 		if interactive:
 			if card.is_joker:
 				card_view.card_pressed.connect(_on_network_table_joker_pressed)
@@ -3445,6 +3460,8 @@ func _refresh_network_table_hand(private_hand: Array) -> void:
 	if not is_instance_valid(network_table_hand_container):
 		return
 	_clear_children(network_table_hand_container)
+	var card_rows: Array[Dictionary] = []
+	var has_rule_available_card := false
 	for card_index in private_hand.size():
 		var card_data_variant: Variant = private_hand[card_index]
 		if not (card_data_variant is Dictionary):
@@ -3453,15 +3470,34 @@ func _refresh_network_table_hand(private_hand: Array) -> void:
 		var card: Card = _create_network_table_card(card_data)
 		if card == null:
 			continue
+		var card_key: String = str(card_data.get("card_key", ""))
+		var rule_available := (
+			_can_submit_loopback_test_joker()
+			if card.is_joker
+			else _is_network_table_card_available(card_key)
+		)
+		card_rows.append({
+			"card": card,
+			"card_key": card_key,
+			"rule_available": rule_available
+		})
+		has_rule_available_card = has_rule_available_card or rule_available
+	for card_index in card_rows.size():
+		var card_row: Dictionary = card_rows[card_index]
+		var card: Card = card_row.get("card", null) as Card
+		if card == null:
+			continue
 		var card_view := CardView.new()
 		card_view.set_card(card)
 		card_view.set_card_size(Vector2(86.0, 124.0))
-		card_view.set_hand_presentation(card_index, private_hand.size())
-		var card_key: String = str(card_data.get("card_key", ""))
-		var card_is_available := _is_network_table_card_available(card_key)
-		var joker_is_available := card.is_joker and _can_submit_loopback_test_joker()
-		var interactive := joker_is_available if card.is_joker else card_is_available
+		card_view.set_hand_presentation(card_index, card_rows.size())
+		var card_key: String = str(card_row.get("card_key", ""))
+		var interactive: bool = bool(card_row.get("rule_available", false))
 		card_view.set_interactive(interactive, not interactive)
+		card_view.set_availability_hint(
+			has_rule_available_card and interactive,
+			has_rule_available_card and not interactive
+		)
 		if interactive:
 			if card.is_joker:
 				card_view.card_pressed.connect(_on_network_table_joker_pressed)
@@ -3542,7 +3578,7 @@ func _refresh_network_table_action_controls(snapshot: Dictionary) -> void:
 		return
 
 	if _is_network_table_card_available_in_any_hand(snapshot) or _can_submit_loopback_test_joker():
-		title.text = "Твой ход · выбери подсвеченную карту в руке"
+		title.text = "Твой ход · выбери доступную карту в руке"
 	else:
 		network_table_action_panel.visible = false
 
@@ -8323,9 +8359,9 @@ func _refresh_player_avatar_badges() -> void:
 			avatar_mute_buttons[player_index].set_meta("network_player_index", player_index)
 			avatar_mute_buttons[player_index].text = "🔇" if is_muted else "🔊"
 			avatar_mute_buttons[player_index].tooltip_text = (
-				"Показывать реакции, подарки и звуки этого игрока"
+				"Включить звуки саундпада этого игрока"
 				if is_muted
-				else "Скрыть реакции, подарки и звуки этого игрока"
+				else "Отключить звуки саундпада этого игрока"
 			)
 		if player_index < avatar_gift_buttons.size():
 			avatar_gift_buttons[player_index].set_meta("network_player_index", player_index)
@@ -8347,9 +8383,9 @@ func _refresh_avatar_mute_buttons(snapshot: Dictionary, viewer_index: int) -> vo
 		mute_button.set_meta("network_player_index", player_index)
 		mute_button.text = "🔇" if is_muted else "🔊"
 		mute_button.tooltip_text = (
-			"Показывать реакции, подарки и звуки этого игрока только у себя"
+			"Включить саундпад этого игрока только у себя"
 			if is_muted
-			else "Скрыть реакции, подарки и звуки этого игрока только у себя"
+			else "Отключить саундпад этого игрока только у себя"
 		)
 		var should_show_actions := (
 			_is_steam_p2p_main_table_active()
@@ -8365,9 +8401,9 @@ func _refresh_avatar_mute_buttons(snapshot: Dictionary, viewer_index: int) -> vo
 			var player_data: Dictionary = players_by_index.get(player_index, {})
 			var player_name := str(player_data.get("display_name", "Игрок"))
 			avatar_badges[relative_slot].tooltip_text = (
-				"%s · реакции, подарки и звук скрыты у тебя"
+				"%s · саундпад отключён у тебя"
 				if is_muted
-				else "%s · наведи для личного мута"
+				else "%s · наведи для управления саундпадом"
 			) % player_name
 
 
@@ -8431,9 +8467,6 @@ func _on_avatar_mute_button_pressed(relative_slot: int) -> void:
 		muted_network_player_indices.erase(player_index)
 	else:
 		muted_network_player_indices[player_index] = true
-		_hide_reaction_bubble()
-		_hide_all_sticker_flyers()
-		_hide_soundpad_bubble()
 	var snapshot := _get_network_main_snapshot()
 	if _is_steam_p2p_main_table_active() and not snapshot.is_empty():
 		_refresh_avatar_mute_buttons(snapshot, int(snapshot.get("recipient_player_index", 0)))
@@ -8511,7 +8544,6 @@ func _on_avatar_gift_button_pressed(relative_slot: int) -> void:
 		return
 	reaction_picker.visible = false
 	soundpad_picker.visible = false
-	chat_panel.visible = false
 	sticker_picker.visible = true
 	_restart_sticker_picker_auto_close()
 
@@ -9541,15 +9573,22 @@ func _refresh_hand() -> void:
 
 	var human_player := game.players[HUMAN_PLAYER_INDEX]
 	var displayed_cards := _sort_cards_for_display(human_player.hand, game.current_round.trump, hand_sort_mode)
+	var is_human_turn := _is_human_turn()
 
 	for display_index in displayed_cards.size():
 		var card: Card = displayed_cards[display_index]
 		var card_view := CardView.new()
 		card_view.set_card(card)
 		card_view.set_hand_presentation(display_index, displayed_cards.size())
+		var card_is_available := _is_card_available_to_human(card)
 		card_view.set_interactive(
 			true,
-			is_bug_report_review_mode or not _is_human_turn() or not _is_card_available_to_human(card) or pending_joker_card != null
+			is_bug_report_review_mode or not is_human_turn or not card_is_available or pending_joker_card != null
+		)
+		var show_availability_hint := is_human_turn and pending_joker_card == null
+		card_view.set_availability_hint(
+			show_availability_hint and card_is_available,
+			show_availability_hint and not card_is_available
 		)
 		card_view.card_pressed.connect(_on_card_pressed)
 		hand_container.add_child(card_view)
@@ -9884,9 +9923,9 @@ func _create_social_controls_container() -> void:
 		0.5,
 		1.0,
 		112.0,
-		-438.0,
-		156.0,
-		-314.0
+		-405.0,
+		148.0,
+		-299.0
 	)
 	players_container.add_child(social_controls_container)
 
@@ -9899,8 +9938,8 @@ func _create_chat_controls() -> void:
 	chat_toggle_button.visible = false
 	chat_toggle_button.z_index = 30
 	chat_toggle_button.mouse_filter = Control.MOUSE_FILTER_STOP
-	chat_toggle_button.custom_minimum_size = Vector2(44.0, 40.0)
-	chat_toggle_button.add_theme_font_size_override("font_size", 22)
+	chat_toggle_button.custom_minimum_size = Vector2(36.0, 34.0)
+	chat_toggle_button.add_theme_font_size_override("font_size", 19)
 	_apply_bare_social_icon_button_style(chat_toggle_button)
 	chat_toggle_button.pressed.connect(_on_chat_toggle_pressed)
 	social_controls_container.add_child(chat_toggle_button)
@@ -9910,13 +9949,15 @@ func _create_chat_controls() -> void:
 	chat_panel.visible = false
 	chat_panel.z_index = 33
 	chat_panel.mouse_filter = Control.MOUSE_FILTER_STOP
-	var chat_style := _create_flat_style(Color(0.012, 0.05, 0.035, 0.985), Color(0.63, 0.47, 0.16, 0.96), 2, 10, 4)
+	var chat_style := _create_flat_style(Color(0.965, 0.95, 0.89, 0.985), Color(0.45, 0.31, 0.12, 0.92), 2, 10, 4)
 	chat_style.content_margin_left = 12.0
 	chat_style.content_margin_top = 10.0
 	chat_style.content_margin_right = 12.0
 	chat_style.content_margin_bottom = 10.0
 	chat_panel.add_theme_stylebox_override("panel", chat_style)
-	_set_control_layout(chat_panel, 0.5, 1.0, 0.5, 1.0, 168.0, -598.0, 558.0, -314.0)
+	# Keep the room chat in the free lower-right lane. Even a nine-card hand
+	# remains centred to the left of this panel at the 1920×1080 design size.
+	_set_control_layout(chat_panel, 1.0, 1.0, 1.0, 1.0, -410.0, -348.0, -20.0, -20.0)
 	players_container.add_child(chat_panel)
 
 	var content := VBoxContainer.new()
@@ -9926,10 +9967,11 @@ func _create_chat_controls() -> void:
 	var header := HBoxContainer.new()
 	content.add_child(header)
 	var title := Label.new()
-	title.text = "ЧАТ СТОЛА"
+	title.name = "ChatTitle"
+	title.text = "ЧАТ"
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	title.add_theme_font_size_override("font_size", 17)
-	title.add_theme_color_override("font_color", Color(1.0, 0.84, 0.42, 1.0))
+	title.add_theme_color_override("font_color", Color(0.24, 0.16, 0.055, 1.0))
 	header.add_child(title)
 	var close_button := Button.new()
 	close_button.text = "×"
@@ -9937,6 +9979,9 @@ func _create_chat_controls() -> void:
 	close_button.custom_minimum_size = Vector2(32.0, 28.0)
 	close_button.add_theme_font_size_override("font_size", 22)
 	_apply_bare_social_icon_button_style(close_button)
+	close_button.add_theme_color_override("font_color", Color(0.17, 0.19, 0.16, 1.0))
+	close_button.add_theme_color_override("font_hover_color", Color(0.66, 0.16, 0.12, 1.0))
+	close_button.add_theme_color_override("font_pressed_color", Color(0.46, 0.1, 0.08, 1.0))
 	close_button.pressed.connect(_close_chat_panel)
 	header.add_child(close_button)
 
@@ -9963,6 +10008,17 @@ func _create_chat_controls() -> void:
 	chat_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	chat_input.custom_minimum_size = Vector2(0.0, 38.0)
 	chat_input.add_theme_font_size_override("font_size", 15)
+	chat_input.add_theme_color_override("font_color", Color(0.08, 0.09, 0.075, 1.0))
+	chat_input.add_theme_color_override("font_placeholder_color", Color(0.38, 0.4, 0.36, 0.9))
+	chat_input.add_theme_color_override("caret_color", Color(0.22, 0.16, 0.07, 1.0))
+	var chat_input_style := _create_flat_style(Color(1.0, 0.992, 0.96, 1.0), Color(0.38, 0.3, 0.17, 0.9), 1, 6, 1)
+	chat_input_style.content_margin_left = 8.0
+	chat_input_style.content_margin_right = 8.0
+	chat_input.add_theme_stylebox_override("normal", chat_input_style)
+	var chat_input_focus_style := chat_input_style.duplicate() as StyleBoxFlat
+	chat_input_focus_style.border_color = Color(0.72, 0.49, 0.12, 1.0)
+	chat_input_focus_style.set_border_width_all(2)
+	chat_input.add_theme_stylebox_override("focus", chat_input_focus_style)
 	chat_input.text_submitted.connect(_on_chat_text_submitted)
 	input_row.add_child(chat_input)
 	chat_send_button = Button.new()
@@ -9978,7 +10034,7 @@ func _create_chat_controls() -> void:
 	chat_status_label.text = "До %d символов · не чаще одного сообщения в секунду" % NetworkHost.CHAT_MESSAGE_MAX_LENGTH
 	chat_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	chat_status_label.add_theme_font_size_override("font_size", 12)
-	chat_status_label.add_theme_color_override("font_color", Color(0.68, 0.8, 0.7, 1.0))
+	chat_status_label.add_theme_color_override("font_color", Color(0.25, 0.34, 0.26, 1.0))
 	content.add_child(chat_status_label)
 	_refresh_network_chat_log()
 
@@ -10075,7 +10131,7 @@ func _refresh_network_chat_log() -> void:
 		var empty_label := Label.new()
 		empty_label.text = "Сообщений пока нет."
 		empty_label.add_theme_font_size_override("font_size", 14)
-		empty_label.add_theme_color_override("font_color", Color(0.66, 0.78, 0.68, 1.0))
+		empty_label.add_theme_color_override("font_color", Color(0.3, 0.34, 0.29, 1.0))
 		chat_messages_container.add_child(empty_label)
 		return
 	for message_data in network_chat_messages:
@@ -10086,7 +10142,7 @@ func _refresh_network_chat_log() -> void:
 		]
 		message_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		message_label.add_theme_font_size_override("font_size", 14)
-		message_label.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
+		message_label.add_theme_color_override("font_color", Color(0.08, 0.09, 0.075, 1.0))
 		chat_messages_container.add_child(message_label)
 	call_deferred("_scroll_network_chat_to_bottom")
 
@@ -10104,8 +10160,12 @@ func _refresh_chat_controls() -> void:
 		return
 	var can_show := _can_show_network_chat()
 	chat_toggle_button.visible = can_show
-	if not can_show:
+	if can_show and not network_chat_was_available:
+		chat_panel.visible = true
+		chat_unread_count = 0
+	elif not can_show:
 		chat_panel.visible = false
+	network_chat_was_available = can_show
 	chat_toggle_button.text = "💬" if chat_unread_count <= 0 else "💬 %d" % chat_unread_count
 	chat_toggle_button.tooltip_text = (
 		"Чат стола · новых сообщений: %d" % chat_unread_count
@@ -10166,8 +10226,8 @@ func _create_reaction_controls() -> void:
 	reaction_toggle_button.visible = false
 	reaction_toggle_button.z_index = 30
 	reaction_toggle_button.mouse_filter = Control.MOUSE_FILTER_STOP
-	reaction_toggle_button.custom_minimum_size = Vector2(44.0, 40.0)
-	reaction_toggle_button.add_theme_font_size_override("font_size", 24)
+	reaction_toggle_button.custom_minimum_size = Vector2(36.0, 34.0)
+	reaction_toggle_button.add_theme_font_size_override("font_size", 21)
 	_apply_bare_social_icon_button_style(reaction_toggle_button)
 	reaction_toggle_button.pressed.connect(_on_reaction_toggle_pressed)
 	social_controls_container.add_child(reaction_toggle_button)
@@ -10276,7 +10336,6 @@ func _on_reaction_toggle_pressed() -> void:
 
 	_close_sticker_picker()
 	soundpad_picker.visible = false
-	chat_panel.visible = false
 	reaction_picker.visible = not reaction_picker.visible
 
 
@@ -10497,7 +10556,6 @@ func _on_sticker_toggle_pressed() -> void:
 
 	reaction_picker.visible = false
 	soundpad_picker.visible = false
-	chat_panel.visible = false
 	sticker_selected_target_index = -1
 	_build_sticker_target_picker()
 	sticker_picker.visible = not sticker_picker.visible
@@ -10783,8 +10841,8 @@ func _create_soundpad_controls() -> void:
 	soundpad_toggle_button.visible = false
 	soundpad_toggle_button.z_index = 30
 	soundpad_toggle_button.mouse_filter = Control.MOUSE_FILTER_STOP
-	soundpad_toggle_button.custom_minimum_size = Vector2(44.0, 40.0)
-	soundpad_toggle_button.add_theme_font_size_override("font_size", 22)
+	soundpad_toggle_button.custom_minimum_size = Vector2(36.0, 34.0)
+	soundpad_toggle_button.add_theme_font_size_override("font_size", 19)
 	_apply_bare_social_icon_button_style(soundpad_toggle_button)
 	soundpad_toggle_button.pressed.connect(_on_soundpad_toggle_pressed)
 	social_controls_container.add_child(soundpad_toggle_button)
@@ -10855,7 +10913,6 @@ func _on_soundpad_toggle_pressed() -> void:
 
 	reaction_picker.visible = false
 	_close_sticker_picker()
-	chat_panel.visible = false
 	soundpad_selected_category_id = ""
 	_build_soundpad_category_picker()
 	soundpad_picker.visible = not soundpad_picker.visible

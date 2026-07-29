@@ -28,6 +28,8 @@ signal card_pressed(card: Card)
 var displayed_card: Card
 var is_interactive := false
 var is_disabled := false
+var is_visually_unavailable := false
+var is_visually_available := false
 var is_hovered := false
 var is_winner_highlighted := false
 var requested_presentation_rotation := 0.0
@@ -43,6 +45,7 @@ var center_label: Label
 var bottom_corner_label: Label
 var status_badge: PanelContainer
 var status_label: Label
+var availability_overlay: Panel
 
 
 func _init() -> void:
@@ -141,13 +144,45 @@ func set_status(status_text: String) -> void:
 func set_interactive(interactive: bool, disabled: bool) -> void:
 	is_interactive = interactive
 	is_disabled = disabled
+	is_visually_unavailable = disabled
+	is_visually_available = false
 	mouse_filter = Control.MOUSE_FILTER_STOP if is_interactive and not is_disabled else Control.MOUSE_FILTER_IGNORE
 	mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND if is_interactive and not is_disabled else Control.CURSOR_ARROW
-	modulate = Color(1.0, 1.0, 1.0, 0.42) if is_disabled else Color.WHITE
+	_refresh_availability_visual()
 	if not is_interactive or is_disabled:
 		is_hovered = false
 		_apply_visual_pose(false)
 	_refresh_face_style()
+
+
+func set_visually_unavailable(unavailable: bool) -> void:
+	is_visually_unavailable = unavailable
+	if unavailable:
+		is_visually_available = false
+	_refresh_availability_visual()
+
+
+func set_availability_hint(available: bool, unavailable: bool) -> void:
+	is_visually_unavailable = unavailable
+	is_visually_available = available and not unavailable
+	_refresh_availability_visual()
+
+
+func _refresh_availability_visual() -> void:
+	modulate = Color.WHITE
+	if not is_instance_valid(availability_overlay):
+		return
+	availability_overlay.visible = is_visually_unavailable
+	if not availability_overlay.visible:
+		return
+	var style := StyleBoxFlat.new()
+	style.set_corner_radius_all(2)
+	style.bg_color = Color(0.015, 0.022, 0.018, 0.58)
+	style.border_color = Color(0.1, 0.13, 0.11, 0.88)
+	style.set_border_width_all(1)
+	style.shadow_color = Color.TRANSPARENT
+	style.shadow_size = 0
+	availability_overlay.add_theme_stylebox_override("panel", style)
 
 
 func set_winner_highlight(enabled: bool) -> void:
@@ -239,6 +274,7 @@ func _create_visuals() -> void:
 	status_badge.offset_bottom = -4.0
 	status_badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	status_badge.visible = false
+	status_badge.z_index = 3
 	face_panel.add_child(status_badge)
 
 	status_label = Label.new()
@@ -261,6 +297,14 @@ func _create_visuals() -> void:
 	bottom_corner_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	bottom_corner_label.add_theme_font_size_override("font_size", 18)
 	face_panel.add_child(bottom_corner_label)
+
+	availability_overlay = Panel.new()
+	availability_overlay.name = "AvailabilityOverlay"
+	availability_overlay.visible = false
+	availability_overlay.z_index = 2
+	availability_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	availability_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	face_panel.add_child(availability_overlay)
 
 	resized.connect(_update_visual_pivots)
 	mouse_entered.connect(_on_mouse_entered)
