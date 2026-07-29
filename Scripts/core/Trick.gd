@@ -47,7 +47,10 @@ func setup(p_leader_index: int, p_player_count: int, p_trump: Round.TrumpSuit) -
 func can_play_card(player: Player, card: Card) -> bool:
 	if player.player_id != current_player_index:
 		return false
+	return is_card_allowed_for_player(player, card)
 
+
+func is_card_allowed_for_player(player: Player, card: Card) -> bool:
 	if not player.hand.has(card):
 		return false
 

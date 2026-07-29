@@ -59,7 +59,7 @@ offset_top = 12.0
 offset_right = -20.0
 offset_bottom = 58.0
 grow_horizontal = 2
-theme_override_constants/separation = 18
+theme_override_constants/separation = 12
 
 [node name="Title" type="Label" parent="Margin/TablePanel/TableContent/Header"]
 layout_mode = 2
@@ -79,7 +79,7 @@ vertical_alignment = 1
 
 [node name="TrumpLabel" type="RichTextLabel" parent="Margin/TablePanel/TableContent/Header"]
 unique_name_in_owner = true
-custom_minimum_size = Vector2(420, 28)
+custom_minimum_size = Vector2(320, 28)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.97, 0.86, 0.55, 1)
 theme_override_font_sizes/normal_font_size = 18
@@ -146,10 +146,10 @@ anchor_left = 0.5
 anchor_top = 1.0
 anchor_right = 0.5
 anchor_bottom = 1.0
-offset_left = -250.0
-offset_top = -262.0
-offset_right = 250.0
-offset_bottom = -236.0
+offset_left = -490.0
+offset_top = -274.0
+offset_right = 490.0
+offset_bottom = -232.0
 grow_horizontal = 2
 grow_vertical = 0
 mouse_filter = 2
@@ -158,7 +158,7 @@ theme_override_font_sizes/font_size = 15
 horizontal_alignment = 1
 vertical_alignment = 1
 text = "Подготовка партии"
-clip_text = true
+autowrap_mode = 2
 
 [node name="RoundHistoryToggleButton" type="Button" parent="Margin/TablePanel/TableContent"]
 unique_name_in_owner = true

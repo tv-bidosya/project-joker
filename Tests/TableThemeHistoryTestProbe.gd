@@ -24,7 +24,7 @@ func _run() -> void:
 	assert(backdrop_material != null, "The selected surroundings must use the procedural finish material")
 	assert(int(backdrop_material.get_shader_parameter("pattern_kind")) == 1, "Oak surroundings must use the wood pattern")
 
-	main_scene._show_settings_menu()
+	main_scene._show_appearance_settings_menu()
 	assert(main_scene.menu_content.find_child("TableFeltThemeSelector", true, false) != null, "Settings must contain a felt selector")
 	assert(main_scene.menu_content.find_child("TableSurroundThemeSelector", true, false) != null, "Settings must contain a surroundings selector")
 	assert(main_scene.menu_content.find_child("TableThemePreview", true, false) != null, "Settings must contain a live table preview")

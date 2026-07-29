@@ -94,6 +94,24 @@ func _init() -> void:
 	assert(finished_artwork_style != null and finished_artwork_style.get_border_width(SIDE_LEFT) == 0, "Finished card artwork must not receive a second frame")
 	assert(is_zero_approx(finished_artwork_style.bg_color.a), "Finished card artwork must not receive a glass background")
 	assert(finished_artwork_style.shadow_size == 0, "Finished card artwork must not receive an outer style shadow")
+	assert(card_view.winner_glow != null and not card_view.winner_glow.visible, "The winner glow must stay hidden during an ordinary hand")
+	card_view.set_winner_highlight(true)
+	var winner_glow_style := card_view.winner_glow.get_theme_stylebox("panel") as StyleBoxFlat
+	assert(card_view.winner_glow.visible, "A winning finished-artwork card must reveal an independent glow")
+	assert(
+		winner_glow_style != null
+			and winner_glow_style.shadow_size >= 12
+			and winner_glow_style.shadow_color.a > 0.8,
+		"The winner glow must be clearly visible outside the clean artwork edge"
+	)
+	finished_artwork_style = card_view.face_panel.get_theme_stylebox("panel") as StyleBoxFlat
+	assert(
+		finished_artwork_style.get_border_width(SIDE_LEFT) == 0
+			and finished_artwork_style.shadow_size == 0,
+		"Winner highlighting must not restore the removed glass frame on finished artwork"
+	)
+	card_view.set_winner_highlight(false)
+	assert(not card_view.winner_glow.visible, "The independent glow must hide before trick collection")
 	card_view.set_hand_presentation(0, 3)
 	assert(not is_zero_approx(card_view.presentation_rotation), "Joker artwork must retain the same 2.5D hand tilt as the other cards")
 	var root_position_before_hover := card_view.position

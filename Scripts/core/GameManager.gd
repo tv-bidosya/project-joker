@@ -416,6 +416,16 @@ var undo_vote_labels: Array[Label] = []
 var undo_vote_states: Array[int] = []
 var pending_joker_card: Card
 var pending_joker_suit := -1
+var local_premove_candidate: Card
+var local_premove_card: Card
+var local_premove_round_number := -1
+var local_premove_tricks_played := -1
+var network_premove_candidate_key := ""
+var network_premove_card_key := ""
+var network_premove_card_label := ""
+var network_premove_round_number := -1
+var network_premove_tricks_played := -1
+var network_premove_submission_scheduled := false
 var last_trick_text := "Взятка ещё не началась"
 var action_text := "Подготовка партии"
 var recent_actions := PackedStringArray()
@@ -459,6 +469,8 @@ var menu_content: VBoxContainer
 var card_deck_preview_container: HBoxContainer
 var table_theme_preview_surround: PanelContainer
 var table_theme_preview_felt: Panel
+var settings_sound_volume_value_label: Label
+var settings_music_volume_value_label: Label
 var local_table_outer: Panel
 var local_table_cloth: Panel
 var network_table_backdrop: ColorRect
@@ -484,6 +496,7 @@ var social_action_cooldown_until: Dictionary = {
 	SocialAction.SOUNDPAD: 0
 }
 var sound_volume_index := 2
+var sound_volume_percent := 60
 var music_volume_index := 2
 var music_volume_percent := 60
 var music_track_index := 0
@@ -1080,9 +1093,9 @@ func _build_main_menu_content() -> void:
 	_add_menu_title("PROJECT JOKER", "Карточная игра для четырёх игроков · %s" % _get_build_version_text())
 	_add_menu_spacer(18.0)
 	if _has_saved_session():
-		_add_menu_button("Продолжить партию", _on_continue_saved_game_pressed, true)
-	_add_menu_button("Новая игра с ботами", _show_new_game_setup, true)
-	_add_menu_button("Играть по сети", _show_online_hub.bind(OnlineHubTab.OPEN_TABLES, true), true)
+		_add_menu_button("Продолжить партию", _on_continue_saved_game_pressed)
+	_add_menu_button("Новая игра с ботами", _show_new_game_setup)
+	_add_menu_button("Играть по сети", _show_online_hub.bind(OnlineHubTab.OPEN_TABLES, true))
 	_add_menu_button("Обучение", _show_tutorial_menu)
 	_add_menu_button("Профиль", _show_profile_menu)
 	_add_menu_button("Статистика", _show_statistics_menu)
@@ -1090,8 +1103,6 @@ func _build_main_menu_content() -> void:
 		_add_menu_button("Инструменты разработчика", _show_developer_tools_menu)
 	_add_menu_button("Настройки", _show_settings_menu)
 	_add_menu_button("Выход", _on_quit_pressed)
-	_add_menu_spacer(12.0)
-	_add_menu_label("32 раздачи: обычные, тёмные, бескозырные, золотые и мизерные.", 14, Color(0.72, 0.85, 0.76, 1.0))
 
 
 func _developer_report_tools_enabled() -> bool:
@@ -2156,6 +2167,7 @@ func _refresh_network_main_table() -> void:
 	var active_trick: Dictionary = snapshot.get("active_trick", {})
 	var viewer_index: int = int(snapshot.get("recipient_player_index", 0))
 	var active_player_index: int = _get_network_table_active_player_index(round_data, active_trick)
+	_sync_network_premove_scope(snapshot, round_data, active_trick, viewer_index, active_player_index)
 	var round_finished := int(round_data.get("state", Round.State.SETUP)) == Round.State.FINISHED
 	var round_number := int(round_data.get("number", 0))
 	if round_number != network_visual_round_number:
@@ -2180,6 +2192,7 @@ func _refresh_network_main_table() -> void:
 	_refresh_network_main_score_sheet(snapshot, round_data)
 	_refresh_network_main_common_controls(snapshot)
 	_process_network_public_table_events(snapshot, viewer_index)
+	_schedule_network_premove_if_ready(snapshot, round_data, active_trick, viewer_index, active_player_index)
 
 
 func _refresh_network_main_waiting_state() -> void:
@@ -2259,6 +2272,10 @@ func _refresh_network_main_header(snapshot: Dictionary, round_data: Dictionary, 
 			action_text_network = "Твой ход: выбери доступную карту в руке."
 		elif players_by_index.has(active_player_index):
 			action_text_network = "Ходит %s" % str((players_by_index[active_player_index] as Dictionary).get("display_name", "игрок"))
+		if not network_premove_card_key.is_empty():
+			action_text_network = "Предварительный ход готов: %s. Карта сыграет автоматически в твой ход." % network_premove_card_label
+		elif not network_premove_candidate_key.is_empty():
+			action_text_network = "Предварительный ход: нажми выбранную карту ещё раз для подтверждения."
 	elif not bool(undo_state.get("pending", false)) and state == Round.State.FINISHED:
 		action_text_network = "Раздача завершена. Итоги — в центре стола."
 	action_label.visible = true
@@ -2970,16 +2987,23 @@ func _refresh_network_main_hand(snapshot: Dictionary, round_data: Dictionary) ->
 	var trump: Round.TrumpSuit = int(round_data.get("trump", Round.TrumpSuit.NONE))
 	var undo_pending: bool = bool((snapshot.get("undo_state", {}) as Dictionary).get("pending", false))
 	var presentation_locked := network_card_play_presentation_active or network_round_finish_presentation_active or undo_pending
+	var active_trick: Dictionary = snapshot.get("active_trick", {})
+	var viewer_index := int(snapshot.get("recipient_player_index", -1))
+	var active_player_index := _get_network_table_active_player_index(round_data, active_trick)
+	var is_viewer_turn := active_player_index == viewer_index
+	var can_prepare_premove := _can_prepare_network_premove(
+		snapshot,
+		round_data,
+		active_trick,
+		viewer_index,
+		active_player_index
+	)
 	var displayed_cards: Array[Card] = _sort_cards_for_display(cards, trump, hand_sort_mode)
 	var rule_availability_by_card: Dictionary = {}
 	var has_rule_available_card := false
 	for card: Card in displayed_cards:
 		var card_key: String = str(card_keys_by_instance.get(card, ""))
-		var rule_available := (
-			_can_submit_loopback_test_joker()
-			if card.is_joker
-			else _is_network_table_card_available(card_key)
-		)
+		var rule_available := _is_network_table_card_rule_available(card_key, card.is_joker)
 		rule_availability_by_card[card] = rule_available
 		has_rule_available_card = has_rule_available_card or rule_available
 	for display_index in displayed_cards.size():
@@ -2989,10 +3013,21 @@ func _refresh_network_main_hand(snapshot: Dictionary, round_data: Dictionary) ->
 		card_view.set_hand_presentation(display_index, displayed_cards.size())
 		var card_key: String = str(card_keys_by_instance.get(card, ""))
 		var rule_available: bool = bool(rule_availability_by_card.get(card, false))
-		var interactive := rule_available and not presentation_locked
+		var available_now := (
+			_can_submit_loopback_test_joker()
+			if card.is_joker
+			else _is_network_table_card_available(card_key)
+		)
+		var interactive := (
+			rule_available
+			and ((is_viewer_turn and available_now) or can_prepare_premove)
+			and not presentation_locked
+			and not loopback_network_joker_selection_open
+		)
 		card_view.set_interactive(interactive, not interactive or loopback_network_joker_selection_open)
 		var show_availability_hint := (
 			has_rule_available_card
+			and (is_viewer_turn or can_prepare_premove)
 			and not presentation_locked
 			and not loopback_network_joker_selection_open
 		)
@@ -3000,9 +3035,13 @@ func _refresh_network_main_hand(snapshot: Dictionary, round_data: Dictionary) ->
 			show_availability_hint and rule_available,
 			show_availability_hint and not rule_available
 		)
+		if card_key == network_premove_card_key:
+			card_view.set_status("ВЫБРАНО ✓")
+		elif card_key == network_premove_candidate_key:
+			card_view.set_status("ПОДТВЕРДИ")
 		if interactive:
 			if card.is_joker:
-				card_view.card_pressed.connect(_on_network_table_joker_pressed)
+				card_view.card_pressed.connect(_on_network_table_joker_pressed.bind(card_key))
 			else:
 				card_view.card_pressed.connect(_on_network_table_card_pressed.bind(card_key))
 		hand_container.add_child(card_view)
@@ -3814,18 +3853,190 @@ func _refresh_network_table_hand(private_hand: Array) -> void:
 		)
 		if interactive:
 			if card.is_joker:
-				card_view.card_pressed.connect(_on_network_table_joker_pressed)
+				card_view.card_pressed.connect(_on_network_table_joker_pressed.bind(card_key))
 			else:
 				card_view.card_pressed.connect(_on_network_table_card_pressed.bind(card_key))
 		network_table_hand_container.add_child(card_view)
 
 
-func _on_network_table_card_pressed(_card: Card, card_key: String) -> void:
-	_on_submit_loopback_test_card_pressed(card_key)
+func _on_network_table_card_pressed(card: Card, card_key: String) -> void:
+	if _is_network_table_card_available(card_key):
+		_clear_network_premove()
+		_on_submit_loopback_test_card_pressed(card_key)
+		return
+	_handle_network_premove_card_pressed(card, card_key)
 
 
-func _on_network_table_joker_pressed(_card: Card) -> void:
-	_on_open_loopback_test_joker_selection_pressed()
+func _on_network_table_joker_pressed(card: Card, card_key: String = "") -> void:
+	if _can_submit_loopback_test_joker():
+		_clear_network_premove()
+		_on_open_loopback_test_joker_selection_pressed()
+		return
+	_handle_network_premove_card_pressed(card, card_key)
+
+
+func _handle_network_premove_card_pressed(card: Card, card_key: String) -> void:
+	if card == null or card_key.is_empty() or not _is_network_table_card_rule_available(card_key, card.is_joker):
+		return
+	var snapshot := _get_network_main_snapshot()
+	var round_data: Dictionary = snapshot.get("round", {})
+	var active_trick: Dictionary = snapshot.get("active_trick", {})
+	var viewer_index := int(snapshot.get("recipient_player_index", -1))
+	var active_player_index := _get_network_table_active_player_index(round_data, active_trick)
+	if not _can_prepare_network_premove(snapshot, round_data, active_trick, viewer_index, active_player_index):
+		return
+
+	network_premove_round_number = int(round_data.get("number", snapshot.get("round_number", -1)))
+	network_premove_tricks_played = int(round_data.get("tricks_played", -1))
+	network_premove_card_label = card.get_card_name()
+	if network_premove_card_key == card_key:
+		_clear_network_premove()
+	elif network_premove_candidate_key == card_key:
+		network_premove_candidate_key = ""
+		network_premove_card_key = card_key
+	else:
+		network_premove_candidate_key = card_key
+		network_premove_card_key = ""
+	_refresh_network_main_table()
+
+
+func _can_prepare_network_premove(
+	snapshot: Dictionary,
+	round_data: Dictionary,
+	active_trick: Dictionary,
+	viewer_index: int,
+	active_player_index: int
+) -> bool:
+	if (
+		viewer_index < 0
+		or active_player_index < 0
+		or active_player_index == viewer_index
+		or int(round_data.get("state", Round.State.SETUP)) != Round.State.PLAYING
+		or active_trick.is_empty()
+		or (active_trick.get("played_cards", []) as Array).is_empty()
+		or network_card_play_presentation_active
+		or network_round_finish_presentation_active
+		or loopback_network_joker_selection_open
+		or bool((snapshot.get("undo_state", {}) as Dictionary).get("pending", false))
+		or not (snapshot.get("reconnecting_player_indices", []) as Array).is_empty()
+	):
+		return false
+	return not (active_trick.get("played_by", []) as Array).has(viewer_index)
+
+
+func _sync_network_premove_scope(
+	snapshot: Dictionary,
+	round_data: Dictionary,
+	active_trick: Dictionary,
+	viewer_index: int,
+	active_player_index: int
+) -> void:
+	if network_premove_candidate_key.is_empty() and network_premove_card_key.is_empty():
+		return
+	var current_round_number := int(round_data.get("number", snapshot.get("round_number", -1)))
+	var current_tricks_played := int(round_data.get("tricks_played", -1))
+	var private_hand: Array = snapshot.get("private_hand", [])
+	var selected_key := (
+		network_premove_card_key
+		if not network_premove_card_key.is_empty()
+		else network_premove_candidate_key
+	)
+	var selected_card_still_exists := false
+	for card_data_variant in private_hand:
+		if (
+			card_data_variant is Dictionary
+			and str((card_data_variant as Dictionary).get("card_key", "")) == selected_key
+		):
+			selected_card_still_exists = true
+			break
+	if (
+		current_round_number != network_premove_round_number
+		or current_tricks_played != network_premove_tricks_played
+		or active_trick.is_empty()
+		or not selected_card_still_exists
+		or (active_trick.get("played_by", []) as Array).has(viewer_index)
+		or bool((snapshot.get("undo_state", {}) as Dictionary).get("pending", false))
+	):
+		_clear_network_premove()
+		return
+	if active_player_index == viewer_index and network_premove_card_key.is_empty():
+		_clear_network_premove()
+
+
+func _schedule_network_premove_if_ready(
+	snapshot: Dictionary,
+	round_data: Dictionary,
+	active_trick: Dictionary,
+	viewer_index: int,
+	active_player_index: int
+) -> void:
+	if (
+		network_premove_card_key.is_empty()
+		or network_premove_submission_scheduled
+		or active_player_index != viewer_index
+		or int(round_data.get("state", Round.State.SETUP)) != Round.State.PLAYING
+		or active_trick.is_empty()
+	):
+		return
+	network_premove_submission_scheduled = true
+	call_deferred(
+		"_execute_network_premove",
+		network_premove_card_key,
+		network_premove_round_number,
+		network_premove_tricks_played
+	)
+
+
+func _execute_network_premove(card_key: String, round_number: int, tricks_played: int) -> void:
+	network_premove_submission_scheduled = false
+	if (
+		card_key.is_empty()
+		or card_key != network_premove_card_key
+		or round_number != network_premove_round_number
+		or tricks_played != network_premove_tricks_played
+	):
+		return
+	var snapshot := _get_network_main_snapshot()
+	var round_data: Dictionary = snapshot.get("round", {})
+	var active_trick: Dictionary = snapshot.get("active_trick", {})
+	var viewer_index := int(snapshot.get("recipient_player_index", -1))
+	if (
+		int(round_data.get("number", snapshot.get("round_number", -1))) != round_number
+		or int(round_data.get("tricks_played", -1)) != tricks_played
+		or _get_network_table_active_player_index(round_data, active_trick) != viewer_index
+	):
+		_clear_network_premove()
+		_refresh_network_main_table()
+		return
+
+	var selected_card_data: Dictionary = {}
+	for card_data_variant in snapshot.get("private_hand", []):
+		if (
+			card_data_variant is Dictionary
+			and str((card_data_variant as Dictionary).get("card_key", "")) == card_key
+		):
+			selected_card_data = card_data_variant
+			break
+	var is_joker := bool(selected_card_data.get("is_joker", false))
+	if is_joker and _can_submit_loopback_test_joker():
+		_clear_network_premove()
+		_on_open_loopback_test_joker_selection_pressed()
+		return
+	if not is_joker and _is_network_table_card_available(card_key):
+		_clear_network_premove()
+		_on_submit_loopback_test_card_pressed(card_key)
+		return
+	_clear_network_premove()
+	_refresh_network_main_table()
+
+
+func _clear_network_premove() -> void:
+	network_premove_candidate_key = ""
+	network_premove_card_key = ""
+	network_premove_card_label = ""
+	network_premove_round_number = -1
+	network_premove_tricks_played = -1
+	network_premove_submission_scheduled = false
 
 
 func _is_network_table_card_available(card_key: String) -> bool:
@@ -3837,6 +4048,27 @@ func _is_network_table_card_available(card_key: String) -> bool:
 		available_cards = network_match.get_available_host_test_cards()
 	elif network_match.is_client() and network_match.can_submit_test_card():
 		available_cards = network_match.get_available_test_cards()
+	for card_data in available_cards:
+		if str(card_data.get("card_key", "")) == card_key:
+			return true
+	return false
+
+
+func _is_network_table_card_rule_available(card_key: String, is_joker: bool) -> bool:
+	var network_match = _get_active_network_match()
+	if network_match == null or card_key.is_empty():
+		return false
+	if is_joker:
+		if network_match.is_host() and network_match.has_method(&"is_host_test_joker_rule_available"):
+			return bool(network_match.call(&"is_host_test_joker_rule_available"))
+		if network_match.is_client() and network_match.has_method(&"is_test_joker_rule_available"):
+			return bool(network_match.call(&"is_test_joker_rule_available"))
+		return false
+	var available_cards: Array[Dictionary] = (
+		network_match.get_available_host_test_cards()
+		if network_match.is_host()
+		else network_match.get_available_test_cards()
+	)
 	for card_data in available_cards:
 		if str(card_data.get("card_key", "")) == card_key:
 			return true
@@ -5213,15 +5445,20 @@ func _show_tutorial_menu() -> void:
 		menu_overlay.visible = true
 	_clear_children(menu_content)
 	_add_menu_title("Обучение", "Короткие подсказки помогают освоиться за столом и не блокируют игру")
-	_add_menu_label("Сейчас подсказки: %s." % ("включены" if tutorial_enabled else "выключены"), 16, Color(0.97, 0.86, 0.55, 1.0))
+	_add_settings_toggle(
+		"TutorialHintsToggle",
+		"Подсказки во время игры",
+		"Показывает на столе короткие пояснения к текущему этапу и доступным действиям.",
+		tutorial_enabled,
+		_on_tutorial_toggled
+	)
+	_add_menu_spacer(8.0)
 	_add_menu_label("• Заказы: перед розыгрышем назови, сколько взяток планируешь взять.", 16)
 	_add_menu_label("• Розыгрыш: если масть захода есть на руке, её нужно положить. Если масти нет — действуют правила козыря и Джокера.", 16)
 	_add_menu_label("• Джокер: при первом ходе можно объявить масть и условие; в середине взятки он может забирать или быть сбросом.", 16)
 	_add_menu_label("• После раздачи сверяй заказ, взятые карты и очки в итогах справа или в расписке.", 16)
 	_add_menu_spacer(10.0)
 	_add_menu_button("Правила игры", _show_rules_menu.bind(true))
-	_add_menu_button("Включить подсказки", _on_tutorial_enable_pressed)
-	_add_menu_button("Отключить подсказки", _on_tutorial_disable_pressed)
 	_add_menu_button("Назад", _return_from_menu_subpage, true)
 	_refresh_tutorial_panel()
 
@@ -5229,17 +5466,42 @@ func _show_tutorial_menu() -> void:
 func _show_settings_menu() -> void:
 	menu_overlay.visible = true
 	_clear_children(menu_content)
-	_add_menu_title("Настройки", "Параметры применяются сразу и действуют до закрытия игры")
-	_add_menu_spacer(8.0)
+	_add_menu_title("Настройки", "Параметры применяются сразу и сохраняются на этом устройстве")
+	_add_menu_spacer(14.0)
+	_add_menu_button("Звук", _show_sound_settings_menu)
+	_add_menu_button("Оформление", _show_appearance_settings_menu)
+	_add_menu_button("Игра", _show_game_settings_menu)
+	_add_menu_button("Экран", _show_display_settings_menu)
+	_add_menu_spacer(10.0)
+	_add_menu_button("Назад", _return_from_menu_subpage)
 
-	var fullscreen_toggle := CheckButton.new()
-	fullscreen_toggle.text = "Полноэкранный режим"
-	fullscreen_toggle.button_pressed = DisplayServer.window_get_mode() == DisplayServer.WINDOW_MODE_FULLSCREEN
-	fullscreen_toggle.add_theme_font_size_override("font_size", 18)
-	fullscreen_toggle.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
-	fullscreen_toggle.toggled.connect(_on_fullscreen_toggled)
-	menu_content.add_child(fullscreen_toggle)
 
+func _show_sound_settings_menu() -> void:
+	menu_overlay.visible = true
+	_clear_children(menu_content)
+	_add_menu_title("Звук", "Отдельная громкость игровых эффектов и фоновой музыки")
+	_add_menu_spacer(12.0)
+	settings_sound_volume_value_label = _add_settings_volume_slider(
+		"SoundVolumeSlider",
+		"Звуки игры",
+		sound_volume_percent,
+		_on_sound_volume_slider_changed
+	)
+	settings_music_volume_value_label = _add_settings_volume_slider(
+		"MusicVolumeSlider",
+		"Музыка",
+		music_volume_percent,
+		_on_music_volume_slider_changed
+	)
+	_add_menu_spacer(14.0)
+	_add_menu_button("Назад к настройкам", _show_settings_menu)
+
+
+func _show_appearance_settings_menu() -> void:
+	menu_overlay.visible = true
+	_clear_children(menu_content)
+	_add_menu_title("Оформление", "Колода, сукно и окружение игрового стола")
+	_add_menu_spacer(12.0)
 	var deck_style_label := Label.new()
 	deck_style_label.text = "Оформление карт"
 	deck_style_label.add_theme_font_size_override("font_size", 18)
@@ -5326,7 +5588,15 @@ func _show_settings_menu() -> void:
 	table_theme_preview_felt.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	preview_margin.add_child(table_theme_preview_felt)
 	_refresh_table_theme_preview()
+	_add_menu_spacer(14.0)
+	_add_menu_button("Назад к настройкам", _show_settings_menu)
 
+
+func _show_game_settings_menu() -> void:
+	menu_overlay.visible = true
+	_clear_children(menu_content)
+	_add_menu_title("Игра", "Поведение ботов, подсказки и автоматические действия")
+	_add_menu_spacer(12.0)
 	var speed_label := Label.new()
 	speed_label.text = "Скорость ходов ботов"
 	speed_label.add_theme_font_size_override("font_size", 18)
@@ -5343,61 +5613,38 @@ func _show_settings_menu() -> void:
 	speed_selector.item_selected.connect(_on_bot_speed_selected)
 	menu_content.add_child(speed_selector)
 
-	var sound_label := Label.new()
-	sound_label.text = "Громкость звуков"
-	sound_label.add_theme_font_size_override("font_size", 18)
-	sound_label.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
-	menu_content.add_child(sound_label)
+	_add_settings_toggle(
+		"SettingsTutorialToggle",
+		"Режим обучения",
+		"Показывает на столе подсказки по заказам, картам и этапам раздачи.",
+		tutorial_enabled,
+		_on_tutorial_toggled
+	)
+	_add_settings_toggle(
+		"SettingsAutoTurnToggle",
+		"Автоход · 60 секунд",
+		"Если ты не ходишь 2 минуты, режим включится автоматически и останется активным. Отключить его можно здесь вручную.",
+		auto_turn_enabled,
+		_on_auto_turn_toggled
+	)
+	_add_menu_spacer(14.0)
+	_add_menu_button("Назад к настройкам", _show_settings_menu)
 
-	var sound_selector := OptionButton.new()
-	sound_selector.add_item("Без звука")
-	sound_selector.add_item("Тихо")
-	sound_selector.add_item("Обычно")
-	sound_selector.add_item("Громко")
-	sound_selector.selected = sound_volume_index
-	sound_selector.custom_minimum_size = Vector2(0.0, 42.0)
-	sound_selector.add_theme_font_size_override("font_size", 17)
-	sound_selector.item_selected.connect(_on_sound_volume_selected)
-	menu_content.add_child(sound_selector)
 
-	var music_label := Label.new()
-	music_label.text = "Громкость музыки"
-	music_label.add_theme_font_size_override("font_size", 18)
-	music_label.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
-	menu_content.add_child(music_label)
-
-	var music_selector := OptionButton.new()
-	music_selector.add_item("Без музыки")
-	music_selector.add_item("Тихо")
-	music_selector.add_item("Обычно")
-	music_selector.add_item("Громко")
-	music_selector.selected = music_volume_index
-	music_selector.custom_minimum_size = Vector2(0.0, 42.0)
-	music_selector.add_theme_font_size_override("font_size", 17)
-	music_selector.item_selected.connect(_on_music_volume_selected)
-	menu_content.add_child(music_selector)
-
-	var tutorial_toggle := CheckButton.new()
-	tutorial_toggle.text = "Режим обучения: подсказки на столе"
-	tutorial_toggle.button_pressed = tutorial_enabled
-	tutorial_toggle.add_theme_font_size_override("font_size", 18)
-	tutorial_toggle.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
-	tutorial_toggle.toggled.connect(_on_tutorial_toggled)
-	menu_content.add_child(tutorial_toggle)
-
-	var auto_turn_toggle := CheckButton.new()
-	auto_turn_toggle.text = "Автоход: 60 секунд"
-	auto_turn_toggle.button_pressed = auto_turn_enabled
-	auto_turn_toggle.add_theme_font_size_override("font_size", 18)
-	auto_turn_toggle.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
-	auto_turn_toggle.toggled.connect(_on_auto_turn_toggled)
-	menu_content.add_child(auto_turn_toggle)
-	_add_menu_label("После 2 минут бездействия автоход включится сам и останется активным на следующих ходах. Отключить его можно здесь вручную. В сетевой партии персональные таймеры контролирует хост.", 14, Color(0.72, 0.85, 0.76, 1.0))
-
-	_add_menu_button("Начать обучение заново", _on_tutorial_enable_pressed)
-	_add_menu_label("Подсказки не мешают игре и всегда доступны из настроек или меню паузы.", 14, Color(0.72, 0.85, 0.76, 1.0))
-	_add_menu_spacer(8.0)
-	_add_menu_button("Назад", _return_from_menu_subpage)
+func _show_display_settings_menu() -> void:
+	menu_overlay.visible = true
+	_clear_children(menu_content)
+	_add_menu_title("Экран", "Параметры отображения игры")
+	_add_menu_spacer(12.0)
+	_add_settings_toggle(
+		"FullscreenToggle",
+		"Полноэкранный режим",
+		"Переключает игру между полноэкранным и развёрнутым оконным режимами.",
+		DisplayServer.window_get_mode() == DisplayServer.WINDOW_MODE_FULLSCREEN,
+		_on_fullscreen_toggled
+	)
+	_add_menu_spacer(14.0)
+	_add_menu_button("Назад к настройкам", _show_settings_menu)
 
 
 func _show_final_session_menu() -> void:
@@ -5455,6 +5702,68 @@ func _return_from_statistics_menu() -> void:
 		return
 
 	_return_from_menu_subpage()
+
+
+func _add_settings_volume_slider(
+	slider_name: String,
+	label_text: String,
+	current_percent: int,
+	callback: Callable
+) -> Label:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 12)
+	menu_content.add_child(row)
+
+	var label := Label.new()
+	label.text = label_text
+	label.custom_minimum_size = Vector2(155.0, 40.0)
+	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	label.add_theme_font_size_override("font_size", 18)
+	label.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
+	row.add_child(label)
+
+	var slider := HSlider.new()
+	slider.name = slider_name
+	slider.min_value = 0.0
+	slider.max_value = 100.0
+	slider.step = 1.0
+	slider.value = clampi(current_percent, 0, 100)
+	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	slider.custom_minimum_size = Vector2(240.0, 40.0)
+	slider.tooltip_text = "%s: от 0 до 100%%" % label_text
+	slider.value_changed.connect(callback)
+	row.add_child(slider)
+
+	var value_label := Label.new()
+	value_label.text = "%d%%" % clampi(current_percent, 0, 100)
+	value_label.custom_minimum_size = Vector2(58.0, 40.0)
+	value_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	value_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	value_label.add_theme_font_size_override("font_size", 17)
+	value_label.add_theme_color_override("font_color", Color(0.97, 0.86, 0.55, 1.0))
+	row.add_child(value_label)
+	return value_label
+
+
+func _add_settings_toggle(
+	toggle_name: String,
+	label_text: String,
+	description_text: String,
+	is_enabled: bool,
+	callback: Callable
+) -> CheckButton:
+	var toggle := CheckButton.new()
+	toggle.name = toggle_name
+	toggle.text = label_text
+	toggle.button_pressed = is_enabled
+	toggle.custom_minimum_size = Vector2(0.0, 38.0)
+	toggle.add_theme_font_size_override("font_size", 18)
+	toggle.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
+	toggle.toggled.connect(callback)
+	menu_content.add_child(toggle)
+
+	_add_menu_label(description_text, 14, Color(0.72, 0.85, 0.76, 1.0))
+	return toggle
 
 
 func _add_menu_title(title_text: String, subtitle_text: String) -> void:
@@ -5914,14 +6223,6 @@ func _on_auto_turn_toggled(enabled: bool) -> void:
 	_refresh_ui()
 
 
-func _on_tutorial_enable_pressed() -> void:
-	tutorial_enabled = true
-	_save_persistent_settings()
-	_refresh_tutorial_panel()
-	if menu_overlay != null and menu_overlay.visible:
-		_show_tutorial_menu()
-
-
 func _on_tutorial_disable_pressed() -> void:
 	tutorial_enabled = false
 	_save_persistent_settings()
@@ -5994,8 +6295,18 @@ func _refresh_card_deck_preview() -> void:
 
 func _on_sound_volume_selected(selected_index: int) -> void:
 	sound_volume_index = clampi(selected_index, 0, SOUND_VOLUME_COUNT - 1)
+	sound_volume_percent = _get_sound_volume_percent_for_index(sound_volume_index)
 	_apply_sound_volume()
 	_save_persistent_settings()
+
+
+func _on_sound_volume_slider_changed(value: float) -> void:
+	sound_volume_percent = clampi(roundi(value), 0, 100)
+	sound_volume_index = _get_sound_volume_index_for_percent(sound_volume_percent)
+	_apply_sound_volume()
+	_save_persistent_settings()
+	if is_instance_valid(settings_sound_volume_value_label):
+		settings_sound_volume_value_label.text = "%d%%" % sound_volume_percent
 
 
 func _on_music_volume_selected(selected_index: int) -> void:
@@ -6009,6 +6320,8 @@ func _on_music_volume_selected(selected_index: int) -> void:
 	_save_persistent_settings()
 	_refresh_music_player()
 	_refresh_music_controls_popup()
+	if is_instance_valid(settings_music_volume_value_label):
+		settings_music_volume_value_label.text = "%d%%" % music_volume_percent
 
 
 func _on_music_previous_pressed() -> void:
@@ -6097,6 +6410,8 @@ func _on_music_volume_slider_changed(value: float) -> void:
 	_save_persistent_settings()
 	_refresh_music_player()
 	_refresh_music_controls_popup()
+	if is_instance_valid(settings_music_volume_value_label):
+		settings_music_volume_value_label.text = "%d%%" % music_volume_percent
 
 
 func _on_music_popup_track_pressed(selected_index: int) -> void:
@@ -6186,6 +6501,9 @@ func _load_persistent_settings() -> void:
 	auto_turn_enabled = bool(config.get_value("game", "auto_turn_enabled", auto_turn_enabled))
 	var saved_sound_volume: int = int(config.get_value("audio", "sound_volume", sound_volume_index))
 	sound_volume_index = clampi(saved_sound_volume, 0, SOUND_VOLUME_COUNT - 1)
+	var saved_sound_percent: int = int(config.get_value("audio", "sound_volume_percent", -1))
+	sound_volume_percent = clampi(saved_sound_percent, 0, 100) if saved_sound_percent >= 0 else _get_sound_volume_percent_for_index(sound_volume_index)
+	sound_volume_index = _get_sound_volume_index_for_percent(sound_volume_percent)
 	var saved_music_volume: int = int(config.get_value("audio", "music_volume", music_volume_index))
 	music_volume_index = clampi(saved_music_volume, 0, MUSIC_VOLUME_COUNT - 1)
 	var saved_music_percent: int = int(config.get_value("audio", "music_volume_percent", -1))
@@ -6243,6 +6561,7 @@ func _save_persistent_settings() -> void:
 	config.set_value("display", "table_felt_theme", table_felt_theme)
 	config.set_value("display", "table_surround_theme", table_surround_theme)
 	config.set_value("audio", "sound_volume", sound_volume_index)
+	config.set_value("audio", "sound_volume_percent", sound_volume_percent)
 	config.set_value("audio", "music_volume", music_volume_index)
 	config.set_value("audio", "music_volume_percent", music_volume_percent)
 	config.set_value("audio", "music_track", music_track_index)
@@ -6847,7 +7166,7 @@ func _create_procedural_sound(
 
 
 func _play_sound(effect: SoundEffect) -> void:
-	if sound_volume_index == 0 or not sound_streams.has(effect):
+	if sound_volume_percent <= 0 or sound_volume_index == 0 or not sound_streams.has(effect):
 		return
 
 	var sound_player := _get_available_sound_player()
@@ -6876,7 +7195,7 @@ func _get_available_sound_player() -> AudioStreamPlayer:
 
 
 func _play_soundpad_stream(stream: AudioStream) -> void:
-	if stream == null or sound_volume_index == 0:
+	if stream == null or sound_volume_percent <= 0 or sound_volume_index == 0:
 		return
 
 	var soundpad_player := _get_available_soundpad_player()
@@ -6911,17 +7230,34 @@ func _apply_sound_volume() -> void:
 
 
 func _get_sound_volume_db() -> float:
-	match sound_volume_index:
-		0:
-			return -80.0
-		1:
-			return -24.0
-		2:
-			return -15.0
-		3:
-			return -8.0
+	if sound_volume_percent <= 0:
+		return -80.0
 
-	return -15.0
+	return lerpf(-32.0, -8.0, float(sound_volume_percent) / 100.0)
+
+
+func _get_sound_volume_percent_for_index(selected_index: int) -> int:
+	match selected_index:
+		0:
+			return 0
+		1:
+			return 30
+		2:
+			return 60
+		3:
+			return 100
+
+	return 60
+
+
+func _get_sound_volume_index_for_percent(percent: int) -> int:
+	if percent <= 0:
+		return 0
+	if percent <= 35:
+		return 1
+	if percent <= 75:
+		return 2
+	return 3
 
 
 func _create_background_music_player() -> void:
@@ -7649,6 +7985,13 @@ func _advance_automatic_actions() -> void:
 				return
 
 			if _get_current_player_index() == HUMAN_PLAYER_INDEX:
+				if _try_apply_local_premove():
+					if pending_joker_card != null:
+						is_processing_automatic_actions = false
+						_start_human_turn_timer()
+						_refresh_ui()
+						return
+					continue
 				_prepare_test_checkpoint()
 				action_text = "Твой ход: выбери допустимую карту."
 				is_processing_automatic_actions = false
@@ -7753,9 +8096,13 @@ func _on_bid_pressed(bid: int) -> void:
 
 
 func _on_card_pressed(card: Card) -> void:
-	if is_bug_report_review_mode or not _is_human_turn() or not _is_card_available_to_human(card):
+	if is_bug_report_review_mode or card == null or not _is_card_available_to_human(card):
+		return
+	if not _is_human_turn():
+		_handle_local_premove_card_pressed(card)
 		return
 
+	_clear_local_premove()
 	if card.is_joker:
 		_capture_bug_report_timeline("Перед выбором условия Джокера")
 		pending_joker_card = card
@@ -8277,6 +8624,8 @@ func _refresh_header() -> void:
 		and (
 			_get_current_player_index() == HUMAN_PLAYER_INDEX
 			or is_trick_presentation_active
+			or local_premove_candidate != null
+			or local_premove_card != null
 		)
 	)
 	action_label.visible = should_show_action_label
@@ -9898,6 +10247,7 @@ func _place_joker_controls() -> void:
 
 func _refresh_hand() -> void:
 	_clear_children(hand_container)
+	_sync_local_premove_scope()
 
 	if _is_dark_round() and not game.cards_are_dealt:
 		var hidden_cards_label := Label.new()
@@ -9910,6 +10260,7 @@ func _refresh_hand() -> void:
 	var human_player := game.players[HUMAN_PLAYER_INDEX]
 	var displayed_cards := _sort_cards_for_display(human_player.hand, game.current_round.trump, hand_sort_mode)
 	var is_human_turn := _is_human_turn()
+	var can_prepare_premove := _can_prepare_local_premove()
 
 	for display_index in displayed_cards.size():
 		var card: Card = displayed_cards[display_index]
@@ -9917,15 +10268,25 @@ func _refresh_hand() -> void:
 		card_view.set_card(card)
 		card_view.set_hand_presentation(display_index, displayed_cards.size())
 		var card_is_available := _is_card_available_to_human(card)
-		card_view.set_interactive(
-			true,
-			is_bug_report_review_mode or not is_human_turn or not card_is_available or pending_joker_card != null
+		var card_is_interactive := (
+			not is_bug_report_review_mode
+			and pending_joker_card == null
+			and card_is_available
+			and (is_human_turn or can_prepare_premove)
 		)
-		var show_availability_hint := is_human_turn and pending_joker_card == null
+		card_view.set_interactive(
+			card_is_interactive,
+			not card_is_interactive
+		)
+		var show_availability_hint := (is_human_turn or can_prepare_premove) and pending_joker_card == null
 		card_view.set_availability_hint(
 			show_availability_hint and card_is_available,
 			show_availability_hint and not card_is_available
 		)
+		if card == local_premove_card:
+			card_view.set_status("ВЫБРАНО ✓")
+		elif card == local_premove_candidate:
+			card_view.set_status("ПОДТВЕРДИ")
 		card_view.card_pressed.connect(_on_card_pressed)
 		hand_container.add_child(card_view)
 
@@ -11230,7 +11591,7 @@ func _create_soundpad_controls() -> void:
 	soundpad_bubble.pivot_offset = Vector2(27.0, 27.0)
 	soundpad_bubble.add_theme_stylebox_override(
 		"panel",
-		_create_flat_style(Color(0.12, 0.055, 0.14, 0.96), Color(0.98, 0.63, 0.89, 1.0), 2, 20, 5)
+		StyleBoxEmpty.new()
 	)
 	_set_control_layout(soundpad_bubble, 0.5, 1.0, 0.5, 1.0, -190.0, -430.0, -136.0, -376.0)
 
@@ -12116,7 +12477,98 @@ func _is_card_available_to_human(card: Card) -> bool:
 	if game.active_trick == null:
 		return true
 
-	return game.active_trick.can_play_card(game.players[HUMAN_PLAYER_INDEX], card)
+	return game.active_trick.is_card_allowed_for_player(game.players[HUMAN_PLAYER_INDEX], card)
+
+
+func _can_prepare_local_premove() -> bool:
+	return (
+		not is_bug_report_review_mode
+		and pending_joker_card == null
+		and game.current_round.state == Round.State.PLAYING
+		and game.active_trick != null
+		and not game.active_trick.played_cards.is_empty()
+		and _get_current_player_index() != HUMAN_PLAYER_INDEX
+		and not game.active_trick.played_by.has(HUMAN_PLAYER_INDEX)
+	)
+
+
+func _handle_local_premove_card_pressed(card: Card) -> void:
+	if not _can_prepare_local_premove() or not _is_card_available_to_human(card):
+		return
+	local_premove_round_number = game.current_round.number
+	local_premove_tricks_played = game.current_round.tricks_played
+	if local_premove_card == card:
+		_clear_local_premove()
+		action_text = "Предварительный ход отменён."
+	elif local_premove_candidate == card:
+		local_premove_candidate = null
+		local_premove_card = card
+		action_text = "Предварительный ход готов: %s сыграет автоматически в твой ход." % card.get_card_name()
+	else:
+		local_premove_candidate = card
+		local_premove_card = null
+		action_text = "Предварительный ход: нажми %s ещё раз для подтверждения." % card.get_card_name()
+	_refresh_ui()
+
+
+func _try_apply_local_premove() -> bool:
+	if local_premove_card == null:
+		return false
+	var card := local_premove_card
+	if (
+		local_premove_round_number != game.current_round.number
+		or local_premove_tricks_played != game.current_round.tricks_played
+		or card not in game.players[HUMAN_PLAYER_INDEX].hand
+		or not _is_card_available_to_human(card)
+	):
+		_clear_local_premove()
+		return false
+
+	_prepare_test_checkpoint()
+	if card.is_joker:
+		_clear_local_premove()
+		_capture_bug_report_timeline("Перед условием заранее выбранного Джокера")
+		pending_joker_card = card
+		pending_joker_suit = -1
+		action_text = "Предварительно выбран Джокер: укажи, берёт он взятку или нет."
+		return true
+
+	_capture_bug_report_timeline("Перед предварительным ходом: %s" % card.get_card_name())
+	_commit_test_checkpoint()
+	if not game.play_card(HUMAN_PLAYER_INDEX, card):
+		_clear_local_premove()
+		return false
+	_clear_local_premove()
+	_stop_human_turn_timer()
+	action_text = "Предварительный ход: ты играешь %s." % card.get_card_name()
+	_record_play("Ты", card, HUMAN_PLAYER_INDEX)
+	_save_current_session()
+	return true
+
+
+func _sync_local_premove_scope() -> void:
+	if local_premove_candidate == null and local_premove_card == null:
+		return
+	var selected_card: Card = local_premove_card if local_premove_card != null else local_premove_candidate
+	if (
+		local_premove_round_number != game.current_round.number
+		or local_premove_tricks_played != game.current_round.tricks_played
+		or selected_card == null
+		or selected_card not in game.players[HUMAN_PLAYER_INDEX].hand
+		or game.active_trick == null
+		or game.active_trick.played_by.has(HUMAN_PLAYER_INDEX)
+	):
+		_clear_local_premove()
+		return
+	if _get_current_player_index() == HUMAN_PLAYER_INDEX and local_premove_card == null:
+		_clear_local_premove()
+
+
+func _clear_local_premove() -> void:
+	local_premove_candidate = null
+	local_premove_card = null
+	local_premove_round_number = -1
+	local_premove_tricks_played = -1
 
 
 func _choose_automatic_bid(player_index: int) -> int:

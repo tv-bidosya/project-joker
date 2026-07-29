@@ -19,6 +19,20 @@ func _run() -> void:
 	assert("Статистика" in main_menu_buttons)
 	assert("Настройки" in main_menu_buttons)
 	assert("Правила" not in main_menu_buttons, "Rules must live inside the training section")
+	assert(
+		not _contains_label_fragment(main_scene.menu_content, "32 раздачи:"),
+		"The obsolete round-list footer must not appear in the main menu"
+	)
+	var new_game_button := _find_button(main_scene.menu_content, "Новая игра с ботами")
+	var tutorial_button := _find_button(main_scene.menu_content, "Обучение")
+	assert(new_game_button != null and tutorial_button != null)
+	var new_game_style := new_game_button.get_theme_stylebox("normal") as StyleBoxFlat
+	var tutorial_style := tutorial_button.get_theme_stylebox("normal") as StyleBoxFlat
+	assert(new_game_style != null and tutorial_style != null)
+	assert(
+		new_game_style.bg_color.is_equal_approx(tutorial_style.bg_color),
+		"Main menu entries must all use the same neutral default style"
+	)
 
 	main_scene._show_new_game_setup()
 	await process_frame
@@ -41,6 +55,38 @@ func _run() -> void:
 	main_scene._show_tutorial_menu()
 	var tutorial_buttons := _get_button_texts(main_scene.menu_content)
 	assert("Правила игры" in tutorial_buttons)
+	assert("Включить подсказки" not in tutorial_buttons)
+	assert("Отключить подсказки" not in tutorial_buttons)
+	assert(main_scene.menu_content.find_child("TutorialHintsToggle", true, false) is CheckButton)
+
+	main_scene._show_settings_menu()
+	var settings_buttons := _get_button_texts(main_scene.menu_content)
+	for expected_section in ["Звук", "Оформление", "Игра", "Экран"]:
+		assert(expected_section in settings_buttons)
+	assert(main_scene.menu_content.find_child("SoundVolumeSlider", true, false) == null)
+
+	main_scene._show_sound_settings_menu()
+	var sound_slider := main_scene.menu_content.find_child("SoundVolumeSlider", true, false) as HSlider
+	var music_slider := main_scene.menu_content.find_child("MusicVolumeSlider", true, false) as HSlider
+	assert(sound_slider != null and sound_slider.min_value == 0.0 and sound_slider.max_value == 100.0)
+	assert(music_slider != null and music_slider.min_value == 0.0 and music_slider.max_value == 100.0)
+	sound_slider.value = 73.0
+	music_slider.value = 44.0
+	assert(main_scene.sound_volume_percent == 73)
+	assert(main_scene.music_volume_percent == 44)
+
+	main_scene._show_game_settings_menu()
+	assert(main_scene.menu_content.find_child("SettingsTutorialToggle", true, false) is CheckButton)
+	assert(main_scene.menu_content.find_child("SettingsAutoTurnToggle", true, false) is CheckButton)
+
+	main_scene._show_display_settings_menu()
+	assert(main_scene.menu_content.find_child("FullscreenToggle", true, false) is CheckButton)
+	assert("Начать обучение заново" not in _get_button_texts(main_scene.menu_content))
+
+	var settings_back_button := _find_button(main_scene.menu_content, "Назад к настройкам")
+	assert(settings_back_button != null)
+	settings_back_button.pressed.emit()
+	assert("Звук" in _get_button_texts(main_scene.menu_content))
 
 	main_scene._show_rules_menu(true)
 	var rules_buttons := _get_buttons(main_scene.menu_content)
@@ -85,6 +131,29 @@ func _get_button_texts(root_control: Node) -> Array[String]:
 	for button in _get_buttons(root_control):
 		texts.append(button.text)
 	return texts
+
+
+func _get_label_texts(root_control: Node) -> Array[String]:
+	var texts: Array[String] = []
+	for child in root_control.get_children():
+		if child is Label:
+			texts.append((child as Label).text)
+		texts.append_array(_get_label_texts(child))
+	return texts
+
+
+func _contains_label_fragment(root_control: Node, fragment: String) -> bool:
+	for label_text in _get_label_texts(root_control):
+		if fragment in label_text:
+			return true
+	return false
+
+
+func _find_button(root_control: Node, button_text: String) -> Button:
+	for button in _get_buttons(root_control):
+		if button.text == button_text:
+			return button
+	return null
 
 
 func _get_buttons(root_control: Node) -> Array[Button]:

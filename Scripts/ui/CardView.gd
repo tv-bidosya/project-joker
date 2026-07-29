@@ -38,6 +38,8 @@ var presentation_offset := Vector2.ZERO
 var visual_tween: Tween
 
 var depth_shadow: Panel
+var winner_glow: Panel
+var winner_glow_tween: Tween
 var face_panel: Panel
 var artwork_texture: TextureRect
 var top_corner_label: Label
@@ -187,6 +189,7 @@ func _refresh_availability_visual() -> void:
 
 func set_winner_highlight(enabled: bool) -> void:
 	is_winner_highlighted = enabled
+	_refresh_winner_glow()
 	_refresh_face_style()
 
 
@@ -227,6 +230,22 @@ func _create_visuals() -> void:
 	shadow_style.shadow_offset = Vector2(0.0, 4.0)
 	depth_shadow.add_theme_stylebox_override("panel", shadow_style)
 	add_child(depth_shadow)
+
+	winner_glow = Panel.new()
+	winner_glow.name = "WinnerGlow"
+	winner_glow.set_anchors_preset(Control.PRESET_FULL_RECT)
+	winner_glow.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	winner_glow.visible = false
+	var winner_glow_style := StyleBoxFlat.new()
+	winner_glow_style.bg_color = Color(1.0, 0.72, 0.12, 0.12)
+	winner_glow_style.border_color = Color(1.0, 0.78, 0.2, 0.96)
+	winner_glow_style.set_border_width_all(3)
+	winner_glow_style.set_corner_radius_all(9)
+	winner_glow_style.shadow_color = Color(1.0, 0.62, 0.08, 0.88)
+	winner_glow_style.shadow_size = 14
+	winner_glow_style.shadow_offset = Vector2.ZERO
+	winner_glow.add_theme_stylebox_override("panel", winner_glow_style)
+	add_child(winner_glow)
 
 	face_panel = Panel.new()
 	face_panel.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -320,6 +339,21 @@ func _create_artwork_edge_material() -> ShaderMaterial:
 	return edge_material
 
 
+func _refresh_winner_glow() -> void:
+	if not is_instance_valid(winner_glow):
+		return
+	if is_instance_valid(winner_glow_tween):
+		winner_glow_tween.kill()
+	winner_glow_tween = null
+	winner_glow.visible = is_winner_highlighted
+	if not is_winner_highlighted:
+		return
+	winner_glow.modulate = Color(1.0, 1.0, 1.0, 0.98)
+	winner_glow_tween = create_tween().set_loops()
+	winner_glow_tween.tween_property(winner_glow, "modulate:a", 0.58, 0.32).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	winner_glow_tween.tween_property(winner_glow, "modulate:a", 0.98, 0.32).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+
+
 func _refresh_face_style() -> void:
 	if displayed_card == null:
 		return
@@ -371,6 +405,8 @@ func _update_visual_pivots() -> void:
 		face_panel.pivot_offset = size * 0.5
 	if is_instance_valid(depth_shadow):
 		depth_shadow.pivot_offset = size * 0.5
+	if is_instance_valid(winner_glow):
+		winner_glow.pivot_offset = size * 0.5
 
 
 func _sync_card_specific_presentation() -> void:
@@ -385,11 +421,14 @@ func _apply_visual_pose(animated: bool) -> void:
 	if is_instance_valid(visual_tween):
 		visual_tween.kill()
 	visual_tween = null
-	if not is_instance_valid(face_panel) or not is_instance_valid(depth_shadow):
+	if not is_instance_valid(face_panel) or not is_instance_valid(depth_shadow) or not is_instance_valid(winner_glow):
 		return
 	face_panel.position = presentation_offset
 	face_panel.rotation = presentation_rotation
 	face_panel.scale = Vector2.ONE
+	winner_glow.position = presentation_offset
+	winner_glow.rotation = presentation_rotation
+	winner_glow.scale = Vector2.ONE
 	depth_shadow.position = presentation_offset + Vector2(2.0, 4.0)
 	depth_shadow.rotation = presentation_rotation
 	depth_shadow.scale = Vector2(0.99, 0.99)
@@ -397,7 +436,7 @@ func _apply_visual_pose(animated: bool) -> void:
 
 
 func _animate_visual_pose(target_offset: Vector2, target_rotation: float, target_scale: Vector2, duration: float) -> void:
-	if not is_instance_valid(face_panel) or not is_instance_valid(depth_shadow):
+	if not is_instance_valid(face_panel) or not is_instance_valid(depth_shadow) or not is_instance_valid(winner_glow):
 		return
 	if is_instance_valid(visual_tween):
 		visual_tween.kill()
@@ -406,6 +445,9 @@ func _animate_visual_pose(target_offset: Vector2, target_rotation: float, target
 	visual_tween.tween_property(face_panel, "position", target_offset, duration)
 	visual_tween.tween_property(face_panel, "rotation", target_rotation, duration)
 	visual_tween.tween_property(face_panel, "scale", target_scale, duration)
+	visual_tween.tween_property(winner_glow, "position", target_offset, duration)
+	visual_tween.tween_property(winner_glow, "rotation", target_rotation, duration)
+	visual_tween.tween_property(winner_glow, "scale", target_scale, duration)
 	visual_tween.tween_property(depth_shadow, "position", target_offset + Vector2(3.0, 6.0), duration)
 	visual_tween.tween_property(depth_shadow, "rotation", target_rotation, duration)
 	visual_tween.tween_property(depth_shadow, "scale", target_scale * 0.99, duration)

@@ -1016,6 +1016,16 @@ func can_submit_test_joker() -> bool:
 	return (
 		int(round_data.get("state", Round.State.SETUP)) == Round.State.PLAYING
 		and _get_client_current_playing_player_index() == client_player_index
+		and is_test_joker_rule_available()
+	)
+
+
+func is_test_joker_rule_available() -> bool:
+	if not client_snapshot_is_safe or client_player_index < FIRST_CLIENT_PLAYER_INDEX:
+		return false
+	var round_data: Dictionary = _get_client_round_data()
+	return (
+		int(round_data.get("state", Round.State.SETUP)) == Round.State.PLAYING
 		and _is_client_joker_allowed()
 	)
 
@@ -1280,7 +1290,7 @@ func get_available_host_test_cards() -> Array[Dictionary]:
 	for card in player.hand:
 		if card.is_joker:
 			continue
-		if match_host.game.active_trick != null and not match_host.game.active_trick.can_play_card(player, card):
+		if match_host.game.active_trick != null and not match_host.game.active_trick.is_card_allowed_for_player(player, card):
 			continue
 		available_cards.append({
 			"card_key": _get_card_key(card),
@@ -1325,10 +1335,18 @@ func can_submit_host_test_joker() -> bool:
 	var round: Round = match_host.game.current_round
 	if round == null or round.state != Round.State.PLAYING or _get_host_current_playing_player_index() != HOST_PLAYER_INDEX:
 		return false
+	return is_host_test_joker_rule_available()
 
+
+func is_host_test_joker_rule_available() -> bool:
+	if not is_host() or not lobby_round_started or match_host == null:
+		return false
+	var round: Round = match_host.game.current_round
+	if round == null or round.state != Round.State.PLAYING:
+		return false
 	var player: Player = match_host.game.players[HOST_PLAYER_INDEX]
 	for card in player.hand:
-		if card.is_joker and (match_host.game.active_trick == null or match_host.game.active_trick.can_play_card(player, card)):
+		if card.is_joker and (match_host.game.active_trick == null or match_host.game.active_trick.is_card_allowed_for_player(player, card)):
 			return true
 	return false
 

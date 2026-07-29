@@ -58,12 +58,34 @@ func _run() -> void:
 	main_scene._refresh_hand()
 	await process_frame
 	for card_view: CardView in _get_hand_card_views(main_scene):
-		assert(
-			not card_view.is_visually_unavailable
-			and not card_view.is_visually_available
-			and not card_view.availability_overlay.visible,
-			"Waiting for another player must not dim the whole hand"
-		)
+		if card_view.displayed_card == illegal_heart:
+			assert(
+				card_view.is_visually_unavailable and card_view.availability_overlay.visible,
+				"An illegal waiting card must stay dimmed while premove is available"
+			)
+		else:
+			assert(
+				card_view.is_visually_available and card_view.is_interactive,
+				"A legal waiting card must be selectable for premove"
+			)
+
+	main_scene._on_card_pressed(legal_spade)
+	assert(main_scene.local_premove_candidate == legal_spade)
+	assert(main_scene.local_premove_card == null)
+	main_scene._on_card_pressed(legal_spade)
+	assert(main_scene.local_premove_candidate == null)
+	assert(main_scene.local_premove_card == legal_spade, "A second click must confirm the premove")
+	await process_frame
+	for card_view: CardView in _get_hand_card_views(main_scene):
+		if card_view.displayed_card == legal_spade:
+			assert(
+				card_view.status_label.text == "ВЫБРАНО ✓",
+				"A confirmed preliminary move needs a clear short badge, got '%s'" % card_view.status_label.text
+			)
+	trick.current_player_index = 0
+	assert(main_scene._try_apply_local_premove(), "A confirmed premove must execute when the turn reaches the player")
+	assert(legal_spade not in visual_game.players[0].hand)
+	assert(main_scene.local_premove_card == null)
 
 	print("CARD_AVAILABILITY_VISUAL_TEST_PASS")
 	quit()
