@@ -55,6 +55,7 @@ const INACTIVITY_AUTO_TURN_DELAY_SECONDS := 120.0
 const AUTO_TURN_DURATION_SECONDS := 60.0
 const REACTION_DISPLAY_DURATION := 1.25
 const SOUNDPAD_BUBBLE_DISPLAY_DURATION := 1.6
+const CHAT_NOTIFICATION_DISPLAY_DURATION := 1.5
 const STICKER_FLY_DURATION := 0.62
 const STICKER_HOLD_DURATION := 6.0
 const AVATAR_ACTION_HIDE_DELAY_SECONDS := 1.8
@@ -351,8 +352,10 @@ var avatar_action_tray_tweens: Dictionary = {}
 var avatar_action_hide_generations: Dictionary = {}
 var avatar_mute_buttons: Array[Button] = []
 var avatar_gift_buttons: Array[Button] = []
+var avatar_soundpad_indicators: Array[Label] = []
 var avatar_mute_hovered_slots: Dictionary = {}
 var muted_network_player_indices: Dictionary = {}
+var soundpad_active_indicator_counts: Dictionary = {}
 var turn_timer_indicator: TurnTimerIndicator
 var social_controls_container: VBoxContainer
 var reaction_toggle_button: Button
@@ -398,6 +401,8 @@ var chat_messages_container: VBoxContainer
 var chat_input: LineEdit
 var chat_send_button: Button
 var chat_status_label: Label
+var chat_notification_badge: PanelContainer
+var chat_notification_tween: Tween
 var network_chat_messages: Array[Dictionary] = []
 var chat_unread_count := 0
 var chat_next_send_milliseconds := 0
@@ -1594,6 +1599,7 @@ func _on_toggle_steam_lobby_ready_pressed() -> void:
 
 func _on_prepare_steam_p2p_pressed() -> void:
 	_reset_loopback_network_joker_selection()
+	_stop_all_soundpad_playback()
 	muted_network_player_indices.clear()
 	avatar_mute_hovered_slots.clear()
 	var lobby_state: Dictionary = steam_bridge.get_lobby_state()
@@ -2355,6 +2361,7 @@ func _refresh_network_main_deck(snapshot: Dictionary, round_data: Dictionary) ->
 		deck_back_panels[card_index].visible = has_open_trump and card_index < mini(3, cards_left)
 
 	if has_open_trump:
+		_show_open_trump_card_frame()
 		var trump_texture: Texture2D = CardArtworkResource.get_face_texture(trump_card)
 		deck_trump_artwork.texture = trump_texture
 		deck_trump_artwork.visible = trump_texture != null
@@ -2369,21 +2376,8 @@ func _refresh_network_main_deck(snapshot: Dictionary, round_data: Dictionary) ->
 		deck_caption_label.text = "Открытый Джокер · бескозырка" if trump_card.is_joker else "Открытый козырь · в колоде: %d" % cards_left
 		return
 
-	deck_trump_artwork.texture = null
-	deck_trump_artwork.visible = false
-	deck_trump_label.visible = true
 	var scheduled_trump := int(round_data.get("trump", Round.TrumpSuit.RANDOM))
-	var scheduled_trump_texture: Texture2D = CardArtworkResource.get_scheduled_trump_texture(scheduled_trump)
-	deck_trump_artwork.texture = scheduled_trump_texture
-	deck_trump_artwork.visible = scheduled_trump_texture != null
-	deck_trump_label.visible = scheduled_trump_texture == null
-	deck_trump_label.text = (
-		"—"
-		if scheduled_trump == Round.TrumpSuit.NONE or scheduled_trump == Round.TrumpSuit.RANDOM
-		else _get_trump_name_from_suit(scheduled_trump)
-	)
-	deck_trump_label.add_theme_font_size_override("font_size", 32)
-	deck_trump_label.add_theme_color_override("font_color", Color(0.08, 0.08, 0.07, 1.0))
+	_show_scheduled_trump_suit_marker(scheduled_trump)
 	if scheduled_trump == Round.TrumpSuit.RANDOM:
 		deck_trump_panel.tooltip_text = "Козырь определится открытой картой после раздачи."
 		deck_caption_label.text = "Козырь ещё не открыт"
@@ -2391,8 +2385,8 @@ func _refresh_network_main_deck(snapshot: Dictionary, round_data: Dictionary) ->
 		deck_trump_panel.tooltip_text = "В этой раздаче козырей нет."
 		deck_caption_label.text = "Без козыря"
 	else:
-		deck_trump_panel.tooltip_text = "Козырь задан расписанием раздач."
-		deck_caption_label.text = "Козырь по расписанию: %s" % _get_trump_name_from_suit(scheduled_trump)
+		deck_trump_panel.tooltip_text = "Это только маркер козырной масти, не карта из колоды."
+		deck_caption_label.text = "Козырная масть: %s" % _get_trump_name_from_suit(scheduled_trump)
 
 
 func _refresh_network_main_players(snapshot: Dictionary, viewer_index: int, active_player_index: int) -> void:
@@ -2668,16 +2662,17 @@ func _present_network_sticker_event(event: Dictionary, viewer_index: int) -> voi
 func _present_network_soundpad_event(event: Dictionary, viewer_index: int) -> void:
 	var actor_player_index := int(event.get("actor_player_index", -1))
 	var sound_id := str(event.get("sound_id", ""))
-	if not _is_network_player_sound_muted(actor_player_index):
+	var relative_slot := posmod(actor_player_index - viewer_index, PLAYER_NAMES.size())
+	var is_muted := _is_network_player_sound_muted(actor_player_index)
+	if not is_muted:
 		for sound_data in soundpad_sounds:
 			if str(sound_data.get("path", "")) == sound_id:
 				var sound_stream: AudioStream = sound_data.get("stream", null) as AudioStream
 				if sound_stream != null:
-					_play_soundpad_stream(sound_stream)
+					_play_soundpad_stream(sound_stream, actor_player_index, relative_slot)
 				break
-	if not is_instance_valid(soundpad_bubble):
+	if not is_muted or not is_instance_valid(soundpad_bubble):
 		return
-	var relative_slot := posmod(actor_player_index - viewer_index, PLAYER_NAMES.size())
 	if relative_slot < 0 or relative_slot >= avatar_badges.size():
 		return
 	var badge_rect := avatar_badges[relative_slot].get_global_rect()
@@ -2695,6 +2690,7 @@ func _present_network_chat_event(event: Dictionary, viewer_index: int) -> void:
 	if not is_instance_valid(chat_panel) or not chat_panel.visible:
 		if actor_player_index != viewer_index:
 			chat_unread_count += 1
+			_show_chat_notification()
 	_refresh_chat_controls()
 
 
@@ -6695,6 +6691,8 @@ func _serialize_game_state() -> Dictionary:
 		"trump_card": _serialize_optional_card(game.trump_card),
 		"last_completed_trick_cards": _serialize_cards(game.last_completed_trick_cards),
 		"last_completed_trick_played_by": game.last_completed_trick_played_by.duplicate(),
+		"played_cards_this_round": _serialize_cards(game.played_cards_this_round),
+		"played_cards_by_this_round": game.played_cards_by_this_round.duplicate(),
 		"last_completed_trick_joker_mode": game.last_completed_trick_joker_mode,
 		"last_completed_trick_declared_suit": game.last_completed_trick_declared_suit,
 		"last_completed_trick_forced_card_rank": game.last_completed_trick_forced_card_rank,
@@ -6997,6 +6995,8 @@ func _deserialize_game_state(game_data: Dictionary, player_names: Array[String])
 	var deck_cards_data: Array = game_data.get("deck_cards", [])
 	var last_cards_data: Array = game_data.get("last_completed_trick_cards", [])
 	var played_by_data: Array = game_data.get("last_completed_trick_played_by", [])
+	var round_played_cards_data: Array = game_data.get("played_cards_this_round", [])
+	var round_played_by_data: Array = game_data.get("played_cards_by_this_round", [])
 	var bids_data: Array = round_data.get("bids", [])
 
 	restored_game.restore_snapshot({
@@ -7020,6 +7020,8 @@ func _deserialize_game_state(game_data: Dictionary, player_names: Array[String])
 		"trump_card": _deserialize_optional_card(trump_card_data),
 		"last_completed_trick_cards": _deserialize_cards(last_cards_data),
 		"last_completed_trick_played_by": played_by_data,
+		"played_cards_this_round": _deserialize_cards(round_played_cards_data),
+		"played_cards_by_this_round": round_played_by_data,
 		"last_completed_trick_joker_mode": int(game_data.get("last_completed_trick_joker_mode", Trick.JokerMode.NONE)),
 		"last_completed_trick_declared_suit": int(game_data.get("last_completed_trick_declared_suit", -1)),
 		"last_completed_trick_forced_card_rank": int(game_data.get("last_completed_trick_forced_card_rank", Trick.ForcedCardRank.NONE)),
@@ -7127,6 +7129,9 @@ func _create_sound_players() -> void:
 		var soundpad_player := AudioStreamPlayer.new()
 		soundpad_player.name = "SoundpadPlayer%d" % player_number
 		soundpad_player.bus = &"Master"
+		soundpad_player.set_meta("source_player_index", -1)
+		soundpad_player.set_meta("source_relative_slot", -1)
+		soundpad_player.finished.connect(_on_soundpad_player_finished.bind(soundpad_player))
 		add_child(soundpad_player)
 		soundpad_players.append(soundpad_player)
 
@@ -7194,7 +7199,11 @@ func _get_available_sound_player() -> AudioStreamPlayer:
 	return player
 
 
-func _play_soundpad_stream(stream: AudioStream) -> void:
+func _play_soundpad_stream(
+	stream: AudioStream,
+	source_player_index := -1,
+	source_relative_slot := -1
+) -> void:
 	if stream == null or sound_volume_percent <= 0 or sound_volume_index == 0:
 		return
 
@@ -7203,6 +7212,9 @@ func _play_soundpad_stream(stream: AudioStream) -> void:
 		return
 
 	soundpad_player.stream = stream
+	soundpad_player.set_meta("source_player_index", source_player_index)
+	soundpad_player.set_meta("source_relative_slot", source_relative_slot)
+	_set_soundpad_actor_playing(source_relative_slot, true)
 	soundpad_player.play()
 
 
@@ -7216,7 +7228,51 @@ func _get_available_soundpad_player() -> AudioStreamPlayer:
 
 	var player := soundpad_players[next_soundpad_player_index]
 	next_soundpad_player_index = (next_soundpad_player_index + 1) % soundpad_players.size()
+	_release_soundpad_player_indicator(player)
+	player.stop()
 	return player
+
+
+func _on_soundpad_player_finished(player: AudioStreamPlayer) -> void:
+	_release_soundpad_player_indicator(player)
+
+
+func _release_soundpad_player_indicator(player: AudioStreamPlayer) -> void:
+	if not is_instance_valid(player):
+		return
+	var relative_slot := int(player.get_meta("source_relative_slot", -1))
+	player.set_meta("source_player_index", -1)
+	player.set_meta("source_relative_slot", -1)
+	_set_soundpad_actor_playing(relative_slot, false)
+
+
+func _set_soundpad_actor_playing(relative_slot: int, is_playing: bool) -> void:
+	if relative_slot < 0 or relative_slot >= avatar_soundpad_indicators.size():
+		return
+	var active_count := int(soundpad_active_indicator_counts.get(relative_slot, 0))
+	active_count = active_count + 1 if is_playing else maxi(0, active_count - 1)
+	if active_count > 0:
+		soundpad_active_indicator_counts[relative_slot] = active_count
+	else:
+		soundpad_active_indicator_counts.erase(relative_slot)
+	avatar_soundpad_indicators[relative_slot].visible = active_count > 0
+
+
+func _stop_soundpad_for_network_player(player_index: int) -> void:
+	for player in soundpad_players:
+		if int(player.get_meta("source_player_index", -1)) != player_index:
+			continue
+		_release_soundpad_player_indicator(player)
+		player.stop()
+
+
+func _stop_all_soundpad_playback() -> void:
+	for player in soundpad_players:
+		_release_soundpad_player_indicator(player)
+		player.stop()
+	soundpad_active_indicator_counts.clear()
+	for indicator in avatar_soundpad_indicators:
+		indicator.visible = false
 
 
 func _apply_sound_volume() -> void:
@@ -7845,6 +7901,7 @@ func _refresh_music_player() -> void:
 func _reset_game_session() -> void:
 	_stop_human_turn_timer()
 	_reset_turn_reminder()
+	_stop_all_soundpad_playback()
 	local_first_turn_roll_generation += 1
 	local_first_turn_roll_active = false
 	local_first_turn_roll_round = 0
@@ -8947,6 +9004,21 @@ func _create_player_avatar_badges() -> void:
 		turn_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		avatar_content.add_child(turn_label)
 
+		var soundpad_indicator := Label.new()
+		soundpad_indicator.name = "AvatarSoundpadIndicator"
+		soundpad_indicator.visible = false
+		soundpad_indicator.z_index = 7
+		soundpad_indicator.text = "🔊"
+		soundpad_indicator.tooltip_text = "Этот игрок сейчас воспроизводит звук"
+		soundpad_indicator.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		soundpad_indicator.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		soundpad_indicator.add_theme_font_size_override("font_size", 22)
+		soundpad_indicator.add_theme_color_override("font_outline_color", Color(0.02, 0.04, 0.03, 0.95))
+		soundpad_indicator.add_theme_constant_override("outline_size", 5)
+		soundpad_indicator.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_set_control_layout(soundpad_indicator, 0.5, 0.0, 0.5, 0.0, -16.0, -40.0, 16.0, -8.0)
+		avatar_content.add_child(soundpad_indicator)
+
 		var undo_vote_badge := PanelContainer.new()
 		undo_vote_badge.name = "UndoVoteBadge"
 		undo_vote_badge.visible = false
@@ -9022,6 +9094,7 @@ func _create_player_avatar_badges() -> void:
 		avatar_action_trays.append(action_tray)
 		avatar_mute_buttons.append(mute_button)
 		avatar_gift_buttons.append(gift_button)
+		avatar_soundpad_indicators.append(soundpad_indicator)
 		undo_vote_badges.append(undo_vote_badge)
 		undo_vote_labels.append(undo_vote_label)
 
@@ -9152,6 +9225,7 @@ func _on_avatar_mute_button_pressed(relative_slot: int) -> void:
 		muted_network_player_indices.erase(player_index)
 	else:
 		muted_network_player_indices[player_index] = true
+		_stop_soundpad_for_network_player(player_index)
 	var snapshot := _get_network_main_snapshot()
 	if _is_steam_p2p_main_table_active() and not snapshot.is_empty():
 		_refresh_avatar_mute_buttons(snapshot, int(snapshot.get("recipient_player_index", 0)))
@@ -10548,6 +10622,7 @@ func _refresh_deck_visual() -> void:
 		deck_back_panels[card_index].visible = card_index < visible_deck_cards
 
 	if has_open_trump:
+		_show_open_trump_card_frame()
 		var trump_card := game.trump_card
 		var trump_texture: Texture2D = CardArtworkResource.get_face_texture(trump_card)
 		deck_trump_artwork.texture = trump_texture
@@ -10568,15 +10643,44 @@ func _refresh_deck_visual() -> void:
 		return
 
 	var trump_name := game.current_round.get_trump_name()
-	var scheduled_trump_texture: Texture2D = CardArtworkResource.get_scheduled_trump_texture(game.current_round.trump)
-	deck_trump_artwork.texture = scheduled_trump_texture
-	deck_trump_artwork.visible = scheduled_trump_texture != null
-	deck_trump_label.visible = scheduled_trump_texture == null
-	deck_trump_label.text = "—" if game.current_round.trump == Round.TrumpSuit.NONE else trump_name
-	deck_trump_label.add_theme_font_size_override("font_size", 32)
-	deck_trump_label.add_theme_color_override("font_color", Color(0.08, 0.08, 0.07, 1.0))
-	deck_trump_panel.tooltip_text = "Козырь задан правилами этой раздачи."
-	deck_caption_label.text = "Без козыря" if game.current_round.trump == Round.TrumpSuit.NONE else "Козырь задан: %s" % trump_name
+	_show_scheduled_trump_suit_marker(game.current_round.trump)
+	deck_trump_panel.tooltip_text = (
+		"В этой раздаче козырей нет."
+		if game.current_round.trump == Round.TrumpSuit.NONE
+		else "Это только маркер козырной масти, не карта из колоды."
+	)
+	deck_caption_label.text = "Без козыря" if game.current_round.trump == Round.TrumpSuit.NONE else "Козырная масть: %s" % trump_name
+
+
+func _show_open_trump_card_frame() -> void:
+	deck_trump_panel.position = Vector2(54.0, 20.0)
+	deck_trump_panel.size = Vector2(64.0, 96.0)
+	deck_trump_panel.add_theme_stylebox_override("panel", deck_trump_card_style)
+	deck_trump_label.remove_theme_constant_override("outline_size")
+	deck_trump_label.remove_theme_color_override("font_outline_color")
+
+
+func _show_scheduled_trump_suit_marker(trump: int) -> void:
+	deck_trump_panel.position = Vector2(54.0, 34.0)
+	deck_trump_panel.size = Vector2(64.0, 64.0)
+	deck_trump_panel.add_theme_stylebox_override("panel", StyleBoxEmpty.new())
+	deck_trump_artwork.texture = null
+	deck_trump_artwork.visible = false
+	deck_trump_label.visible = true
+	deck_trump_label.text = (
+		"—"
+		if trump == Round.TrumpSuit.NONE or trump == Round.TrumpSuit.RANDOM
+		else _get_trump_name_from_suit(trump)
+	)
+	deck_trump_label.add_theme_font_size_override("font_size", 48)
+	deck_trump_label.add_theme_color_override(
+		"font_color",
+		Color(0.92, 0.1, 0.08, 1.0)
+		if trump == Round.TrumpSuit.HEARTS or trump == Round.TrumpSuit.DIAMONDS
+		else Color(0.035, 0.045, 0.04, 1.0)
+	)
+	deck_trump_label.add_theme_color_override("font_outline_color", Color(0.96, 0.91, 0.72, 0.96))
+	deck_trump_label.add_theme_constant_override("outline_size", 6)
 
 
 func _add_card_back_artwork(card_back: Control) -> bool:
@@ -10640,6 +10744,28 @@ func _create_chat_controls() -> void:
 	_apply_bare_social_icon_button_style(chat_toggle_button)
 	chat_toggle_button.pressed.connect(_on_chat_toggle_pressed)
 	social_controls_container.add_child(chat_toggle_button)
+
+	chat_notification_badge = PanelContainer.new()
+	chat_notification_badge.name = "ChatNotificationBadge"
+	chat_notification_badge.visible = false
+	chat_notification_badge.z_index = 42
+	chat_notification_badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	chat_notification_badge.pivot_offset = Vector2(30.0, 30.0)
+	chat_notification_badge.add_theme_stylebox_override(
+		"panel",
+		_create_flat_style(Color(0.04, 0.1, 0.07, 0.96), Color(0.97, 0.76, 0.28, 1.0), 2, 12, 5)
+	)
+	# When the chat is closed, keep the short notification in its usual
+	# lower-right lane instead of pulling the player's attention to the header.
+	_set_control_layout(chat_notification_badge, 1.0, 1.0, 1.0, 1.0, -82.0, -82.0, -22.0, -22.0)
+	var notification_icon := Label.new()
+	notification_icon.text = "✉"
+	notification_icon.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	notification_icon.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	notification_icon.add_theme_font_size_override("font_size", 29)
+	notification_icon.add_theme_color_override("font_color", Color(1.0, 0.9, 0.52, 1.0))
+	chat_notification_badge.add_child(notification_icon)
+	players_container.add_child(chat_notification_badge)
 
 	chat_panel = PanelContainer.new()
 	chat_panel.name = "NetworkChatPanel"
@@ -10751,6 +10877,7 @@ func _on_chat_toggle_pressed() -> void:
 	soundpad_picker.visible = false
 	chat_panel.visible = true
 	chat_unread_count = 0
+	_hide_chat_notification()
 	_refresh_chat_controls()
 	chat_input.grab_focus()
 	call_deferred("_scroll_network_chat_to_bottom")
@@ -10852,6 +10979,27 @@ func _scroll_network_chat_to_bottom() -> void:
 		chat_messages_scroll.scroll_vertical = roundi(chat_messages_scroll.get_v_scroll_bar().max_value)
 
 
+func _show_chat_notification() -> void:
+	if not is_instance_valid(chat_notification_badge):
+		return
+	if is_instance_valid(chat_notification_tween):
+		chat_notification_tween.kill()
+	chat_notification_badge.visible = true
+	chat_notification_badge.modulate = Color.WHITE
+	chat_notification_badge.scale = Vector2(0.72, 0.72)
+	chat_notification_tween = create_tween()
+	chat_notification_tween.tween_property(chat_notification_badge, "scale", Vector2(1.08, 1.08), 0.16).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	chat_notification_tween.tween_property(chat_notification_badge, "scale", Vector2.ONE, 0.12).set_trans(Tween.TRANS_SINE)
+	chat_notification_tween.tween_interval(maxf(0.0, CHAT_NOTIFICATION_DISPLAY_DURATION - 0.46))
+	chat_notification_tween.tween_property(chat_notification_badge, "modulate:a", 0.0, 0.18)
+	chat_notification_tween.tween_callback(_hide_chat_notification)
+
+
+func _hide_chat_notification() -> void:
+	if is_instance_valid(chat_notification_badge):
+		chat_notification_badge.visible = false
+
+
 func _refresh_chat_controls() -> void:
 	if not is_instance_valid(chat_toggle_button) or not is_instance_valid(chat_panel):
 		return
@@ -10862,6 +11010,7 @@ func _refresh_chat_controls() -> void:
 		chat_unread_count = 0
 	elif not can_show:
 		chat_panel.visible = false
+		_hide_chat_notification()
 	network_chat_was_available = can_show
 	chat_toggle_button.text = "💬" if chat_unread_count <= 0 else "💬 %d" % chat_unread_count
 	chat_toggle_button.tooltip_text = (
@@ -11944,8 +12093,7 @@ func _on_soundpad_selected(sound_data: Dictionary) -> void:
 		return
 
 	soundpad_picker.visible = false
-	_play_soundpad_stream(sound_stream)
-	_show_soundpad_bubble()
+	_play_soundpad_stream(sound_stream, HUMAN_PLAYER_INDEX, HUMAN_PLAYER_INDEX)
 	_add_history("Ты включил звук «%s»." % str(sound_data.get("title", "Звук")))
 	_refresh_history()
 
@@ -12645,12 +12793,13 @@ func _choose_automatic_card(player: Player) -> Card:
 	var wants_trick := _bot_wants_trick(player)
 
 	if game.active_trick == null:
+		if game.current_round.round_type == Round.RoundType.MISERE:
+			return _select_misere_lead_card(player, legal_cards)
 		if wants_trick:
-			var leading_joker := _get_joker_from_cards(legal_cards)
-			if leading_joker != null:
-				return leading_joker
-
-			return _select_card_by_strength(legal_cards, true)
+			var strong_regular_lead := _select_non_joker_card_by_strength(legal_cards, true)
+			if strong_regular_lead != null:
+				return strong_regular_lead
+			return _get_joker_from_cards(legal_cards)
 
 		var low_lead_card := _select_non_joker_card_by_strength(legal_cards, false)
 		return low_lead_card if low_lead_card != null else legal_cards[0]
@@ -12661,7 +12810,7 @@ func _choose_automatic_card(player: Player) -> Card:
 			return weakest_winning_regular_card
 
 		var taking_joker := _get_joker_from_cards(legal_cards)
-		if taking_joker != null:
+		if taking_joker != null and _should_spend_joker_for_trick(player, legal_cards):
 			return taking_joker
 
 		# Взятку уже невозможно забрать: сохраняем сильные карты для следующего захода.
@@ -12687,6 +12836,8 @@ func _choose_hard_automatic_card(player: Player, legal_cards: Array[Card]) -> Ca
 	if game.active_trick == null:
 		if game.current_round.round_type == Round.RoundType.GOLDEN:
 			return _select_golden_lead_card(legal_cards, game.current_round.trump)
+		if game.current_round.round_type == Round.RoundType.MISERE:
+			return _select_misere_lead_card(player, legal_cards)
 		if wants_trick:
 			var strong_regular_lead := _select_non_joker_card_by_strength(legal_cards, true)
 			return strong_regular_lead if strong_regular_lead != null else _get_joker_from_cards(legal_cards)
@@ -12700,7 +12851,7 @@ func _choose_hard_automatic_card(player: Player, legal_cards: Array[Card]) -> Ca
 			return weakest_winning_regular_card
 
 		var taking_joker := _get_joker_from_cards(legal_cards)
-		if taking_joker != null:
+		if taking_joker != null and _should_spend_joker_for_trick(player, legal_cards):
 			return taking_joker
 
 		# Даже при невыполненном заказе не тратим туза, если эта взятка проиграна.
@@ -12858,6 +13009,71 @@ func _bot_wants_trick(player: Player) -> bool:
 	# После перебора точный заказ уже не вернуть, поэтому выгоднее продолжать
 	# собирать взятки: перебор приносит очки, недобор оставляет штраф.
 	return player.bid != player.tricks_taken
+
+
+func _should_spend_joker_for_trick(player: Player, legal_cards: Array[Card]) -> bool:
+	if game.current_round.round_type == Round.RoundType.GOLDEN:
+		return true
+	if player.tricks_taken > player.bid:
+		return true
+
+	var regular_cards := 0
+	for card in legal_cards:
+		if not card.is_joker:
+			regular_cards += 1
+	if regular_cards == 0:
+		return true
+
+	var tricks_still_needed := maxi(0, player.bid - player.tricks_taken)
+	# Джокер гарантирует будущую взятку. Тратим его раньше конца только тогда,
+	# когда для выполнения заказа уже необходимо забрать каждую оставшуюся.
+	return tricks_still_needed > 0 and player.hand.size() <= tricks_still_needed
+
+
+func _select_misere_lead_card(player: Player, cards: Array[Card]) -> Card:
+	var regular_cards: Array[Card] = []
+	var safely_coverable_cards: Array[Card] = []
+	var cards_with_live_suit: Array[Card] = []
+	for card in cards:
+		if card.is_joker:
+			continue
+		regular_cards.append(card)
+		var unseen_ranks := _get_unseen_regular_ranks_for_suit(player, card.suit)
+		if not unseen_ranks.is_empty():
+			cards_with_live_suit.append(card)
+		for unseen_rank in unseen_ranks:
+			if unseen_rank > card.rank:
+				safely_coverable_cards.append(card)
+				break
+
+	if not safely_coverable_cards.is_empty():
+		# Сбрасываем наиболее опасную старшую карту, которую ещё может накрыть
+		# известная несыгранная карта соперника.
+		return _select_card_by_strength(safely_coverable_cards, true)
+	if not cards_with_live_suit.is_empty():
+		return _select_card_by_strength(cards_with_live_suit, false)
+	if not regular_cards.is_empty():
+		return _select_card_by_strength(regular_cards, false)
+	return _get_joker_from_cards(cards)
+
+
+func _get_unseen_regular_ranks_for_suit(player: Player, suit: int) -> Array[int]:
+	var known_ranks: Dictionary = {}
+	for card in game.played_cards_this_round:
+		if not card.is_joker and card.suit == suit:
+			known_ranks[card.rank] = true
+	for card in player.hand:
+		if not card.is_joker and card.suit == suit:
+			known_ranks[card.rank] = true
+
+	var unseen_ranks: Array[int] = []
+	for rank in Card.Rank.values():
+		# Семёрка крестей в этой колоде является Джокером, а не обычной картой.
+		if suit == Card.Suit.CLUBS and rank == Card.Rank.SEVEN:
+			continue
+		if not known_ranks.has(rank):
+			unseen_ranks.append(rank)
+	return unseen_ranks
 
 
 func _select_golden_lead_card(cards: Array[Card], trump: Round.TrumpSuit) -> Card:
@@ -13640,6 +13856,21 @@ func _run_bot_rule_checks() -> void:
 	)
 	assert(test_game.start_round(9, Round.RoundType.MISERE, Round.TrumpSuit.CLUBS), "Проверка бота: мизерная раздача должна запускаться.")
 	assert(not _bot_wants_trick(game.players[_get_current_player_index()]), "Проверка бота: в мизерной раздаче бот должен избегать взяток.")
+	for player in test_game.players:
+		player.hand.clear()
+	var misere_memory_bot := game.players[_get_current_player_index()]
+	var exhausted_spade := _create_card(Card.Suit.SPADES, Card.Rank.SIX)
+	var coverable_heart := _create_card(Card.Suit.HEARTS, Card.Rank.KING)
+	misere_memory_bot.receive_card(exhausted_spade)
+	misere_memory_bot.receive_card(coverable_heart)
+	for rank in Card.Rank.values():
+		if rank != Card.Rank.SIX:
+			game.played_cards_this_round.append(_create_card(Card.Suit.SPADES, rank))
+	bot_difficulty = BotDifficulty.HARD
+	assert(
+		_choose_automatic_card(misere_memory_bot) == coverable_heart,
+		"Проверка бота: на мизере нельзя заходить полностью вышедшей мастью, если есть карта, которую ещё могут накрыть."
+	)
 	assert(test_game.start_round(9, Round.RoundType.DARK, Round.TrumpSuit.CLUBS, false), "Проверка бота: тёмная раздача должна запускаться.")
 	var dark_player_index := game.current_round.current_player_index
 	var dark_bid := _choose_automatic_bid(dark_player_index)
@@ -13664,7 +13895,7 @@ func _run_bot_rule_checks() -> void:
 	var joker_saving_choice: Card = _choose_automatic_card(test_game.players[joker_check_bot_index])
 	assert(joker_saving_choice == saving_trump, "Проверка бота: обычный козырь должен сохранять Джокера.")
 
-	assert(test_game.start_round(1, Round.RoundType.NORMAL, Round.TrumpSuit.CLUBS), "Проверка бота: раздача для обязательного Джокера должна запускаться.")
+	assert(test_game.start_round(2, Round.RoundType.NORMAL, Round.TrumpSuit.CLUBS), "Проверка бота: раздача для обязательного Джокера должна запускаться.")
 	test_game.current_round.start_playing_without_bids()
 	for player in test_game.players:
 		player.hand.clear()
@@ -13677,7 +13908,7 @@ func _run_bot_rule_checks() -> void:
 	test_game.players[joker_check_leader_index].receive_card(ace_trump_lead)
 	test_game.players[joker_check_bot_index].receive_card(losing_trump)
 	test_game.players[joker_check_bot_index].receive_card(required_joker)
-	test_game.players[joker_check_bot_index].bid = 1
+	test_game.players[joker_check_bot_index].bid = 2
 	assert(test_game.play_card(joker_check_leader_index, ace_trump_lead), "Проверка бота: ведущий туз-козырь должен быть сыгран.")
 	var joker_required_choice: Card = _choose_automatic_card(test_game.players[joker_check_bot_index])
 	assert(joker_required_choice == required_joker, "Проверка бота: Джокер должен быть выбран, когда обычный козырь не перебивает взятку.")

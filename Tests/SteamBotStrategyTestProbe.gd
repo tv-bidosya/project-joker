@@ -14,8 +14,9 @@ func _init() -> void:
 	_test_golden_round_seeks_trick(network_match)
 	_test_golden_round_preserves_unsafe_trump_king(network_match)
 	_test_overbid_bot_keeps_taking(network_match)
-	_test_joker_takes_when_regular_card_cannot(network_match)
+	_test_joker_is_saved_until_it_is_needed(network_match)
 	_test_hard_bot_preserves_leading_joker(network_match)
+	_test_misere_avoids_exhausted_lead_suit(network_match)
 
 	network_match.free()
 	print("STEAM_BOT_STRATEGY_TEST_PASS")
@@ -146,7 +147,7 @@ func _test_overbid_bot_keeps_taking(network_match: SteamP2PMatch) -> void:
 	assert(network_match._local_bot_wants_trick(game.players[bot_index]), "An overbid bot must keep seeking tricks.")
 
 
-func _test_joker_takes_when_regular_card_cannot(network_match: SteamP2PMatch) -> void:
+func _test_joker_is_saved_until_it_is_needed(network_match: SteamP2PMatch) -> void:
 	var game := _create_playing_game(Round.RoundType.NORMAL, Round.TrumpSuit.CLUBS)
 	var leader_index := game.current_round.current_player_index
 	var bot_index := (leader_index + 1) % game.players.size()
@@ -162,7 +163,13 @@ func _test_joker_takes_when_regular_card_cannot(network_match: SteamP2PMatch) ->
 	network_match._bot_difficulty = SteamP2PMatch.BOT_DIFFICULTY_HARD
 
 	var payload := network_match._get_local_bot_card_payload(bot_index)
-	assert(payload.get("card_key", "") == "joker", "The bot must use a joker when no regular card can win.")
+	assert(
+		payload.get("card_key", "") == _card_key(losing_trump),
+		"The bot must save its guaranteed joker when it can still fulfill a one-trick bid later."
+	)
+	game.players[bot_index].bid = 2
+	payload = network_match._get_local_bot_card_payload(bot_index)
+	assert(payload.get("card_key", "") == "joker", "The bot must use its joker when every remaining trick is needed.")
 	assert(int(payload.get("joker_mode", Trick.JokerMode.NONE)) == Trick.JokerMode.JOKER_WINS)
 
 
@@ -180,8 +187,28 @@ func _test_hard_bot_preserves_leading_joker(network_match: SteamP2PMatch) -> voi
 	var normal_payload := network_match._get_local_bot_card_payload(bot_index)
 	network_match._bot_difficulty = SteamP2PMatch.BOT_DIFFICULTY_HARD
 	var hard_payload := network_match._get_local_bot_card_payload(bot_index)
-	assert(normal_payload.get("card_key", "") == "joker", "A normal bot may lead with a taking joker.")
+	assert(normal_payload.get("card_key", "") == _card_key(trump_ace), "A normal bot must preserve a joker when a strong regular lead is available.")
 	assert(hard_payload.get("card_key", "") == _card_key(trump_ace), "A hard bot must preserve a joker when a strong regular lead is available.")
+
+
+func _test_misere_avoids_exhausted_lead_suit(network_match: SteamP2PMatch) -> void:
+	var game := _create_playing_game(Round.RoundType.MISERE, Round.TrumpSuit.NONE)
+	var bot_index := game.current_round.current_player_index
+	var dead_spade := _card(Card.Suit.SPADES, Card.Rank.SIX)
+	var coverable_heart := _card(Card.Suit.HEARTS, Card.Rank.KING)
+	game.players[bot_index].receive_card(dead_spade)
+	game.players[bot_index].receive_card(coverable_heart)
+	for rank in Card.Rank.values():
+		if rank != Card.Rank.SIX:
+			game.played_cards_this_round.append(_card(Card.Suit.SPADES, rank))
+	network_match.match_host = MatchHost.new(game)
+	network_match._bot_difficulty = SteamP2PMatch.BOT_DIFFICULTY_HARD
+
+	var payload := network_match._get_local_bot_card_payload(bot_index)
+	assert(
+		payload.get("card_key", "") == _card_key(coverable_heart),
+		"A misere bot must avoid leading a suit whose every other card is already known."
+	)
 
 
 func _create_playing_game(round_type: Round.RoundType, trump: Round.TrumpSuit) -> Game:

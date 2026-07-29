@@ -20,6 +20,12 @@ func _run() -> void:
 			CardArtworkResource.get_scheduled_trump_texture(suit) != null,
 			"A fixed trump suit must have decorative vector artwork"
 		)
+	assert(main_scene.game.start_round(9, Round.RoundType.NORMAL, Round.TrumpSuit.SPADES))
+	main_scene._refresh_deck_visual()
+	assert(not main_scene.deck_trump_artwork.visible, "A scheduled trump must not look like a real ace from the deck")
+	assert(main_scene.deck_trump_label.visible and main_scene.deck_trump_label.text == "♠")
+	assert(main_scene.deck_trump_panel.get_theme_stylebox("panel") is StyleBoxEmpty)
+	assert(main_scene.deck_caption_label.text.contains("Козырная масть"))
 
 	var colored_suits: String = main_scene._format_suit_symbols_for_dark_ui("♣ ♠ ♥ ♦")
 	assert(colored_suits.contains("#ff5148"), "Hearts and diamonds must be red in dark table text")

@@ -104,6 +104,16 @@ func _run() -> void:
 	}, 0)
 	assert(main_scene.network_chat_messages.size() == 1, "A network chat event must be appended to the local chat log")
 	assert(main_scene.chat_unread_count == 1, "A hidden chat panel must count unread remote messages")
+	assert(main_scene.chat_notification_badge.visible, "A hidden chat must show a short envelope notification")
+	assert(
+		is_equal_approx(main_scene.chat_notification_badge.anchor_left, 1.0)
+		and is_equal_approx(main_scene.chat_notification_badge.anchor_top, 1.0)
+		and main_scene.chat_notification_badge.offset_right <= -20.0
+		and main_scene.chat_notification_badge.offset_bottom <= -20.0,
+		"The envelope notification must stay in the closed chat's lower-right corner"
+	)
+	await create_timer(main_scene.CHAT_NOTIFICATION_DISPLAY_DURATION + 0.1).timeout
+	assert(not main_scene.chat_notification_badge.visible, "The envelope notification must hide after about 1.5 seconds")
 
 	main_scene.muted_network_player_indices[1] = true
 	main_scene._hide_reaction_bubble()
@@ -127,6 +137,27 @@ func _run() -> void:
 	assert(main_scene.soundpad_bubble.visible, "Soundpad mute must keep the visual sound cue")
 	for soundpad_player: AudioStreamPlayer in main_scene.soundpad_players:
 		assert(soundpad_player.stream == null, "Soundpad mute must suppress only the remote audio stream")
+
+	main_scene.muted_network_player_indices.erase(1)
+	main_scene.sound_volume_index = 2
+	main_scene.sound_volume_percent = 60
+	var playing_sound: AudioStream = main_scene._create_procedural_sound(440.0, 440.0, 1.0, 0.2, 0.0)
+	main_scene._play_soundpad_stream(playing_sound, 1, 1)
+	assert(main_scene.avatar_soundpad_indicators[1].visible, "The speaker must stay visible beside the player while their clip is playing")
+	main_scene.avatar_mute_buttons[1].set_meta("network_player_index", 1)
+	main_scene._on_avatar_mute_button_pressed(1)
+	assert(not main_scene.avatar_soundpad_indicators[1].visible, "Muting a player must immediately hide their active speaker")
+	for soundpad_player: AudioStreamPlayer in main_scene.soundpad_players:
+		assert(
+			not soundpad_player.playing or int(soundpad_player.get_meta("source_player_index", -1)) != 1,
+			"Muting a player must immediately stop a clip that is already playing"
+		)
+	main_scene.muted_network_player_indices.erase(1)
+	var short_sound: AudioStream = main_scene._create_procedural_sound(520.0, 520.0, 0.16, 0.2, 0.0)
+	main_scene._play_soundpad_stream(short_sound, 1, 1)
+	assert(main_scene.avatar_soundpad_indicators[1].visible)
+	await create_timer(0.3).timeout
+	assert(not main_scene.avatar_soundpad_indicators[1].visible, "The speaker must disappear when the clip finishes naturally")
 
 	print("NETWORK_CHAT_SOUND_MUTE_TEST_PASS")
 	quit()

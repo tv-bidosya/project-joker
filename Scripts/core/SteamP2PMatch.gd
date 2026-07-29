@@ -1036,11 +1036,13 @@ func _choose_local_bot_card(player: Player, legal_cards: Array[Card]) -> Card:
 
 	var wants_trick := _local_bot_wants_trick(player)
 	if match_host.game.active_trick == null:
+		if match_host.game.current_round.round_type == Round.RoundType.MISERE:
+			return _select_local_bot_misere_lead_card(player, legal_cards)
 		if wants_trick:
-			var leading_joker := _get_local_bot_joker(legal_cards)
-			if leading_joker != null:
-				return leading_joker
-			return _select_local_bot_card_by_strength(legal_cards, true)
+			var strong_regular_lead := _select_local_bot_non_joker_by_strength(legal_cards, true)
+			if strong_regular_lead != null:
+				return strong_regular_lead
+			return _get_local_bot_joker(legal_cards)
 		var low_lead_card := _select_local_bot_non_joker_by_strength(legal_cards, false)
 		return low_lead_card if low_lead_card != null else legal_cards[0]
 
@@ -1049,7 +1051,7 @@ func _choose_local_bot_card(player: Player, legal_cards: Array[Card]) -> Card:
 		if weakest_winner != null:
 			return weakest_winner
 		var taking_joker := _get_local_bot_joker(legal_cards)
-		if taking_joker != null:
+		if taking_joker != null and _should_local_bot_spend_joker(player, legal_cards):
 			return taking_joker
 		var weakest_loser := _select_local_bot_weakest_loser(legal_cards)
 		if weakest_loser != null:
@@ -1069,6 +1071,8 @@ func _choose_hard_local_bot_card(player: Player, legal_cards: Array[Card]) -> Ca
 	if match_host.game.active_trick == null:
 		if match_host.game.current_round.round_type == Round.RoundType.GOLDEN:
 			return _select_golden_local_bot_lead_card(legal_cards, match_host.game.current_round.trump)
+		if match_host.game.current_round.round_type == Round.RoundType.MISERE:
+			return _select_local_bot_misere_lead_card(player, legal_cards)
 		var regular_lead := _select_local_bot_non_joker_by_strength(legal_cards, wants_trick)
 		return regular_lead if regular_lead != null else _get_local_bot_joker(legal_cards)
 
@@ -1077,7 +1081,7 @@ func _choose_hard_local_bot_card(player: Player, legal_cards: Array[Card]) -> Ca
 		if weakest_winner != null:
 			return weakest_winner
 		var taking_joker := _get_local_bot_joker(legal_cards)
-		if taking_joker != null:
+		if taking_joker != null and _should_local_bot_spend_joker(player, legal_cards):
 			return taking_joker
 		var weakest_loser := _select_local_bot_weakest_loser(legal_cards)
 		if weakest_loser != null:
@@ -1102,6 +1106,66 @@ func _local_bot_wants_trick(player: Player) -> bool:
 		Round.RoundType.MISERE:
 			return false
 	return player.bid != player.tricks_taken
+
+
+func _should_local_bot_spend_joker(player: Player, legal_cards: Array[Card]) -> bool:
+	if match_host.game.current_round.round_type == Round.RoundType.GOLDEN:
+		return true
+	if player.tricks_taken > player.bid:
+		return true
+
+	var regular_cards := 0
+	for card in legal_cards:
+		if not card.is_joker:
+			regular_cards += 1
+	if regular_cards == 0:
+		return true
+
+	var tricks_still_needed := maxi(0, player.bid - player.tricks_taken)
+	return tricks_still_needed > 0 and player.hand.size() <= tricks_still_needed
+
+
+func _select_local_bot_misere_lead_card(player: Player, cards: Array[Card]) -> Card:
+	var regular_cards: Array[Card] = []
+	var safely_coverable_cards: Array[Card] = []
+	var cards_with_live_suit: Array[Card] = []
+	for card in cards:
+		if card.is_joker:
+			continue
+		regular_cards.append(card)
+		var unseen_ranks := _get_local_bot_unseen_regular_ranks(player, card.suit)
+		if not unseen_ranks.is_empty():
+			cards_with_live_suit.append(card)
+		for unseen_rank in unseen_ranks:
+			if unseen_rank > card.rank:
+				safely_coverable_cards.append(card)
+				break
+
+	if not safely_coverable_cards.is_empty():
+		return _select_local_bot_card_by_strength(safely_coverable_cards, true)
+	if not cards_with_live_suit.is_empty():
+		return _select_local_bot_card_by_strength(cards_with_live_suit, false)
+	if not regular_cards.is_empty():
+		return _select_local_bot_card_by_strength(regular_cards, false)
+	return _get_local_bot_joker(cards)
+
+
+func _get_local_bot_unseen_regular_ranks(player: Player, suit: int) -> Array[int]:
+	var known_ranks: Dictionary = {}
+	for card in match_host.game.played_cards_this_round:
+		if not card.is_joker and card.suit == suit:
+			known_ranks[card.rank] = true
+	for card in player.hand:
+		if not card.is_joker and card.suit == suit:
+			known_ranks[card.rank] = true
+
+	var unseen_ranks: Array[int] = []
+	for rank in Card.Rank.values():
+		if suit == Card.Suit.CLUBS and rank == Card.Rank.SEVEN:
+			continue
+		if not known_ranks.has(rank):
+			unseen_ranks.append(rank)
+	return unseen_ranks
 
 
 func _select_golden_local_bot_lead_card(cards: Array[Card], trump: Round.TrumpSuit) -> Card:
