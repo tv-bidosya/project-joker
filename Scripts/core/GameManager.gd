@@ -27,6 +27,7 @@ const MAX_SOUNDPAD_FILE_SIZE_BYTES := 2 * 1024 * 1024
 const MAX_SOUNDPAD_CLIP_DURATION_SECONDS := 25.0
 const SOUNDPAD_MANIFEST_SCRIPT_PATH := "res://Assets/Soundboard/soundpad_manifest.gd"
 const SoundpadManifest = preload("res://Assets/Soundboard/soundpad_manifest.gd")
+const PublicSoundpadManifest = preload("res://Assets/PublicSoundboard/public_soundpad_manifest.gd")
 const NetworkSnapshot = preload("res://Scripts/core/MatchStateSnapshot.gd")
 const NetworkCommand = preload("res://Scripts/core/MatchCommand.gd")
 const NetworkHost = preload("res://Scripts/core/LocalMatchHost.gd")
@@ -35,6 +36,7 @@ const SteamBridge = preload("res://Scripts/core/SteamBridge.gd")
 const SteamP2PMatch = preload("res://Scripts/core/SteamP2PMatch.gd")
 const CardArtworkResource = preload("res://Scripts/ui/CardArtwork.gd")
 const Dice3DViewResource = preload("res://Scripts/ui/Dice3DView.gd")
+const RoundResultsCountdownBorderResource = preload("res://Scripts/ui/RoundResultsCountdownBorder.gd")
 const FLUENT_EMOJI_LICENSE = preload("res://Assets/Social/FluentEmoji3D/license_notice.gd")
 const JOKER_CELEBRATION_TEXTURE = preload("res://Assets/Effects/Joker/laughing_jester_middle_fingers.png")
 const SCORE_SHEET_NUMBER_COLUMN_WIDTH := 46.0
@@ -49,8 +51,9 @@ const ROUND_RESULTS_PANEL_MIN_WIDTH := 420.0
 const ROUND_RESULTS_PANEL_MAX_WIDTH := 760.0
 const ROUND_RESULTS_PANEL_HORIZONTAL_PADDING := 56.0
 const ROUND_RESULTS_PANEL_TOP := 270.0
-const ROUND_RESULTS_PANEL_FIXED_HEIGHT := 82.0
+const ROUND_RESULTS_PANEL_FIXED_HEIGHT := 92.0
 const ROUND_RESULTS_PANEL_ROW_HEIGHT := 26.0
+const NETWORK_NEXT_ROUND_AUTO_START_SECONDS := 30.0
 const INACTIVITY_AUTO_TURN_DELAY_SECONDS := 120.0
 const AUTO_TURN_DURATION_SECONDS := 60.0
 const REACTION_DISPLAY_DURATION := 1.25
@@ -86,6 +89,15 @@ const LOCAL_UNDO_VOTE_RESULT_HOLD_SECONDS := 0.45
 const FIRST_TURN_ROLL_BOT_REROLL_DELAY_SECONDS := 1.8
 const TURN_REMINDER_DELAY_SECONDS := 10.0
 const UNSET_SCORE_DISPLAY := -2147483648
+const SUPPORTED_INTERFACE_LOCALES := ["uk", "en", "pl", "be", "kz", "ru"]
+const INTERFACE_LOCALE_NAMES := {
+	"uk": "Українська",
+	"en": "English",
+	"pl": "Polski",
+	"be": "Беларуская",
+	"kz": "Қазақша",
+	"ru": "Русский · прототип",
+}
 const TABLE_FELT_NAMES := ["Классическое зелёное", "Синее", "Бордовое"]
 const TABLE_SURROUND_NAMES := ["Тёмно-зелёный", "Тёмный орех", "Светлый дуб", "Тёмный клуб", "Тёплая ткань"]
 const TABLE_SURROUND_SHADER_CODE := """
@@ -228,6 +240,7 @@ enum SoundEffect {
 	DEAL,
 	CARD,
 	TRICK,
+	TURN_START,
 	TURN_REMINDER
 }
 
@@ -488,6 +501,8 @@ var match_history_mode := NetworkHost.HistoryMode.FULL
 var bot_difficulty: BotDifficulty = BotDifficulty.NORMAL
 var tutorial_enabled := false
 var auto_turn_enabled := false
+var interface_locale := "uk"
+var interface_locale_was_chosen := false
 var turn_timer_active := false
 var turn_timer_remaining := AUTO_TURN_DURATION_SECONDS
 var social_action_uses: Dictionary = {
@@ -555,6 +570,7 @@ var available_custom_music_paths: Array[String] = []
 var loaded_custom_music_path := ""
 var custom_music_stream: AudioStream
 var music_controls_popup: PopupPanel
+var music_popup_volume_title: Label
 var music_popup_volume_label: Label
 var music_popup_volume_slider: HSlider
 var music_popup_repeat_button: Button
@@ -562,11 +578,13 @@ var music_popup_shuffle_button: Button
 var music_popup_folder_button: Button
 var music_popup_clear_button: Button
 var music_popup_import_label: Label
+var music_popup_playlist_title: Label
 var music_popup_search_input: LineEdit
 var music_popup_previous_page_button: Button
 var music_popup_next_page_button: Button
 var music_popup_page_label: Label
 var music_popup_playlist_container: VBoxContainer
+var round_results_countdown_border: RoundResultsCountdownBorder
 var score_sheet_backdrop: ColorRect
 var score_sheet_close_button: Button
 var tutorial_panel: PanelContainer
@@ -604,6 +622,9 @@ var steam_p2p_main_table_presentation := false
 var network_round_result_key := ""
 var network_round_finish_presentation_key := ""
 var network_round_finish_presentation_active := false
+var network_round_countdown_result_key := ""
+var network_round_countdown_remaining_seconds := 0.0
+var network_round_countdown_active := false
 var network_visual_round_number := -1
 var network_collected_trick_key := ""
 var network_public_event_stream_key := ""
@@ -736,6 +757,8 @@ func _ready() -> void:
 		steam_bridge.initialize_for_diagnostics()
 		steam_bridge.join_lobby_from_launch()
 		_show_steam_lobby_menu()
+	elif not interface_locale_was_chosen:
+		_show_language_settings_menu(true)
 	else:
 		_show_main_menu()
 
@@ -763,8 +786,13 @@ func _create_table_visual_styles() -> void:
 	round_results_style.content_margin_left = 12.0
 	round_results_style.content_margin_top = 12.0
 	round_results_style.content_margin_right = 12.0
-	round_results_style.content_margin_bottom = 12.0
+	round_results_style.content_margin_bottom = 20.0
 	round_results_panel.add_theme_stylebox_override("panel", round_results_style)
+	round_results_countdown_border = RoundResultsCountdownBorderResource.new()
+	round_results_countdown_border.name = "RoundResultsCountdownBorder"
+	round_results_countdown_border.visible = false
+	round_results_countdown_border.z_index = 20
+	round_results_panel.add_child(round_results_countdown_border)
 	var round_results_title_style := _create_flat_style(Color(0.15, 0.105, 0.035, 0.96), Color(0.86, 0.64, 0.2, 0.92), 1, 7, 1)
 	round_results_title_style.content_margin_left = 8.0
 	round_results_title_style.content_margin_right = 8.0
@@ -1095,19 +1123,19 @@ func _on_menu_backdrop_gui_input(event: InputEvent) -> void:
 func _build_main_menu_content() -> void:
 	online_hub_is_open = false
 	_clear_children(menu_content)
-	_add_menu_title("PROJECT JOKER", "Карточная игра для четырёх игроков · %s" % _get_build_version_text())
+	_add_menu_title("PROJECT JOKER", tr("MAIN_MENU_SUBTITLE") % _get_build_version_text())
 	_add_menu_spacer(18.0)
 	if _has_saved_session():
-		_add_menu_button("Продолжить партию", _on_continue_saved_game_pressed)
-	_add_menu_button("Новая игра с ботами", _show_new_game_setup)
-	_add_menu_button("Играть по сети", _show_online_hub.bind(OnlineHubTab.OPEN_TABLES, true))
-	_add_menu_button("Обучение", _show_tutorial_menu)
-	_add_menu_button("Профиль", _show_profile_menu)
-	_add_menu_button("Статистика", _show_statistics_menu)
+		_add_menu_button(tr("MENU_CONTINUE"), _on_continue_saved_game_pressed)
+	_add_menu_button(tr("MENU_NEW_BOTS"), _show_new_game_setup)
+	_add_menu_button(tr("MENU_ONLINE"), _show_online_hub.bind(OnlineHubTab.OPEN_TABLES, true))
+	_add_menu_button(tr("MENU_TUTORIAL"), _show_tutorial_menu)
+	_add_menu_button(tr("MENU_PROFILE"), _show_profile_menu)
+	_add_menu_button(tr("MENU_STATISTICS"), _show_statistics_menu)
 	if _developer_report_tools_enabled():
-		_add_menu_button("Инструменты разработчика", _show_developer_tools_menu)
-	_add_menu_button("Настройки", _show_settings_menu)
-	_add_menu_button("Выход", _on_quit_pressed)
+		_add_menu_button(tr("MENU_DEV_TOOLS"), _show_developer_tools_menu)
+	_add_menu_button(tr("MENU_SETTINGS"), _show_settings_menu)
+	_add_menu_button(tr("MENU_QUIT"), _on_quit_pressed)
 
 
 func _developer_report_tools_enabled() -> bool:
@@ -1115,7 +1143,11 @@ func _developer_report_tools_enabled() -> bool:
 
 
 func _get_build_version_text() -> String:
-	return "версия разработчика %s" % GAME_VERSION if _developer_report_tools_enabled() else "версия для игроков %s" % GAME_VERSION
+	return (
+		tr("BUILD_DEVELOPER") % GAME_VERSION
+		if _developer_report_tools_enabled()
+		else tr("BUILD_PLAYER") % GAME_VERSION
+	)
 
 
 func _show_developer_tools_menu() -> void:
@@ -2146,6 +2178,7 @@ func _refresh_network_main_table() -> void:
 		network_table_view.visible = false
 	if is_instance_valid(menu_overlay):
 		menu_overlay.visible = false
+	_position_action_label_for_table_mode(true)
 
 	first_turn_roll_panel.visible = false
 	var network_match = _get_active_network_match()
@@ -2177,6 +2210,8 @@ func _refresh_network_main_table() -> void:
 	var round_finished := int(round_data.get("state", Round.State.SETUP)) == Round.State.FINISHED
 	var round_number := int(round_data.get("number", 0))
 	if round_number != network_visual_round_number:
+		if round_number > 0:
+			_play_sound(SoundEffect.DEAL)
 		network_visual_round_number = round_number
 		network_collected_trick_key = ""
 	var result_key := _get_network_round_result_key(snapshot, round_data)
@@ -2199,15 +2234,16 @@ func _refresh_network_main_table() -> void:
 	_refresh_network_main_common_controls(snapshot)
 	_process_network_public_table_events(snapshot, viewer_index)
 	_schedule_network_premove_if_ready(snapshot, round_data, active_trick, viewer_index, active_player_index)
+	call_deferred("_align_social_controls_to_local_player_panel")
 
 
 func _refresh_network_main_waiting_state() -> void:
-	phase_label.text = "Этап: подключение к сетевому столу"
-	trump_label.text = "Козырь будет открыт после запуска раздачи"
+	phase_label.text = tr("WAITING_NETWORK_PHASE")
+	trump_label.text = tr("WAITING_NETWORK_TRUMP")
 	action_label.visible = true
-	action_label.text = "Ожидаем безопасный снимок стола от хоста."
-	table_label.text = "Сетевой стол ожидает начала раздачи"
-	history_label.text = "Сетевая история\nОжидание публичного состояния от хоста."
+	action_label.text = tr("WAITING_NETWORK_ACTION")
+	table_label.text = tr("WAITING_NETWORK_TABLE")
+	history_label.text = "%s\n%s" % [tr("HISTORY_TITLE"), tr("WAITING_NETWORK_ACTION")]
 	round_results_panel.visible = false
 	deck_visual.visible = false
 	_clear_children(hand_container)
@@ -2217,20 +2253,21 @@ func _refresh_network_main_waiting_state() -> void:
 	next_round_button.visible = false
 	undo_button.disabled = true
 	_refresh_network_main_common_controls()
+	call_deferred("_align_social_controls_to_local_player_panel")
 
 
 func _refresh_network_main_header(snapshot: Dictionary, round_data: Dictionary, active_player_index: int) -> void:
 	var state: int = int(round_data.get("state", Round.State.SETUP))
 	var round_type: int = int(round_data.get("round_type", Round.RoundType.NORMAL))
-	var phase_text := "подготовка"
+	var phase_text := tr("TABLE_PHASE_SETUP")
 	match state:
 		Round.State.BIDDING:
-			phase_text = "заказ взяток"
+			phase_text = tr("TABLE_PHASE_BIDDING")
 		Round.State.PLAYING:
-			phase_text = "розыгрыш взяток"
+			phase_text = tr("TABLE_PHASE_PLAYING")
 		Round.State.FINISHED:
-			phase_text = "завершена"
-	phase_label.text = "Раздача %d · %s · %s" % [
+			phase_text = tr("TABLE_PHASE_FINISHED")
+	phase_label.text = tr("TABLE_NETWORK_ROUND_HEADER") % [
 		int(round_data.get("number", 0)),
 		_get_round_type_display_name(round_type),
 		phase_text
@@ -2238,52 +2275,52 @@ func _refresh_network_main_header(snapshot: Dictionary, round_data: Dictionary, 
 
 	var trump_card: Card = _create_network_table_card(snapshot.get("trump_card", {}))
 	if round_type == Round.RoundType.MISERE:
-		trump_label.text = _get_network_scheduled_trump_text("Мизерная", round_data)
+		trump_label.text = _get_network_scheduled_trump_text(tr("ROUND_MISERE"), round_data)
 	elif round_type == Round.RoundType.GOLDEN:
-		trump_label.text = _get_network_scheduled_trump_text("Золотая", round_data)
+		trump_label.text = _get_network_scheduled_trump_text(tr("ROUND_GOLDEN"), round_data)
 	elif trump_card == null:
 		var scheduled_trump := int(round_data.get("trump", Round.TrumpSuit.RANDOM))
 		trump_label.text = (
-			"Козырь: не определён"
+			tr("TRUMP_PLACEHOLDER")
 			if scheduled_trump == Round.TrumpSuit.RANDOM
-			else "Козырь: %s (по расписанию)" % _get_trump_name_from_suit(scheduled_trump)
+			else tr("TRUMP_FIXED") % _get_localized_trump_name(scheduled_trump)
 		)
 	elif trump_card.is_joker:
-		trump_label.text = "Открыт Джокер · бескозырка"
+		trump_label.text = tr("DECK_OPEN_JOKER")
 	else:
-		trump_label.text = "Открыта %s · козырь %s" % [trump_card.get_card_name(), _get_suit_symbol(trump_card.suit)]
+		trump_label.text = tr("TRUMP_OPEN_CARD") % [_get_localized_card_name(trump_card), _get_suit_symbol(trump_card.suit)]
 	trump_label.text = _format_suit_symbols_for_dark_ui(trump_label.text)
 
 	var players_by_index: Dictionary = _get_network_players_by_index(snapshot)
-	var action_text_network := "Ожидание действий хоста"
+	var action_text_network := tr("ACTION_WAIT_HOST")
 	var undo_state: Dictionary = snapshot.get("undo_state", {})
 	if bool(undo_state.get("pending", false)):
 		var requester_index := int(undo_state.get("requester_player_index", -1))
 		var requester_name := "Игрок"
 		if players_by_index.has(requester_index):
 			requester_name = str((players_by_index[requester_index] as Dictionary).get("display_name", requester_name))
-		action_text_network = "%s просит вернуть ход · осталось %d с." % [requester_name, int(undo_state.get("seconds_left", 0))]
+		action_text_network = tr("ACTION_UNDO_REQUEST") % [requester_name, int(undo_state.get("seconds_left", 0))]
 	var reconnecting_player_name := _get_network_reconnecting_player_name(snapshot, players_by_index)
 	if not reconnecting_player_name.is_empty():
-		action_text_network = "%s переподключается. Партия ожидает возвращения игрока." % reconnecting_player_name
+		action_text_network = tr("ACTION_RECONNECTING") % reconnecting_player_name
 	elif not bool(undo_state.get("pending", false)) and state == Round.State.BIDDING:
 		if active_player_index == int(snapshot.get("recipient_player_index", -1)):
-			action_text_network = "Твой заказ: выбери число взяток."
+			action_text_network = tr("ACTION_YOUR_BID")
 		elif players_by_index.has(active_player_index):
-			action_text_network = "Заказывает %s" % str((players_by_index[active_player_index] as Dictionary).get("display_name", "игрок"))
+			action_text_network = tr("ACTION_PLAYER_BIDS") % str((players_by_index[active_player_index] as Dictionary).get("display_name", "игрок"))
 	elif not bool(undo_state.get("pending", false)) and state == Round.State.PLAYING:
 		if loopback_network_joker_selection_open:
-			action_text_network = "Выбери условие для Джокера."
+			action_text_network = tr("ACTION_CHOOSE_JOKER")
 		elif active_player_index == int(snapshot.get("recipient_player_index", -1)):
-			action_text_network = "Твой ход: выбери доступную карту в руке."
+			action_text_network = tr("ACTION_YOUR_TURN")
 		elif players_by_index.has(active_player_index):
-			action_text_network = "Ходит %s" % str((players_by_index[active_player_index] as Dictionary).get("display_name", "игрок"))
+			action_text_network = tr("ACTION_PLAYER_TURN") % str((players_by_index[active_player_index] as Dictionary).get("display_name", "игрок"))
 		if not network_premove_card_key.is_empty():
-			action_text_network = "Предварительный ход готов: %s. Карта сыграет автоматически в твой ход." % network_premove_card_label
+			action_text_network = tr("ACTION_PREMOVE_READY") % network_premove_card_label
 		elif not network_premove_candidate_key.is_empty():
-			action_text_network = "Предварительный ход: нажми выбранную карту ещё раз для подтверждения."
+			action_text_network = tr("ACTION_PREMOVE_CONFIRM")
 	elif not bool(undo_state.get("pending", false)) and state == Round.State.FINISHED:
-		action_text_network = "Раздача завершена. Итоги — в центре стола."
+		action_text_network = tr("ACTION_ROUND_FINISHED")
 	action_label.visible = true
 	action_label.text = action_text_network
 
@@ -2366,27 +2403,27 @@ func _refresh_network_main_deck(snapshot: Dictionary, round_data: Dictionary) ->
 		deck_trump_artwork.texture = trump_texture
 		deck_trump_artwork.visible = trump_texture != null
 		deck_trump_label.visible = trump_texture == null
-		deck_trump_label.text = trump_card.get_card_name()
+		deck_trump_label.text = _get_localized_card_name(trump_card)
 		deck_trump_label.add_theme_font_size_override("font_size", 17)
 		deck_trump_label.add_theme_color_override(
 			"font_color",
 			Color(0.74, 0.08, 0.06, 1.0) if trump_card.suit == Card.Suit.HEARTS or trump_card.suit == Card.Suit.DIAMONDS else Color(0.08, 0.08, 0.07, 1.0)
 		)
-		deck_trump_panel.tooltip_text = "Открытая карта и остаток колоды — публичная информация сетевой раздачи."
-		deck_caption_label.text = "Открытый Джокер · бескозырка" if trump_card.is_joker else "Открытый козырь · в колоде: %d" % cards_left
+		deck_trump_panel.tooltip_text = tr("TRUMP_NETWORK_CARD_TOOLTIP")
+		deck_caption_label.text = tr("DECK_OPEN_JOKER") if trump_card.is_joker else tr("DECK_OPEN_TRUMP") % cards_left
 		return
 
 	var scheduled_trump := int(round_data.get("trump", Round.TrumpSuit.RANDOM))
 	_show_scheduled_trump_suit_marker(scheduled_trump)
 	if scheduled_trump == Round.TrumpSuit.RANDOM:
-		deck_trump_panel.tooltip_text = "Козырь определится открытой картой после раздачи."
-		deck_caption_label.text = "Козырь ещё не открыт"
+		deck_trump_panel.tooltip_text = tr("TRUMP_WILL_OPEN_TOOLTIP")
+		deck_caption_label.text = tr("TRUMP_NOT_OPEN")
 	elif scheduled_trump == Round.TrumpSuit.NONE:
-		deck_trump_panel.tooltip_text = "В этой раздаче козырей нет."
-		deck_caption_label.text = "Без козыря"
+		deck_trump_panel.tooltip_text = tr("TRUMP_NONE_TOOLTIP")
+		deck_caption_label.text = tr("TRUMP_NO_SUIT")
 	else:
-		deck_trump_panel.tooltip_text = "Это только маркер козырной масти, не карта из колоды."
-		deck_caption_label.text = "Козырная масть: %s" % _get_trump_name_from_suit(scheduled_trump)
+		deck_trump_panel.tooltip_text = tr("TRUMP_MARKER_TOOLTIP")
+		deck_caption_label.text = tr("TRUMP_MARKER") % _get_localized_trump_name(scheduled_trump)
 
 
 func _refresh_network_main_players(snapshot: Dictionary, viewer_index: int, active_player_index: int) -> void:
@@ -2410,18 +2447,22 @@ func _refresh_network_main_players(snapshot: Dictionary, viewer_index: int, acti
 		var is_temporary_bot := _is_network_player_temporary_bot(snapshot, player_index)
 		var player_name := str(player_data.get("display_name", "Игрок %d" % (player_index + 1)))
 		player_labels[relative_slot].text = (
-			("Переподключается · " if is_reconnecting else "Временный бот · " if is_temporary_bot else "Ход · " if is_current else "")
+			(tr("PLAYER_RECONNECTING_PREFIX") if is_reconnecting else tr("PLAYER_TEMP_BOT_PREFIX") if is_temporary_bot else tr("PLAYER_TURN_PREFIX") if is_current else "")
 			+ player_name
 		)
 		var bid_value: int = int(player_data.get("bid", -1))
 		var bid_text := "—" if bid_value < 0 else str(bid_value)
-		player_stats_labels[relative_slot].text = (
-			"[center][color=#ffb34f][b]Переподключается…[/b][/color][/center]"
-			if is_reconnecting
-			else "[center][color=#ffd45c][b]Бот играет до возвращения игрока[/b][/color][/center]"
-			if is_temporary_bot
-			else _get_player_stats_bbcode(bid_text, int(player_data.get("tricks_taken", 0)), uses_bids)
-		)
+		if is_reconnecting:
+			player_stats_labels[relative_slot].text = "[center][color=#ffb34f][b]%s[/b][/color][/center]" % tr("PLAYER_RECONNECTING_STATUS")
+		elif is_temporary_bot:
+			player_stats_labels[relative_slot].text = "[center][color=#ffd45c][b]%s[/b][/color][/center]" % tr("PLAYER_TEMP_BOT_STATUS")
+		else:
+			_set_player_stats_label(
+				player_stats_labels[relative_slot],
+				bid_text,
+				int(player_data.get("tricks_taken", 0)),
+				uses_bids
+			)
 		var total_score: int = int(player_data.get("total_score", 0))
 		if round_finished and not result_is_presented:
 			_hold_player_score_until_round_result(relative_slot, total_score)
@@ -2430,7 +2471,7 @@ func _refresh_network_main_players(snapshot: Dictionary, viewer_index: int, acti
 
 		var avatar_badge: PanelContainer = avatar_badges[relative_slot]
 		_place_player_avatar_badge(avatar_badge, relative_slot)
-		avatar_badge.tooltip_text = "Игрок: %s" % str(player_data.get("display_name", "Игрок"))
+		avatar_badge.tooltip_text = tr("PLAYER_TOOLTIP") % str(player_data.get("display_name", "Игрок"))
 		_set_avatar_turn_active(relative_slot, is_current)
 		var avatar_texture: Texture2D = _get_network_player_avatar_texture(player_index)
 		avatar_images[relative_slot].texture = avatar_texture
@@ -2476,16 +2517,16 @@ func _refresh_network_main_trick(snapshot: Dictionary, viewer_index: int, active
 	var is_active := not trick_data.is_empty() and not (trick_data.get("played_cards", []) as Array).is_empty()
 	if not is_active:
 		if hide_completed_trick:
-			table_label.text = "Следующая взятка"
+			table_label.text = tr("TABLE_NEXT_TRICK")
 			return
 		trick_data = snapshot.get("last_completed_trick", {})
 	var played_cards: Array = trick_data.get("played_cards", trick_data.get("cards", []))
 	var played_by: Array = trick_data.get("played_by", [])
 	if played_cards.is_empty():
-		table_label.text = "Следующая взятка"
+		table_label.text = tr("TABLE_NEXT_TRICK")
 		return
 
-	table_label.text = "Текущая взятка" if is_active else "Последняя взятка"
+	table_label.text = tr("TABLE_CURRENT_TRICK") if is_active else tr("TABLE_LAST_TRICK")
 	var declaration_text := _get_network_table_joker_text(trick_data)
 	if not declaration_text.is_empty():
 		table_label.text += "\n%s" % declaration_text
@@ -2583,6 +2624,7 @@ func _present_next_network_card_event(viewer_index: int) -> void:
 	var round_completed := bool(event.get("round_completed", false))
 	var actor_player_index := int(event.get("actor_player_index", -1))
 	var relative_slot := posmod(actor_player_index - viewer_index, PLAYER_NAMES.size())
+	_play_sound(SoundEffect.CARD)
 	if relative_slot >= 0 and relative_slot < trick_card_views.size():
 		var card_view: CardView = trick_card_views[relative_slot]
 		var played_card: Card = _create_network_table_card(event.get("card", {}))
@@ -2625,16 +2667,16 @@ func _present_network_completed_trick(winner_player_index: int, viewer_index: in
 	if winner_player_index < 0 or relative_winner_index < 0 or relative_winner_index >= trick_card_views.size():
 		return
 
-	_play_sound(SoundEffect.TRICK)
 	_set_trick_winner_highlight(relative_winner_index, true)
 	var snapshot := _get_network_main_snapshot()
 	var players_by_index := _get_network_players_by_index(snapshot)
 	var winner_data: Dictionary = players_by_index.get(winner_player_index, {})
-	action_label.text = "Взятку забирает %s." % str(winner_data.get("display_name", "игрок"))
+	action_label.text = tr("ACTION_TRICK_WINNER") % str(winner_data.get("display_name", "игрок"))
 	if _did_network_joker_win_last_trick(snapshot, winner_player_index):
 		_show_joker_celebration(relative_winner_index)
 	await get_tree().create_timer(TRICK_WINNER_HOLD_DURATION).timeout
 	_set_trick_winner_highlight(relative_winner_index, false)
+	_play_sound(SoundEffect.TRICK)
 	await _animate_network_trick_collection(relative_winner_index)
 	network_collected_trick_key = completed_trick_key
 
@@ -2704,22 +2746,22 @@ func _get_network_main_trick_card_status(card: Card, card_index: int, trick_data
 	var is_leading_joker := card_index == 0
 	var joker_mode: int = int(trick_data.get("joker_mode", Trick.JokerMode.NORMAL_CARD_WINS))
 	if not is_leading_joker:
-		return "ЗАБИРАЕТ" if joker_mode == Trick.JokerMode.JOKER_WINS else "НЕ БЕРЁТ"
+		return tr("JOKER_STATUS_TAKES") if joker_mode == Trick.JokerMode.JOKER_WINS else tr("JOKER_STATUS_NOT_TAKES")
 
 	var declared_suit: int = int(trick_data.get("declared_suit", -1))
 	var forced_card_rank: int = int(trick_data.get("forced_card_rank", Trick.ForcedCardRank.NONE))
 	var suit_symbol := _get_suit_symbol(declared_suit)
 	if forced_card_rank == Trick.ForcedCardRank.HIGHEST:
-		return "%s · СТАРШАЯ" % suit_symbol
+		return "%s · %s" % [suit_symbol, tr("JOKER_STATUS_HIGH")]
 	if forced_card_rank == Trick.ForcedCardRank.LOWEST:
-		return "%s · МЛАДШАЯ" % suit_symbol
+		return "%s · %s" % [suit_symbol, tr("JOKER_STATUS_LOW")]
 	if joker_mode == Trick.JokerMode.JOKER_WINS:
-		return "%s · БЕРЁТ" % suit_symbol
+		return "%s · %s" % [suit_symbol, tr("JOKER_STATUS_TAKES")]
 	if joker_mode == Trick.JokerMode.HIGHEST_DECLARED_CARD_WINS:
-		return "%s · СТАРШАЯ" % suit_symbol
+		return "%s · %s" % [suit_symbol, tr("JOKER_STATUS_HIGH")]
 	if joker_mode == Trick.JokerMode.LOWEST_DECLARED_CARD_WINS:
-		return "%s · МЛАДШАЯ" % suit_symbol
-	return "%s · НЕ БЕРЁТ" % suit_symbol
+		return "%s · %s" % [suit_symbol, tr("JOKER_STATUS_LOW")]
+	return "%s · %s" % [suit_symbol, tr("JOKER_STATUS_NOT_TAKES")]
 
 
 func _refresh_network_main_history(snapshot: Dictionary, round_data: Dictionary, active_trick: Dictionary, active_player_index: int) -> void:
@@ -2729,15 +2771,15 @@ func _refresh_network_main_history(snapshot: Dictionary, round_data: Dictionary,
 		history_lines = _get_restricted_network_history_lines(snapshot, active_trick)
 		history_label.text = _format_suit_symbols_for_light_ui("\n".join(history_lines))
 		round_history_panel.visible = is_round_history_visible
-		round_history_toggle_button.text = "Последняя взятка"
-		round_history_toggle_button.tooltip_text = "Скрыть последнюю взятку" if is_round_history_visible else "Показать последнюю взятку"
+		round_history_toggle_button.text = tr("HISTORY_LAST_BUTTON")
+		round_history_toggle_button.tooltip_text = tr("HISTORY_HIDE_LAST") if is_round_history_visible else tr("HISTORY_SHOW_LAST")
 		round_history_toggle_button.disabled = false
 		return
 
-	history_lines.append("Ход раздачи")
+	history_lines.append(tr("HISTORY_TITLE"))
 	var public_history: Array = snapshot.get("public_history", [])
 	for entry in public_history:
-		history_lines.append(str(entry))
+		history_lines.append(_localize_canonical_history_line(str(entry)))
 
 	if public_history.is_empty():
 		var cards_per_player: int = int(round_data.get("cards_per_player", 0))
@@ -2749,23 +2791,23 @@ func _refresh_network_main_history(snapshot: Dictionary, round_data: Dictionary,
 			history_lines.append("На столе карт: %d" % (active_trick.get("played_cards", []) as Array).size())
 	history_label.text = _format_suit_symbols_for_light_ui("\n".join(history_lines))
 	round_history_panel.visible = is_round_history_visible
-	round_history_toggle_button.text = "История"
-	round_history_toggle_button.tooltip_text = "Скрыть историю" if is_round_history_visible else "Показать историю"
+	round_history_toggle_button.text = tr("HISTORY_BUTTON")
+	round_history_toggle_button.tooltip_text = tr("HISTORY_HIDE") if is_round_history_visible else tr("HISTORY_SHOW")
 	round_history_toggle_button.disabled = false
 
 
 func _get_restricted_network_history_lines(snapshot: Dictionary, active_trick: Dictionary) -> PackedStringArray:
-	var lines := PackedStringArray(["Последняя взятка"])
+	var lines := PackedStringArray([tr("HISTORY_LAST_BUTTON")])
 	var players_by_index := _get_network_players_by_index(snapshot)
 	var last_trick: Dictionary = snapshot.get("last_completed_trick", {})
 	var last_cards: Array = last_trick.get("cards", [])
 	var last_played_by: Array = last_trick.get("played_by", [])
 	if last_cards.is_empty():
-		lines.append("Завершённых взяток пока нет.")
+		lines.append(tr("HISTORY_NO_COMPLETED"))
 	else:
 		var winner_index := int(snapshot.get("last_trick_winner_index", -1))
 		if players_by_index.has(winner_index):
-			lines.append("Забрал: %s" % str((players_by_index[winner_index] as Dictionary).get("display_name", "игрок")))
+			lines.append(tr("HISTORY_TAKEN_BY") % str((players_by_index[winner_index] as Dictionary).get("display_name", "игрок")))
 		for card_index in mini(last_cards.size(), last_played_by.size()):
 			var player_index := int(last_played_by[card_index])
 			var player_name := "Игрок %d" % (player_index + 1)
@@ -2773,14 +2815,14 @@ func _get_restricted_network_history_lines(snapshot: Dictionary, active_trick: D
 				player_name = str((players_by_index[player_index] as Dictionary).get("display_name", player_name))
 			var card := _create_network_table_card(last_cards[card_index])
 			if card != null:
-				lines.append("%s — %s" % [player_name, card.get_card_name()])
+				lines.append("%s — %s" % [player_name, _get_localized_card_name(card)])
 
 	var current_cards: Array = active_trick.get("played_cards", [])
 	var current_played_by: Array = active_trick.get("played_by", [])
 	lines.append("")
-	lines.append("Текущая взятка")
+	lines.append(tr("TABLE_CURRENT_TRICK"))
 	if current_cards.is_empty():
-		lines.append("На столе пока нет карт.")
+		lines.append(tr("HISTORY_NO_CARDS"))
 	else:
 		for card_index in mini(current_cards.size(), current_played_by.size()):
 			var player_index := int(current_played_by[card_index])
@@ -2789,7 +2831,7 @@ func _get_restricted_network_history_lines(snapshot: Dictionary, active_trick: D
 				player_name = str((players_by_index[player_index] as Dictionary).get("display_name", player_name))
 			var card := _create_network_table_card(current_cards[card_index])
 			if card != null:
-				lines.append("%s — %s" % [player_name, card.get_card_name()])
+				lines.append("%s — %s" % [player_name, _get_localized_card_name(card)])
 	return lines
 
 
@@ -2831,7 +2873,7 @@ func _refresh_network_main_action_controls(snapshot: Dictionary, round_data: Dic
 		available_bids = network_match.get_available_test_bids()
 	for bid in available_bids:
 		var bid_button := Button.new()
-		bid_button.text = "Заказать %d" % bid
+		bid_button.text = tr("BID_BUTTON") % bid
 		bid_button.custom_minimum_size = Vector2(104.0, 40.0)
 		_apply_table_action_button_style(bid_button)
 		bid_button.pressed.connect(_on_submit_loopback_test_bid_pressed.bind(bid))
@@ -3049,7 +3091,8 @@ func _refresh_network_main_results(snapshot: Dictionary, round_data: Dictionary)
 		network_round_result_key = ""
 		network_round_finish_presentation_key = ""
 		network_round_finish_presentation_active = false
-		round_results_title.text = "ИТОГИ РАЗДАЧИ"
+		_reset_network_round_countdown()
+		round_results_title.text = tr("RESULTS_ROUND")
 		round_results_panel.visible = false
 		round_results_label.text = ""
 		next_round_button.visible = false
@@ -3058,10 +3101,11 @@ func _refresh_network_main_results(snapshot: Dictionary, round_data: Dictionary)
 	var result_key := _get_network_round_result_key(snapshot, round_data)
 	if network_round_result_key == result_key:
 		var full_game_complete := _is_network_full_game_complete(snapshot)
-		round_results_title.text = "ИТОГИ ПАРТИИ" if full_game_complete else "ИТОГИ РАЗДАЧИ"
+		round_results_title.text = tr("RESULTS_GAME") if full_game_complete else tr("RESULTS_ROUND")
 		round_results_panel.visible = true
 		round_results_label.text = _get_network_table_result_bbcode(snapshot)
 		_fit_round_results_panel(_get_network_table_result_text(snapshot))
+		_sync_network_round_countdown(snapshot, result_key)
 		_refresh_network_main_next_round_button()
 		return
 
@@ -3087,7 +3131,6 @@ func _present_network_round_finish(result_key: String, winner_player_index: int,
 
 	var relative_winner_index: int = posmod(winner_player_index - viewer_index, PLAYER_NAMES.size())
 	if winner_player_index >= 0:
-		_play_sound(SoundEffect.TRICK)
 		_set_trick_winner_highlight(relative_winner_index, true)
 		var snapshot := _get_network_main_snapshot()
 		var players_by_index := _get_network_players_by_index(snapshot)
@@ -3100,6 +3143,7 @@ func _present_network_round_finish(result_key: String, winner_player_index: int,
 			network_round_finish_presentation_active = false
 			return
 		_set_trick_winner_highlight(relative_winner_index, false)
+		_play_sound(SoundEffect.TRICK)
 		await _animate_network_trick_collection(relative_winner_index)
 
 	if not _is_network_round_result_key_current(result_key):
@@ -3163,7 +3207,67 @@ func _refresh_network_main_next_round_button() -> void:
 	)
 	next_round_button.visible = can_start_next
 	next_round_button.disabled = not can_start_next
-	next_round_button.text = "Следующая раздача"
+	next_round_button.text = tr("NEXT_ROUND")
+
+
+func _sync_network_round_countdown(snapshot: Dictionary, result_key: String) -> void:
+	var full_game_complete := _is_network_full_game_complete(snapshot)
+	var total_seconds := float(snapshot.get(
+		"next_round_auto_start_total_seconds",
+		NETWORK_NEXT_ROUND_AUTO_START_SECONDS
+	))
+	var remaining_seconds := float(snapshot.get("next_round_auto_start_remaining_seconds", 0.0))
+	var countdown_available := (
+		not full_game_complete
+		and total_seconds > 0.0
+		and remaining_seconds > 0.0
+	)
+	if not countdown_available:
+		_reset_network_round_countdown()
+		return
+
+	network_round_countdown_result_key = result_key
+	network_round_countdown_remaining_seconds = clampf(remaining_seconds, 0.0, total_seconds)
+	network_round_countdown_active = true
+	round_results_countdown_border.visible = true
+	round_results_countdown_border.set_time_remaining(
+		network_round_countdown_remaining_seconds,
+		total_seconds,
+		tr("NEXT_ROUND_AUTO_START_TOOLTIP")
+	)
+
+
+func _process_network_round_countdown(delta: float) -> void:
+	if not network_round_countdown_active or not is_instance_valid(round_results_countdown_border):
+		return
+	network_round_countdown_remaining_seconds = maxf(
+		0.0,
+		network_round_countdown_remaining_seconds - maxf(0.0, delta)
+	)
+	round_results_countdown_border.set_time_remaining(
+		network_round_countdown_remaining_seconds,
+		NETWORK_NEXT_ROUND_AUTO_START_SECONDS,
+		tr("NEXT_ROUND_AUTO_START_TOOLTIP")
+	)
+	if network_round_countdown_remaining_seconds > 0.0:
+		return
+
+	network_round_countdown_active = false
+	if (
+		not _is_steam_p2p_main_table_active()
+		and game.current_round.state == Round.State.FINISHED
+		and not _is_full_game_complete()
+		and _can_start_next_round()
+	):
+		call_deferred("_on_next_round_pressed")
+
+
+func _reset_network_round_countdown() -> void:
+	network_round_countdown_result_key = ""
+	network_round_countdown_remaining_seconds = 0.0
+	network_round_countdown_active = false
+	if is_instance_valid(round_results_countdown_border):
+		round_results_countdown_border.visible = false
 
 
 func _refresh_network_main_markers(snapshot: Dictionary, round_data: Dictionary, viewer_index: int) -> void:
@@ -3180,7 +3284,7 @@ func _refresh_network_main_markers(snapshot: Dictionary, round_data: Dictionary,
 
 
 func _refresh_network_main_score_sheet(snapshot: Dictionary, round_data: Dictionary) -> void:
-	score_sheet_toggle_button.text = "📋 Расписка"
+	score_sheet_toggle_button.text = tr("SCORE_SHEET_ICON")
 	score_sheet_toggle_button.disabled = false
 	score_sheet_panel.visible = is_score_sheet_visible
 	if is_instance_valid(score_sheet_backdrop):
@@ -3519,6 +3623,7 @@ func _create_network_table_player_widgets() -> void:
 		stats_label.bbcode_enabled = true
 		stats_label.fit_content = true
 		stats_label.scroll_active = false
+		stats_label.autowrap_mode = TextServer.AUTOWRAP_OFF
 		stats_label.custom_minimum_size = Vector2(0.0, 32.0)
 		stats_label.add_theme_font_size_override("normal_font_size", 17)
 		stats_label.add_theme_color_override("font_color", Color(0.83, 0.89, 0.82, 1.0))
@@ -3743,13 +3848,17 @@ func _refresh_network_table_players(snapshot: Dictionary, viewer_index: int, act
 		)
 		var bid_value: int = int(player_data.get("bid", -1))
 		var bid_text := "—" if bid_value < 0 else str(bid_value)
-		network_table_player_stats_labels[player_index].text = (
-			"[center][color=#ffb34f][b]Переподключается…[/b][/color][/center]"
-			if is_reconnecting
-			else "[center][color=#ffd45c][b]Бот играет до возвращения[/b][/color][/center]"
-			if is_temporary_bot
-			else _get_player_stats_bbcode(bid_text, int(player_data.get("tricks_taken", 0)), uses_bids)
-		)
+		if is_reconnecting:
+			network_table_player_stats_labels[player_index].text = "[center][color=#ffb34f][b]Переподключается…[/b][/color][/center]"
+		elif is_temporary_bot:
+			network_table_player_stats_labels[player_index].text = "[center][color=#ffd45c][b]Бот играет до возвращения[/b][/color][/center]"
+		else:
+			_set_player_stats_label(
+				network_table_player_stats_labels[player_index],
+				bid_text,
+				int(player_data.get("tricks_taken", 0)),
+				uses_bids
+			)
 		var score: int = int(player_data.get("total_score", 0))
 		network_table_player_score_labels[player_index].text = "Счёт: %d" % score
 		network_table_player_score_labels[player_index].add_theme_color_override("font_color", Color(0.97, 0.84, 0.38, 1.0) if score >= 0 else Color(0.96, 0.42, 0.34, 1.0))
@@ -4238,13 +4347,13 @@ func _get_network_table_result_text(snapshot: Dictionary, include_completion_hea
 	if _is_network_full_game_complete(snapshot):
 		var final_lines := PackedStringArray()
 		if include_completion_heading:
-			final_lines.append("Партия завершена")
+			final_lines.append(tr("RESULT_GAME_COMPLETE"))
 		final_lines.append_array(_get_network_final_result_lines(snapshot))
 		return "\n".join(final_lines)
 
 	var result_lines: PackedStringArray = []
 	if include_completion_heading:
-		result_lines.append("Раздача завершена")
+		result_lines.append(tr("RESULT_ROUND_COMPLETE"))
 	var round_data: Dictionary = snapshot.get("round", {})
 	var completed_round := _get_completed_round_data(snapshot.get("completed_rounds", []), int(round_data.get("number", 0)))
 	var uses_bids := bool(completed_round.get("uses_bids", true))
@@ -4259,14 +4368,14 @@ func _get_network_table_result_text(snapshot: Dictionary, include_completion_hea
 		var tricks_taken := int(player_data.get("tricks_taken", 0))
 		var total_score := int(player_data.get("total_score", 0))
 		var round_score := _get_completed_player_round_score(completed_player_results, player_index)
-		result_lines.append("%s: взято %d · %s · %s · счёт %d → %d" % [
+		result_lines.append(_format_round_result_plain_text(
 			str(player_data.get("display_name", "Игрок")),
+			bid,
 			tricks_taken,
-			_get_round_order_outcome_text(bid, tricks_taken, uses_bids),
-			_format_score(round_score),
-			total_score - round_score,
-			total_score
-		])
+			round_score,
+			total_score,
+			uses_bids
+		))
 	return "\n".join(result_lines)
 
 
@@ -4309,15 +4418,18 @@ func _format_final_standings_bbcode(standings: Array[Dictionary]) -> String:
 		final_lines.append(
 			(
 				"[center][font_size=19][b][color=#ffd86a]%s %s · %s[/color][/b][/font_size]"
-				+ "  [color=#d7e3d7]счёт[/color] [font_size=21][b][color=#ffffff]%d[/color][/b][/font_size]"
-				+ "  [color=#708c77]•[/color] [color=#d7e3d7]всего взяток[/color] [b]%d[/b]"
-				+ "  [color=#708c77]•[/color] [color=#d7e3d7]точных заказов[/color] [b]%d[/b][/center]"
+				+ "  [color=#d7e3d7]%s[/color] [font_size=21][b][color=#ffffff]%d[/color][/b][/font_size]"
+				+ "  [color=#708c77]•[/color] [color=#d7e3d7]%s[/color] [b]%d[/b]"
+				+ "  [color=#708c77]•[/color] [color=#d7e3d7]%s[/color] [b]%d[/b][/center]"
 			) % [
 				prefix,
 				_get_place_text(place, shares_place),
 				safe_name,
+				tr("RESULT_SCORE"),
 				int(standing.get("score", 0)),
+				tr("RESULT_TOTAL_TRICKS"),
 				int(standing.get("tricks_taken", 0)),
+				tr("RESULT_EXACT_BIDS"),
 				int(standing.get("exact_orders", 0))
 			]
 		)
@@ -4335,7 +4447,7 @@ func _get_network_final_result_lines(snapshot: Dictionary) -> PackedStringArray:
 		var place := int(standing.get("place", 0))
 		var shares_place := bool(standing.get("shares_place", false))
 		var prefix := "🏆" if place == 1 and not shares_place else "🤝" if shares_place else "•"
-		result_lines.append("%s %s · %s — %d очк. · всего %d вз. · точных заказов: %d" % [
+		result_lines.append(tr("RESULT_FINAL_PLAIN") % [
 			prefix,
 			_get_place_text(place, shares_place),
 			str(standing.get("name", "Игрок")),
@@ -4414,13 +4526,33 @@ func _get_completed_player_round_score(player_results: Array, player_index: int)
 
 func _get_round_order_outcome_text(bid: int, tricks_taken: int, uses_bids: bool) -> String:
 	if not uses_bids or bid < 0:
-		return "без заказа"
+		return tr("RESULT_NO_BID")
 	var difference := tricks_taken - bid
 	if difference == 0:
-		return "заказ %d выполнен" % bid
+		return tr("RESULT_BID_FULFILLED") % bid
 	if difference < 0:
-		return "недобор %d (заказ %d)" % [-difference, bid]
-	return "перебор %d (заказ %d)" % [difference, bid]
+		return tr("RESULT_BID_SHORT") % [-difference, bid]
+	return tr("RESULT_BID_OVER") % [difference, bid]
+
+
+func _format_round_result_plain_text(
+	player_name: String,
+	bid: int,
+	tricks_taken: int,
+	round_score: int,
+	total_score: int,
+	uses_bids: bool
+) -> String:
+	return "%s: %s %d · %s · %s · %s %d → %d" % [
+		player_name,
+		tr("RESULT_TAKEN"),
+		tricks_taken,
+		_get_round_order_outcome_text(bid, tricks_taken, uses_bids),
+		_format_score(round_score),
+		tr("RESULT_SCORE"),
+		total_score - round_score,
+		total_score
+	]
 
 
 func _format_round_result_bbcode(
@@ -4439,17 +4571,19 @@ func _format_round_result_bbcode(
 	var safe_player_name := player_name.replace("[", "(").replace("]", ")")
 	return (
 		"[center][font_size=18][b][color=#ffffff]%s[/color][/b][/font_size]"
-		+ "  [color=#c9d8ca]взято[/color] [font_size=20][b][color=#ffffff]%d[/color][/b][/font_size]"
+		+ "  [color=#c9d8ca]%s[/color] [font_size=20][b][color=#ffffff]%d[/color][/b][/font_size]"
 		+ "  [color=#6f8d77]•[/color] [b][color=%s]%s[/color][/b]"
 		+ "  [color=#6f8d77]•[/color] [b][color=%s]%s[/color][/b]"
-		+ "  [color=#c9d8ca]счёт %d → [b]%d[/b][/color][/center]"
+		+ "  [color=#c9d8ca]%s %d → [b]%d[/b][/color][/center]"
 	) % [
 		safe_player_name,
+		tr("RESULT_TAKEN"),
 		tricks_taken,
 		outcome_color,
 		outcome_text,
 		score_color,
 		_format_score(round_score),
+		tr("RESULT_SCORE"),
 		previous_total,
 		total_score
 	]
@@ -4666,7 +4800,7 @@ func _add_new_game_player_row(player_index: int) -> void:
 	menu_content.add_child(row)
 
 	var role_label := Label.new()
-	role_label.text = "Ты" if player_index == HUMAN_PLAYER_INDEX else "Бот %d" % player_index
+	role_label.text = tr("Ты") if player_index == HUMAN_PLAYER_INDEX else tr("Бот %d") % player_index
 	role_label.custom_minimum_size = Vector2(70.0, 38.0)
 	role_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	role_label.add_theme_font_size_override("font_size", 16)
@@ -4675,7 +4809,7 @@ func _add_new_game_player_row(player_index: int) -> void:
 
 	var name_input := LineEdit.new()
 	name_input.text = configured_player_names[player_index]
-	name_input.placeholder_text = "Имя игрока"
+	name_input.placeholder_text = tr("Имя игрока")
 	name_input.max_length = MAX_PLAYER_NAME_LENGTH
 	name_input.custom_minimum_size = Vector2(200.0 if player_index == HUMAN_PLAYER_INDEX else 250.0, 38.0)
 	name_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -4728,7 +4862,7 @@ func _add_new_game_avatar_preview(row: HBoxContainer, player_index: int, avatar_
 		preview_content.add_child(placeholder)
 
 	var avatar_label := Label.new()
-	avatar_label.text = "Профиль" if player_index == HUMAN_PLAYER_INDEX else _get_avatar_option_label(avatar_index)
+	avatar_label.text = tr("Профиль") if player_index == HUMAN_PLAYER_INDEX else _get_avatar_option_label(avatar_index)
 	avatar_label.custom_minimum_size = Vector2(76.0, 38.0)
 	avatar_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	avatar_label.add_theme_font_size_override("font_size", 14)
@@ -4742,7 +4876,7 @@ func _add_new_game_bot_difficulty_row() -> void:
 	menu_content.add_child(row)
 
 	var label := Label.new()
-	label.text = "Уровень ботов"
+	label.text = tr("Уровень ботов")
 	label.custom_minimum_size = Vector2(160.0, 38.0)
 	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	label.add_theme_font_size_override("font_size", 16)
@@ -4765,7 +4899,7 @@ func _add_new_game_history_mode_row() -> void:
 	menu_content.add_child(row)
 
 	var label := Label.new()
-	label.text = "История"
+	label.text = tr("История")
 	label.custom_minimum_size = Vector2(160.0, 38.0)
 	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	label.add_theme_font_size_override("font_size", 16)
@@ -4804,33 +4938,33 @@ func _start_configured_new_game() -> void:
 func _get_avatar_option_label(avatar_index: int) -> String:
 	match avatar_index:
 		0:
-			return "Лис"
+			return tr("Лис")
 		1:
-			return "Солнце"
+			return tr("Солнце")
 		2:
-			return "Луна"
+			return tr("Луна")
 		3:
-			return "Искра"
+			return tr("Искра")
 		CUSTOM_AVATAR_INDEX:
-			return "Своя картинка"
+			return tr("Своя картинка")
 
-	return "Символ"
+	return tr("Символ")
 
 
 func _get_bot_difficulty_label(difficulty: BotDifficulty) -> String:
 	match difficulty:
 		BotDifficulty.EASY:
-			return "Лёгкий — простые решения"
+			return tr("Лёгкий — простые решения")
 		BotDifficulty.NORMAL:
-			return "Обычный — сбалансировано"
+			return tr("Обычный — сбалансировано")
 		BotDifficulty.HARD:
-			return "Сложный — расчётливо"
+			return tr("Сложный — расчётливо")
 
-	return "Обычный — сбалансировано"
+	return tr("Обычный — сбалансировано")
 
 
 func _get_history_mode_label(history_mode: int) -> String:
-	return "Только последняя взятка" if history_mode == NetworkHost.HistoryMode.LAST_TRICK_ONLY else "Полная история"
+	return tr("Только последняя взятка") if history_mode == NetworkHost.HistoryMode.LAST_TRICK_ONLY else tr("Полная история")
 
 
 func _sanitize_player_name(value: String, fallback: String) -> String:
@@ -4847,21 +4981,21 @@ func _show_profile_menu() -> void:
 	_add_menu_spacer(10.0)
 
 	var name_label := Label.new()
-	name_label.text = "Имя игрока"
+	name_label.text = tr("Имя игрока")
 	name_label.add_theme_font_size_override("font_size", 17)
 	name_label.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
 	menu_content.add_child(name_label)
 
 	profile_name_input = LineEdit.new()
 	profile_name_input.text = configured_player_names[HUMAN_PLAYER_INDEX]
-	profile_name_input.placeholder_text = "Имя игрока"
+	profile_name_input.placeholder_text = tr("Имя игрока")
 	profile_name_input.max_length = MAX_PLAYER_NAME_LENGTH
 	profile_name_input.custom_minimum_size = Vector2(0.0, 42.0)
 	profile_name_input.add_theme_font_size_override("font_size", 18)
 	menu_content.add_child(profile_name_input)
 
 	var avatar_label := Label.new()
-	avatar_label.text = "Аватар"
+	avatar_label.text = tr("Аватар")
 	avatar_label.add_theme_font_size_override("font_size", 17)
 	avatar_label.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
 	menu_content.add_child(avatar_label)
@@ -5262,7 +5396,7 @@ func _on_profile_music_directory_selected(selected_directory: String) -> void:
 	is_music_file_dialog_opened_from_table = false
 	var directory := DirAccess.open(selected_directory)
 	if directory == null:
-		_report_music_import("Не удалось открыть выбранную папку.", opened_from_table)
+		_report_music_import(tr("MUSIC_IMPORT_FOLDER_FAILED"), opened_from_table)
 		return
 
 	var paths_to_add: Array[String] = []
@@ -5273,7 +5407,7 @@ func _on_profile_music_directory_selected(selected_directory: String) -> void:
 	paths_to_add.sort()
 
 	if paths_to_add.is_empty():
-		_report_music_import("В папке не найдено MP3, Ogg Vorbis или WAV-файлов.", opened_from_table)
+		_report_music_import(tr("MUSIC_IMPORT_NO_FILES"), opened_from_table)
 		return
 
 	_add_custom_music_paths(paths_to_add, opened_from_table)
@@ -5293,7 +5427,7 @@ func _add_custom_music_paths(paths_to_add: Array[String], opened_from_table: boo
 		added_paths.append(music_path)
 
 	if added_paths.is_empty():
-		_report_music_import("Ни одного нового подходящего трека не добавлено.", opened_from_table)
+		_report_music_import(tr("MUSIC_IMPORT_NO_NEW_TRACKS"), opened_from_table)
 		return
 
 	var first_added_path: String = added_paths[0]
@@ -5313,7 +5447,7 @@ func _add_custom_music_paths(paths_to_add: Array[String], opened_from_table: boo
 	_refresh_music_player()
 	_refresh_music_controls_popup()
 
-	var summary := "Добавлено: %d · пропущено: %d." % [added_paths.size(), skipped_count]
+	var summary := tr("MUSIC_IMPORT_SUMMARY") % [added_paths.size(), skipped_count]
 	_report_music_import(summary, opened_from_table)
 
 
@@ -5333,7 +5467,7 @@ func _on_clear_profile_music_pressed() -> void:
 	custom_music_stream = null
 	music_playlist_page = 0
 	music_playlist_search_query = ""
-	last_music_import_status = "Личный плейлист очищен."
+	last_music_import_status = tr("MUSIC_CUSTOM_PLAYLIST_CLEARED")
 	if music_track_index >= MUSIC_TRACK_COUNT:
 		music_track_index = 0
 	_apply_selected_music_track()
@@ -5462,14 +5596,138 @@ func _show_tutorial_menu() -> void:
 func _show_settings_menu() -> void:
 	menu_overlay.visible = true
 	_clear_children(menu_content)
-	_add_menu_title("Настройки", "Параметры применяются сразу и сохраняются на этом устройстве")
+	_add_menu_title(tr("SETTINGS_TITLE"), tr("SETTINGS_SUBTITLE"))
 	_add_menu_spacer(14.0)
-	_add_menu_button("Звук", _show_sound_settings_menu)
-	_add_menu_button("Оформление", _show_appearance_settings_menu)
-	_add_menu_button("Игра", _show_game_settings_menu)
-	_add_menu_button("Экран", _show_display_settings_menu)
+	_add_menu_button(tr("SETTINGS_SOUND"), _show_sound_settings_menu)
+	_add_menu_button(tr("SETTINGS_APPEARANCE"), _show_appearance_settings_menu)
+	_add_menu_button(tr("SETTINGS_GAME"), _show_game_settings_menu)
+	_add_menu_button(tr("SETTINGS_DISPLAY"), _show_display_settings_menu)
+	_add_menu_button(tr("SETTINGS_LANGUAGE"), _show_language_settings_menu.bind(false))
 	_add_menu_spacer(10.0)
-	_add_menu_button("Назад", _return_from_menu_subpage)
+	_add_menu_button(tr("MENU_BACK"), _return_from_menu_subpage)
+
+
+func _show_language_settings_menu(first_launch := false) -> void:
+	menu_overlay.visible = true
+	_clear_children(menu_content)
+	_add_menu_title(
+		"Оберіть мову · Choose language",
+		tr("LANGUAGE_SUBTITLE")
+	)
+	_add_menu_label(
+		tr("LANGUAGE_CURRENT") % str(INTERFACE_LOCALE_NAMES.get(interface_locale, interface_locale)),
+		16,
+		Color(0.97, 0.86, 0.55, 1.0)
+	)
+	_add_menu_spacer(10.0)
+	for locale_code in SUPPORTED_INTERFACE_LOCALES:
+		_add_menu_button(
+			str(INTERFACE_LOCALE_NAMES.get(locale_code, locale_code)),
+			_on_interface_locale_selected.bind(locale_code, first_launch),
+			locale_code == interface_locale
+		)
+	if not first_launch:
+		_add_menu_spacer(8.0)
+		_add_menu_button(tr("MENU_BACK"), _show_settings_menu)
+
+
+func _on_interface_locale_selected(locale_code: String, first_launch: bool) -> void:
+	interface_locale = _normalize_interface_locale(locale_code)
+	interface_locale_was_chosen = true
+	TranslationServer.set_locale(interface_locale)
+	_save_persistent_settings()
+	_refresh_localized_interface()
+	if first_launch:
+		_show_main_menu()
+	else:
+		_show_settings_menu()
+
+
+func _normalize_interface_locale(locale_code: String) -> String:
+	var normalized_locale := locale_code.strip_edges().replace("-", "_").to_lower()
+	if normalized_locale.contains("_"):
+		normalized_locale = normalized_locale.get_slice("_", 0)
+	return normalized_locale if normalized_locale in SUPPORTED_INTERFACE_LOCALES else "uk"
+
+
+func _refresh_localized_interface() -> void:
+	if not is_node_ready():
+		return
+	_relocalize_current_action_text()
+	_relocalize_runtime_controls()
+	if game != null:
+		_refresh_ui()
+
+
+func _relocalize_current_action_text() -> void:
+	if game == null or game.current_round == null:
+		return
+	if pending_joker_card != null:
+		action_text = tr("ACTION_CHOOSE_JOKER")
+		return
+	match game.current_round.state:
+		Round.State.BIDDING:
+			if game.current_round.current_player_index == HUMAN_PLAYER_INDEX:
+				action_text = (
+					tr("ACTION_DARK_BID")
+					if _is_dark_round()
+					else tr("ACTION_NO_TRUMP_BID")
+					if _is_no_trump_round()
+					else tr("ACTION_YOUR_BID")
+				)
+			elif game.current_round.current_player_index >= 0:
+				action_text = tr("ACTION_PLAYER_BIDS") % game.players[game.current_round.current_player_index].display_name
+		Round.State.PLAYING:
+			var current_player_index := _get_current_player_index()
+			if current_player_index == HUMAN_PLAYER_INDEX:
+				action_text = tr("ACTION_YOUR_TURN")
+			elif current_player_index >= 0 and current_player_index < game.players.size():
+				action_text = tr("ACTION_PLAYER_TURN") % game.players[current_player_index].display_name
+		Round.State.FINISHED:
+			action_text = tr("ACTION_ROUND_FINISHED")
+		_:
+			action_text = tr("ACTION_PREPARING")
+
+
+func _relocalize_runtime_controls() -> void:
+	if is_instance_valid(chat_panel):
+		var chat_title := chat_panel.find_child("ChatTitle", true, false) as Label
+		if is_instance_valid(chat_title):
+			chat_title.text = tr("CHAT_TITLE")
+	if is_instance_valid(chat_input):
+		chat_input.placeholder_text = tr("CHAT_PLACEHOLDER")
+	if is_instance_valid(chat_send_button):
+		chat_send_button.text = tr("CHAT_SEND")
+	if is_instance_valid(chat_status_label):
+		chat_status_label.text = tr("CHAT_LIMIT")
+	if is_instance_valid(chat_toggle_button):
+		chat_toggle_button.tooltip_text = tr("CHAT_OPEN")
+	if is_instance_valid(score_sheet_toggle_button):
+		score_sheet_toggle_button.text = tr("SCORE_SHEET_ICON")
+	if is_instance_valid(round_history_toggle_button):
+		round_history_toggle_button.text = (
+			tr("HISTORY_LAST_BUTTON")
+			if match_history_mode == NetworkHost.HistoryMode.LAST_TRICK_ONLY
+			else tr("HISTORY_BUTTON")
+		)
+	if is_instance_valid(hand_sort_by_suit_button):
+		hand_sort_by_suit_button.text = tr("SORT_BY_SUIT")
+	if is_instance_valid(hand_sort_trumps_left_button):
+		hand_sort_trumps_left_button.text = tr("SORT_TRUMPS_LEFT")
+	if is_instance_valid(undo_button):
+		undo_button.text = tr("UNDO_MOVE")
+	if is_instance_valid(dealer_marker):
+		dealer_marker.tooltip_text = tr("DEALER_TOOLTIP")
+	if is_instance_valid(lead_marker):
+		lead_marker.tooltip_text = tr("LEAD_TOOLTIP")
+		var lead_label := lead_marker.get_child(0) as Label
+		if is_instance_valid(lead_label):
+			lead_label.text = tr("LEAD_MARKER")
+	for turn_label in avatar_turn_labels:
+		if is_instance_valid(turn_label):
+			turn_label.text = tr("TURN_BADGE")
+	_refresh_music_player()
+	_refresh_music_controls_popup()
 
 
 func _show_sound_settings_menu() -> void:
@@ -5499,18 +5757,18 @@ func _show_appearance_settings_menu() -> void:
 	_add_menu_title("Оформление", "Колода, сукно и окружение игрового стола")
 	_add_menu_spacer(12.0)
 	var deck_style_label := Label.new()
-	deck_style_label.text = "Оформление карт"
+	deck_style_label.text = tr("Оформление карт")
 	deck_style_label.add_theme_font_size_override("font_size", 18)
 	deck_style_label.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
 	menu_content.add_child(deck_style_label)
 
 	var deck_style_selector := OptionButton.new()
-	deck_style_selector.add_item("Jumbo · четыре цвета")
-	deck_style_selector.add_item("Классическая · четыре цвета")
-	deck_style_selector.add_item("Компактная · четыре цвета")
-	deck_style_selector.add_item("Jumbo · оригинальная (2 цвета)")
-	deck_style_selector.add_item("Простая · первая версия")
-	deck_style_selector.add_item("Классическая векторная · Full HD")
+	deck_style_selector.add_item(tr("Jumbo · четыре цвета"))
+	deck_style_selector.add_item(tr("Классическая · четыре цвета"))
+	deck_style_selector.add_item(tr("Компактная · четыре цвета"))
+	deck_style_selector.add_item(tr("Jumbo · оригинальная (2 цвета)"))
+	deck_style_selector.add_item(tr("Простая · первая версия"))
+	deck_style_selector.add_item(tr("Классическая векторная · Full HD"))
 	deck_style_selector.selected = card_deck_style
 	deck_style_selector.custom_minimum_size = Vector2(0.0, 42.0)
 	deck_style_selector.add_theme_font_size_override("font_size", 17)
@@ -5518,14 +5776,14 @@ func _show_appearance_settings_menu() -> void:
 	menu_content.add_child(deck_style_selector)
 
 	var deck_style_hint := Label.new()
-	deck_style_hint.text = "Выбор сохраняется только на этом устройстве и не меняет карты у других игроков."
+	deck_style_hint.text = tr("Выбор сохраняется только на этом устройстве и не меняет карты у других игроков.")
 	deck_style_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	deck_style_hint.add_theme_font_size_override("font_size", 14)
 	deck_style_hint.add_theme_color_override("font_color", Color(0.72, 0.85, 0.76, 1.0))
 	menu_content.add_child(deck_style_hint)
 
 	var deck_preview_label := Label.new()
-	deck_preview_label.text = "Предпросмотр"
+	deck_preview_label.text = tr("Предпросмотр")
 	deck_preview_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	deck_preview_label.add_theme_font_size_override("font_size", 15)
 	deck_preview_label.add_theme_color_override("font_color", Color(0.97, 0.86, 0.55, 1.0))
@@ -5538,7 +5796,7 @@ func _show_appearance_settings_menu() -> void:
 	_refresh_card_deck_preview()
 
 	var table_theme_label := Label.new()
-	table_theme_label.text = "Оформление стола"
+	table_theme_label.text = tr("Оформление стола")
 	table_theme_label.add_theme_font_size_override("font_size", 18)
 	table_theme_label.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
 	menu_content.add_child(table_theme_label)
@@ -5546,7 +5804,7 @@ func _show_appearance_settings_menu() -> void:
 	var felt_selector := OptionButton.new()
 	felt_selector.name = "TableFeltThemeSelector"
 	for felt_name in TABLE_FELT_NAMES:
-		felt_selector.add_item(felt_name)
+		felt_selector.add_item(tr(felt_name))
 	felt_selector.selected = table_felt_theme
 	felt_selector.custom_minimum_size = Vector2(0.0, 42.0)
 	felt_selector.add_theme_font_size_override("font_size", 17)
@@ -5556,7 +5814,7 @@ func _show_appearance_settings_menu() -> void:
 	var surround_selector := OptionButton.new()
 	surround_selector.name = "TableSurroundThemeSelector"
 	for surround_name in TABLE_SURROUND_NAMES:
-		surround_selector.add_item(surround_name)
+		surround_selector.add_item(tr(surround_name))
 	surround_selector.selected = table_surround_theme
 	surround_selector.custom_minimum_size = Vector2(0.0, 42.0)
 	surround_selector.add_theme_font_size_override("font_size", 17)
@@ -5564,7 +5822,7 @@ func _show_appearance_settings_menu() -> void:
 	menu_content.add_child(surround_selector)
 
 	var table_theme_hint := Label.new()
-	table_theme_hint.text = "Сукно и окружение видишь только ты. Выбор применяется сразу, сохраняется на этом устройстве и не меняет столы друзей."
+	table_theme_hint.text = tr("Сукно и окружение видишь только ты. Выбор применяется сразу, сохраняется на этом устройстве и не меняет столы друзей.")
 	table_theme_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	table_theme_hint.add_theme_font_size_override("font_size", 14)
 	table_theme_hint.add_theme_color_override("font_color", Color(0.72, 0.85, 0.76, 1.0))
@@ -5594,15 +5852,15 @@ func _show_game_settings_menu() -> void:
 	_add_menu_title("Игра", "Поведение ботов, подсказки и автоматические действия")
 	_add_menu_spacer(12.0)
 	var speed_label := Label.new()
-	speed_label.text = "Скорость ходов ботов"
+	speed_label.text = tr("Скорость ходов ботов")
 	speed_label.add_theme_font_size_override("font_size", 18)
 	speed_label.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
 	menu_content.add_child(speed_label)
 
 	var speed_selector := OptionButton.new()
-	speed_selector.add_item("Медленно")
-	speed_selector.add_item("Обычно")
-	speed_selector.add_item("Быстро")
+	speed_selector.add_item(tr("Медленно"))
+	speed_selector.add_item(tr("Обычно"))
+	speed_selector.add_item(tr("Быстро"))
 	speed_selector.selected = bot_speed_index
 	speed_selector.custom_minimum_size = Vector2(0.0, 42.0)
 	speed_selector.add_theme_font_size_override("font_size", 17)
@@ -5711,7 +5969,7 @@ func _add_settings_volume_slider(
 	menu_content.add_child(row)
 
 	var label := Label.new()
-	label.text = label_text
+	label.text = tr(label_text)
 	label.custom_minimum_size = Vector2(155.0, 40.0)
 	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	label.add_theme_font_size_override("font_size", 18)
@@ -5726,7 +5984,7 @@ func _add_settings_volume_slider(
 	slider.value = clampi(current_percent, 0, 100)
 	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	slider.custom_minimum_size = Vector2(240.0, 40.0)
-	slider.tooltip_text = "%s: от 0 до 100%%" % label_text
+	slider.tooltip_text = "%s: 0–100%%" % tr(label_text)
 	slider.value_changed.connect(callback)
 	row.add_child(slider)
 
@@ -5750,7 +6008,7 @@ func _add_settings_toggle(
 ) -> CheckButton:
 	var toggle := CheckButton.new()
 	toggle.name = toggle_name
-	toggle.text = label_text
+	toggle.text = tr(label_text)
 	toggle.button_pressed = is_enabled
 	toggle.custom_minimum_size = Vector2(0.0, 38.0)
 	toggle.add_theme_font_size_override("font_size", 18)
@@ -5764,14 +6022,14 @@ func _add_settings_toggle(
 
 func _add_menu_title(title_text: String, subtitle_text: String) -> void:
 	var title_label := Label.new()
-	title_label.text = title_text
+	title_label.text = tr(title_text)
 	title_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title_label.add_theme_font_size_override("font_size", 34)
 	title_label.add_theme_color_override("font_color", Color(0.97, 0.86, 0.55, 1.0))
 	menu_content.add_child(title_label)
 
 	var subtitle_label := Label.new()
-	subtitle_label.text = subtitle_text
+	subtitle_label.text = tr(subtitle_text)
 	subtitle_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	subtitle_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	subtitle_label.add_theme_font_size_override("font_size", 16)
@@ -5781,7 +6039,7 @@ func _add_menu_title(title_text: String, subtitle_text: String) -> void:
 
 func _add_menu_label(label_text: String, font_size: int, font_color: Color = Color(0.91, 0.96, 0.91, 1.0)) -> void:
 	var label := Label.new()
-	label.text = label_text
+	label.text = tr(label_text)
 	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	label.add_theme_font_size_override("font_size", font_size)
 	label.add_theme_color_override("font_color", font_color)
@@ -5802,7 +6060,7 @@ func _add_menu_button(label_text: String, callback: Callable, is_primary: bool =
 
 func _create_menu_button(label_text: String, callback: Callable, is_primary: bool = false) -> Button:
 	var button := Button.new()
-	button.text = label_text
+	button.text = tr(label_text)
 	button.custom_minimum_size = Vector2(0.0, 48.0)
 	button.add_theme_font_size_override("font_size", 19)
 	button.add_theme_color_override("font_color", Color(1.0, 0.95, 0.78, 1.0))
@@ -6447,7 +6705,19 @@ func _select_music_track(direction: int) -> void:
 func _load_persistent_settings() -> void:
 	var config := ConfigFile.new()
 	if config.load(PERSISTENT_SETTINGS_PATH) != OK:
+		interface_locale = "uk"
+		interface_locale_was_chosen = false
+		TranslationServer.set_locale(interface_locale)
 		return
+
+	interface_locale = _normalize_interface_locale(
+		str(config.get_value("localization", "locale", "ru"))
+	)
+	# Existing prototype installations had no locale field and remain Russian
+	# until the player explicitly changes the language. A genuinely clean
+	# installation starts with the recommended Ukrainian language picker.
+	interface_locale_was_chosen = bool(config.get_value("localization", "chosen", true))
+	TranslationServer.set_locale(interface_locale)
 
 	for player_index in PLAYER_NAMES.size():
 		var saved_name: String = str(config.get_value("players", "name_%d" % player_index, configured_player_names[player_index]))
@@ -6539,6 +6809,9 @@ func _load_persistent_settings() -> void:
 
 func _save_persistent_settings() -> void:
 	var config := ConfigFile.new()
+
+	config.set_value("localization", "locale", interface_locale)
+	config.set_value("localization", "chosen", interface_locale_was_chosen)
 
 	for player_index in PLAYER_NAMES.size():
 		config.set_value("players", "name_%d" % player_index, configured_player_names[player_index])
@@ -7113,10 +7386,32 @@ func _get_bot_action_delay() -> float:
 
 
 func _create_sound_players() -> void:
-	sound_streams[SoundEffect.DEAL] = _create_procedural_sound(310.0, 210.0, 0.09, 0.32, 0.22)
-	sound_streams[SoundEffect.CARD] = _create_procedural_sound(540.0, 360.0, 0.06, 0.24, 0.12)
-	sound_streams[SoundEffect.TRICK] = _create_procedural_sound(420.0, 720.0, 0.18, 0.34, 0.3)
-	sound_streams[SoundEffect.TURN_REMINDER] = _create_procedural_sound(660.0, 990.0, 0.22, 0.26, 0.34)
+	sound_streams[SoundEffect.DEAL] = [
+		preload("res://Assets/Audio/KenneyCasino/card-shuffle.ogg")
+	]
+	sound_streams[SoundEffect.CARD] = [
+		preload("res://Assets/Audio/KenneyCasino/card-place-1.ogg"),
+		preload("res://Assets/Audio/KenneyCasino/card-place-2.ogg"),
+		preload("res://Assets/Audio/KenneyCasino/card-place-3.ogg"),
+		preload("res://Assets/Audio/KenneyCasino/card-place-4.ogg")
+	]
+	sound_streams[SoundEffect.TRICK] = [
+		preload("res://Assets/Audio/KenneyCasino/card-shove-1.ogg"),
+		preload("res://Assets/Audio/KenneyCasino/card-shove-2.ogg"),
+		preload("res://Assets/Audio/KenneyCasino/card-shove-3.ogg"),
+		preload("res://Assets/Audio/KenneyCasino/card-shove-4.ogg")
+	]
+	sound_streams[SoundEffect.TURN_START] = [
+		preload("res://Assets/Audio/KenneyCasino/chip-lay-1.ogg"),
+		preload("res://Assets/Audio/KenneyCasino/chip-lay-2.ogg"),
+		preload("res://Assets/Audio/KenneyCasino/chip-lay-3.ogg")
+	]
+	sound_streams[SoundEffect.TURN_REMINDER] = [
+		preload("res://Assets/Audio/KenneyCasino/chips-collide-1.ogg"),
+		preload("res://Assets/Audio/KenneyCasino/chips-collide-2.ogg"),
+		preload("res://Assets/Audio/KenneyCasino/chips-collide-3.ogg"),
+		preload("res://Assets/Audio/KenneyCasino/chips-collide-4.ogg")
+	]
 
 	for player_number in 3:
 		var player := AudioStreamPlayer.new()
@@ -7178,7 +7473,14 @@ func _play_sound(effect: SoundEffect) -> void:
 	if sound_player == null:
 		return
 
-	var stream: AudioStream = sound_streams[effect] as AudioStream
+	var sound_entry: Variant = sound_streams[effect]
+	var stream: AudioStream
+	if sound_entry is Array:
+		var variants: Array = sound_entry
+		if not variants.is_empty():
+			stream = variants.pick_random() as AudioStream
+	else:
+		stream = sound_entry as AudioStream
 	if stream == null:
 		return
 
@@ -7521,11 +7823,11 @@ func _get_full_music_track_label_for_index(track_index: int) -> String:
 
 	match track_index:
 		1:
-			return "Ночная колода"
+			return tr("MUSIC_TRACK_NIGHT_DECK")
 		2:
-			return "Тёплый круг"
+			return tr("MUSIC_TRACK_WARM_CIRCLE")
 
-	return "Тихий стол"
+	return tr("MUSIC_TRACK_QUIET_TABLE")
 
 
 func _shorten_music_title(title: String) -> String:
@@ -7645,11 +7947,10 @@ func _create_music_controls_popup() -> void:
 	content.add_theme_constant_override("separation", 8)
 	margins.add_child(content)
 
-	var volume_title := Label.new()
-	volume_title.text = "Громкость музыки"
-	volume_title.add_theme_font_size_override("font_size", 16)
-	volume_title.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
-	content.add_child(volume_title)
+	music_popup_volume_title = Label.new()
+	music_popup_volume_title.add_theme_font_size_override("font_size", 16)
+	music_popup_volume_title.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
+	content.add_child(music_popup_volume_title)
 
 	music_popup_volume_label = Label.new()
 	music_popup_volume_label.add_theme_font_size_override("font_size", 14)
@@ -7672,7 +7973,6 @@ func _create_music_controls_popup() -> void:
 	music_popup_repeat_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	music_popup_repeat_button.custom_minimum_size = Vector2(0.0, 32.0)
 	music_popup_repeat_button.add_theme_font_size_override("font_size", 14)
-	music_popup_repeat_button.tooltip_text = "После окончания повторять текущий трек"
 	music_popup_repeat_button.pressed.connect(_on_music_repeat_pressed)
 	play_modes.add_child(music_popup_repeat_button)
 
@@ -7680,7 +7980,6 @@ func _create_music_controls_popup() -> void:
 	music_popup_shuffle_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	music_popup_shuffle_button.custom_minimum_size = Vector2(0.0, 32.0)
 	music_popup_shuffle_button.add_theme_font_size_override("font_size", 14)
-	music_popup_shuffle_button.tooltip_text = "После окончания выбирать случайный следующий трек"
 	music_popup_shuffle_button.pressed.connect(_on_music_shuffle_pressed)
 	play_modes.add_child(music_popup_shuffle_button)
 
@@ -7689,7 +7988,6 @@ func _create_music_controls_popup() -> void:
 	content.add_child(playlist_actions)
 
 	music_popup_folder_button = Button.new()
-	music_popup_folder_button.text = "📁 Добавить папку"
 	music_popup_folder_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	music_popup_folder_button.custom_minimum_size = Vector2(0.0, 32.0)
 	music_popup_folder_button.add_theme_font_size_override("font_size", 14)
@@ -7697,10 +7995,8 @@ func _create_music_controls_popup() -> void:
 	playlist_actions.add_child(music_popup_folder_button)
 
 	music_popup_clear_button = Button.new()
-	music_popup_clear_button.text = "Очистить свои"
 	music_popup_clear_button.custom_minimum_size = Vector2(112.0, 32.0)
 	music_popup_clear_button.add_theme_font_size_override("font_size", 14)
-	music_popup_clear_button.tooltip_text = "Удалить из плейлиста только добавленные треки"
 	music_popup_clear_button.pressed.connect(_on_clear_profile_music_pressed)
 	playlist_actions.add_child(music_popup_clear_button)
 
@@ -7710,14 +8006,12 @@ func _create_music_controls_popup() -> void:
 	music_popup_import_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	content.add_child(music_popup_import_label)
 
-	var playlist_title := Label.new()
-	playlist_title.text = "Плейлист"
-	playlist_title.add_theme_font_size_override("font_size", 16)
-	playlist_title.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
-	content.add_child(playlist_title)
+	music_popup_playlist_title = Label.new()
+	music_popup_playlist_title.add_theme_font_size_override("font_size", 16)
+	music_popup_playlist_title.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
+	content.add_child(music_popup_playlist_title)
 
 	music_popup_search_input = LineEdit.new()
-	music_popup_search_input.placeholder_text = "Поиск по названию"
 	music_popup_search_input.custom_minimum_size = Vector2(0.0, 32.0)
 	music_popup_search_input.add_theme_font_size_override("font_size", 15)
 	music_popup_search_input.text_changed.connect(_on_music_playlist_search_changed)
@@ -7846,13 +8140,21 @@ func _get_tutorial_hint_text() -> String:
 
 
 func _refresh_music_controls_popup() -> void:
-	if not is_instance_valid(music_popup_volume_label) or not is_instance_valid(music_popup_volume_slider) or not is_instance_valid(music_popup_repeat_button) or not is_instance_valid(music_popup_shuffle_button) or not is_instance_valid(music_popup_folder_button) or not is_instance_valid(music_popup_clear_button) or not is_instance_valid(music_popup_import_label) or not is_instance_valid(music_popup_search_input) or not is_instance_valid(music_popup_previous_page_button) or not is_instance_valid(music_popup_next_page_button) or not is_instance_valid(music_popup_page_label) or not is_instance_valid(music_popup_playlist_container):
+	if not is_instance_valid(music_popup_volume_title) or not is_instance_valid(music_popup_volume_label) or not is_instance_valid(music_popup_volume_slider) or not is_instance_valid(music_popup_repeat_button) or not is_instance_valid(music_popup_shuffle_button) or not is_instance_valid(music_popup_folder_button) or not is_instance_valid(music_popup_clear_button) or not is_instance_valid(music_popup_import_label) or not is_instance_valid(music_popup_playlist_title) or not is_instance_valid(music_popup_search_input) or not is_instance_valid(music_popup_previous_page_button) or not is_instance_valid(music_popup_next_page_button) or not is_instance_valid(music_popup_page_label) or not is_instance_valid(music_popup_playlist_container):
 		return
 
+	music_popup_volume_title.text = tr("MUSIC_VOLUME_TITLE")
 	music_popup_volume_label.text = "%d%%" % music_volume_percent
 	music_popup_volume_slider.set_value_no_signal(music_volume_percent)
-	music_popup_repeat_button.text = "↻ Повтор: %s" % ("вкл" if music_repeat_enabled else "выкл")
-	music_popup_shuffle_button.text = "⤨ Случайно: %s" % ("вкл" if music_shuffle_enabled else "выкл")
+	music_popup_repeat_button.text = tr("MUSIC_REPEAT_STATE") % tr("MUSIC_ON" if music_repeat_enabled else "MUSIC_OFF")
+	music_popup_repeat_button.tooltip_text = tr("MUSIC_REPEAT_TOOLTIP")
+	music_popup_shuffle_button.text = tr("MUSIC_SHUFFLE_STATE") % tr("MUSIC_ON" if music_shuffle_enabled else "MUSIC_OFF")
+	music_popup_shuffle_button.tooltip_text = tr("MUSIC_SHUFFLE_TOOLTIP")
+	music_popup_folder_button.text = tr("MUSIC_ADD_FOLDER")
+	music_popup_clear_button.text = tr("MUSIC_CLEAR_CUSTOM")
+	music_popup_clear_button.tooltip_text = tr("MUSIC_CLEAR_CUSTOM_TOOLTIP")
+	music_popup_playlist_title.text = tr("MUSIC_PLAYLIST")
+	music_popup_search_input.placeholder_text = tr("MUSIC_SEARCH_PLACEHOLDER")
 	music_popup_import_label.text = last_music_import_status
 	music_popup_import_label.visible = not last_music_import_status.is_empty()
 	music_popup_clear_button.disabled = custom_music_paths.is_empty()
@@ -7868,9 +8170,9 @@ func _refresh_music_controls_popup() -> void:
 	music_popup_previous_page_button.disabled = music_playlist_page <= 0
 	music_popup_next_page_button.disabled = music_playlist_page >= total_pages - 1
 	if filtered_track_indices.is_empty():
-		music_popup_page_label.text = "Ничего не найдено"
+		music_popup_page_label.text = tr("MUSIC_NOT_FOUND")
 	else:
-		music_popup_page_label.text = "%d–%d из %d" % [first_result_index + 1, last_result_index, filtered_track_indices.size()]
+		music_popup_page_label.text = tr("MUSIC_PAGE_RANGE") % [first_result_index + 1, last_result_index, filtered_track_indices.size()]
 
 	for result_index in range(first_result_index, last_result_index):
 		var track_index: int = filtered_track_indices[result_index]
@@ -7890,7 +8192,7 @@ func _refresh_music_player() -> void:
 
 	music_track_label.text = "♫ %s · %d%%" % [_get_music_track_label(), music_volume_percent]
 	music_track_label.tooltip_text = _get_full_music_track_label_for_index(music_track_index)
-	music_play_pause_button.text = "▶ Играть" if music_is_paused else "Ⅱ Пауза"
+	music_play_pause_button.text = tr("MUSIC_PLAY") if music_is_paused else tr("MUSIC_PAUSE")
 	music_previous_button.disabled = false
 	music_play_pause_button.disabled = false
 	music_next_button.disabled = false
@@ -7939,7 +8241,7 @@ func _start_round() -> void:
 	_reset_trick_presentation()
 	pending_joker_card = null
 	pending_joker_suit = -1
-	last_trick_text = "Взятка ещё не началась"
+	last_trick_text = tr("TRICK_NOT_STARTED")
 	recent_actions.clear()
 	test_checkpoints.clear()
 	pending_test_checkpoint.clear()
@@ -7952,44 +8254,49 @@ func _start_round() -> void:
 	var round_type := _get_current_round_type()
 
 	if not game.start_round(cards_per_player, round_type, trump, not _is_dark_round()):
-		action_text = "Не удалось начать раздачу."
+		action_text = tr("ROUND_START_FAILED")
 		_refresh_ui()
 		return
 
 	_play_sound(SoundEffect.DEAL)
 
 	if _is_misere_round():
-		action_text = "Мизерная раздача %d из %d. Заказов нет; сдающий: %s." % [
+		action_text = tr("ROUND_START_NO_BIDS") % [
+			tr("ROUND_MISERE"),
 			misere_round_index + 1,
 			MISERE_ROUND_COUNT,
 			game.players[game.dealer_index].display_name
 		]
 	elif _is_golden_round():
-		action_text = "Золотая раздача %d из %d. Заказов нет; сдающий: %s." % [
+		action_text = tr("ROUND_START_NO_BIDS") % [
+			tr("ROUND_GOLDEN"),
 			golden_round_index + 1,
 			GOLDEN_ROUND_COUNT,
 			game.players[game.dealer_index].display_name
 		]
 	elif _is_no_trump_round():
-		action_text = "Бескозырка %d из %d. Сдающий: %s." % [
+		action_text = tr("ROUND_START_WITH_DEALER") % [
+			tr("ROUND_NO_TRUMP"),
 			no_trump_round_index + 1,
 			NO_TRUMP_ROUND_COUNT,
 			game.players[game.dealer_index].display_name
 		]
 	elif _is_dark_round():
-		action_text = "Тёмная раздача %d из %d. Заказ вслепую; сдающий: %s." % [
+		action_text = tr("ROUND_START_DARK") % [
+			tr("ROUND_DARK"),
 			dark_round_index + 1,
 			DARK_ROUND_COUNT,
 			game.players[game.dealer_index].display_name
 		]
 	else:
-		action_text = "Обычная раздача %d из %d. Сдающий: %s." % [
+		action_text = tr("ROUND_START_WITH_DEALER") % [
+			tr("ROUND_NORMAL"),
 			normal_round_index + 1,
 			NORMAL_ROUND_COUNT,
 			game.players[game.dealer_index].display_name
 		]
 	if game.current_round.number == 1 and local_first_turn_roll_winner_index >= 0:
-		action_text += " Первым заказывает и ходит %s." % game.players[local_first_turn_roll_winner_index].display_name
+		action_text += tr("ROUND_FIRST_PLAYER") % game.players[local_first_turn_roll_winner_index].display_name
 	_add_history(action_text)
 	next_round_button.visible = false
 	next_round_button.disabled = false
@@ -8016,11 +8323,11 @@ func _advance_automatic_actions() -> void:
 			if game.current_round.current_player_index == HUMAN_PLAYER_INDEX:
 				_prepare_test_checkpoint()
 				if _is_dark_round():
-					action_text = "Тёмная: закажи число взяток вслепую."
+					action_text = tr("ACTION_DARK_BID")
 				elif _is_no_trump_round():
-					action_text = "Бескозырка: выбери число взяток."
+					action_text = tr("ACTION_NO_TRUMP_BID")
 				else:
-					action_text = "Твой заказ: выбери число взяток."
+					action_text = tr("ACTION_YOUR_BID")
 				is_processing_automatic_actions = false
 				_start_human_turn_timer()
 				_refresh_ui()
@@ -8050,7 +8357,7 @@ func _advance_automatic_actions() -> void:
 						return
 					continue
 				_prepare_test_checkpoint()
-				action_text = "Твой ход: выбери допустимую карту."
+				action_text = tr("ACTION_YOUR_TURN")
 				is_processing_automatic_actions = false
 				_start_human_turn_timer()
 				_refresh_ui()
@@ -8077,10 +8384,10 @@ func _play_automatic_bid() -> bool:
 
 	_capture_bug_report_timeline("Перед заказом %s" % game.players[player_index].display_name)
 	if not game.place_bid(player_index, bid):
-		action_text = "Ошибка автоматического заказа."
+		action_text = tr("ACTION_AUTOMATIC_BID_FAILED")
 		return false
 
-	action_text = "%s заказывает %d." % [game.players[player_index].display_name, bid]
+	action_text = tr("ACTION_PLAYER_BID") % [game.players[player_index].display_name, bid]
 	_add_history(action_text)
 	_announce_dark_cards_dealt(cards_were_hidden)
 	_save_current_session()
@@ -8093,7 +8400,7 @@ func _play_automatic_card() -> bool:
 	var card := _choose_automatic_card(player)
 
 	if card == null:
-		action_text = "Автоматический игрок не нашёл допустимую карту."
+		action_text = tr("ACTION_AUTO_CARD_MISSING")
 		return false
 
 	var played_successfully := false
@@ -8115,7 +8422,7 @@ func _play_automatic_card() -> bool:
 		played_successfully = game.play_card(player_index, card)
 
 	if not played_successfully:
-		action_text = "Недопустимый автоматический ход."
+		action_text = tr("ACTION_AUTO_CARD_INVALID")
 		return false
 
 	_record_play(player.display_name, card, player_index)
@@ -8132,19 +8439,19 @@ func _on_bid_pressed(bid: int) -> void:
 	var cards_were_hidden := _is_dark_round() and not game.cards_are_dealt
 
 	if not game.current_round.can_place_bid(HUMAN_PLAYER_INDEX, bid):
-		action_text = "Этот заказ сейчас недоступен."
+		action_text = tr("ACTION_BID_UNAVAILABLE")
 		_refresh_ui()
 		return
 
 	_capture_bug_report_timeline("Перед твоим заказом")
 	_commit_test_checkpoint()
 	if not game.place_bid(HUMAN_PLAYER_INDEX, bid):
-		action_text = "Этот заказ сейчас недоступен."
+		action_text = tr("ACTION_BID_UNAVAILABLE")
 		_refresh_ui()
 		return
 
 	_stop_human_turn_timer()
-	action_text = "Ты заказываешь %d." % bid
+	action_text = tr("ACTION_YOU_BID") % bid
 	_add_history(action_text)
 	_announce_dark_cards_dealt(cards_were_hidden)
 	_save_current_session()
@@ -8164,19 +8471,19 @@ func _on_card_pressed(card: Card) -> void:
 		_capture_bug_report_timeline("Перед выбором условия Джокера")
 		pending_joker_card = card
 		pending_joker_suit = -1
-		action_text = "Выбери условие для Джокера."
+		action_text = tr("ACTION_CHOOSE_JOKER")
 		_refresh_ui()
 		return
 
 	_capture_bug_report_timeline("Перед твоим ходом: %s" % card.get_card_name())
 	_commit_test_checkpoint()
 	if not game.play_card(HUMAN_PLAYER_INDEX, card):
-		action_text = "Эту карту сейчас играть нельзя."
+		action_text = tr("ACTION_CARD_UNAVAILABLE")
 		_refresh_ui()
 		return
 
 	_stop_human_turn_timer()
-	_record_play("Ты", card, HUMAN_PLAYER_INDEX)
+	_record_play(tr("PLAYER_YOU"), card, HUMAN_PLAYER_INDEX)
 	_save_current_session()
 	_advance_automatic_actions()
 
@@ -8187,7 +8494,7 @@ func _on_joker_suit_pressed(suit: int) -> void:
 
 	_capture_bug_report_timeline("Перед объявлением масти Джокера")
 	pending_joker_suit = suit
-	action_text = "Выбери условие для %s." % _get_suit_symbol(suit)
+	action_text = tr("ACTION_CHOOSE_JOKER_SUIT") % _get_suit_symbol(suit)
 	_refresh_ui()
 
 
@@ -8204,14 +8511,14 @@ func _on_joker_choice(
 	_capture_bug_report_timeline("Перед ходом Джокером")
 	_commit_test_checkpoint()
 	if not game.play_card(HUMAN_PLAYER_INDEX, pending_joker_card, mode, declared_suit, forced_card_rank):
-		action_text = "Условие Джокера не удалось применить."
+		action_text = tr("ACTION_JOKER_FAILED")
 		pending_joker_card = null
 		pending_joker_suit = -1
 		_refresh_ui()
 		return
 
 	_stop_human_turn_timer()
-	_record_play("Ты", pending_joker_card, HUMAN_PLAYER_INDEX)
+	_record_play(tr("PLAYER_YOU"), pending_joker_card, HUMAN_PLAYER_INDEX)
 	_add_history(_get_joker_rule_text(mode, declared_suit, forced_card_rank, is_leading_joker))
 	pending_joker_card = null
 	pending_joker_suit = -1
@@ -8234,7 +8541,7 @@ func _on_undo_pressed() -> void:
 	is_undo_vote_in_progress = true
 	is_processing_automatic_actions = true
 	_reset_undo_vote_states()
-	action_text = "Запрос на возврат хода: боты голосуют…"
+	action_text = tr("ACTION_UNDO_VOTING")
 	_refresh_ui()
 	_process_local_undo_vote()
 
@@ -8266,7 +8573,7 @@ func _process_local_undo_vote() -> void:
 	for player_index in range(1, game.players.size()):
 		await get_tree().create_timer(LOCAL_UNDO_VOTE_INTERVAL_SECONDS).timeout
 		undo_vote_states[player_index] = UndoVoteState.APPROVED
-		action_text = "%s согласен вернуть ход." % game.players[player_index].display_name
+		action_text = tr("ACTION_UNDO_APPROVED") % game.players[player_index].display_name
 		_refresh_ui()
 
 	await get_tree().create_timer(LOCAL_UNDO_VOTE_RESULT_HOLD_SECONDS).timeout
@@ -8277,7 +8584,7 @@ func _process_local_undo_vote() -> void:
 	pending_joker_card = null
 	pending_joker_suit = -1
 	last_trick_text = checkpoint["last_trick_text"]
-	action_text = "Боты согласились. Прошлый ход отменён."
+	action_text = tr("ACTION_UNDO_DONE")
 	recent_actions = checkpoint["recent_actions"].duplicate()
 	bug_report_timeline.clear()
 	pending_test_checkpoint = _create_test_checkpoint()
@@ -8347,6 +8654,7 @@ func _on_next_round_pressed() -> void:
 	if is_bug_report_review_mode or not _can_start_next_round():
 		return
 
+	_reset_network_round_countdown()
 	_capture_bug_report_timeline("Перед началом следующей раздачи")
 	game.advance_dealer()
 
@@ -8407,27 +8715,16 @@ func _finish_round() -> void:
 	for player_index in game.players.size():
 		var player := game.players[player_index]
 		var round_score: int = round_scores[player_index]
-		var outcome_text := _get_round_order_outcome_text(player.bid, player.tricks_taken, _round_uses_bids())
+		result_lines.append(_format_round_result_plain_text(
+			player.display_name,
+			player.bid,
+			player.tricks_taken,
+			round_score,
+			player.total_score,
+			_round_uses_bids()
+		))
 
-		if _round_uses_bids():
-			result_lines.append("%s: взято %d, %s, %s, счёт %d → %d" % [
-				player.display_name,
-				player.tricks_taken,
-				outcome_text,
-				_format_score(round_score),
-				player.total_score - round_score,
-				player.total_score
-			])
-		else:
-			result_lines.append("%s: взято %d, без заказа, %s, счёт %d → %d" % [
-				player.display_name,
-				player.tricks_taken,
-				_format_score(round_score),
-				player.total_score - round_score,
-				player.total_score
-			])
-
-	action_text = "Раздача завершена.\n%s" % "\n".join(result_lines)
+	action_text = "%s\n%s" % [tr("RESULT_ROUND_COMPLETE"), "\n".join(result_lines)]
 	next_round_button.visible = true
 
 	if _is_normal_round() and normal_round_index >= NORMAL_ROUND_COUNT - 1:
@@ -8467,7 +8764,7 @@ func _finish_round() -> void:
 
 
 func _record_play(player_name: String, card: Card, player_index: int) -> void:
-	_add_history("%s сыграл %s." % [player_name, card.get_card_name()])
+	_add_history(tr("ACTION_PLAYER_PLAYED") % [player_name, _get_localized_card_name(card)])
 	_play_sound(SoundEffect.CARD)
 	pending_play_presentation = true
 	pending_card_animation_player_index = player_index
@@ -8476,12 +8773,11 @@ func _record_play(player_name: String, card: Card, player_index: int) -> void:
 	if game.active_trick == null:
 		show_last_completed_trick = true
 		pending_trick_winner_player_index = game.last_trick_winner_index
-		last_trick_text = "%s сыграл %s. Взятку забирает %s." % [
-			player_name,
-			card.get_card_name(),
-			game.players[game.last_trick_winner_index].display_name
+		last_trick_text = "%s %s" % [
+			tr("ACTION_PLAYER_PLAYED") % [player_name, _get_localized_card_name(card)],
+			tr("ACTION_TRICK_WINNER") % game.players[game.last_trick_winner_index].display_name,
 		]
-		_add_history("Взятку забирает %s." % game.players[game.last_trick_winner_index].display_name)
+		_add_history(tr("ACTION_TRICK_WINNER") % game.players[game.last_trick_winner_index].display_name)
 	else:
 		last_trick_text = _get_active_trick_text()
 
@@ -8498,14 +8794,14 @@ func _present_pending_play() -> void:
 	if winner_player_index < 0:
 		return
 
-	_play_sound(SoundEffect.TRICK)
 	_set_trick_winner_highlight(winner_player_index, true)
-	action_text = "Взятку забирает %s." % game.players[winner_player_index].display_name
+	action_text = tr("ACTION_TRICK_WINNER") % game.players[winner_player_index].display_name
 	action_label.text = action_text
 	if _did_local_joker_win_last_trick(winner_player_index):
 		_show_joker_celebration(winner_player_index)
 	await get_tree().create_timer(TRICK_WINNER_HOLD_DURATION).timeout
 	_set_trick_winner_highlight(winner_player_index, false)
+	_play_sound(SoundEffect.TRICK)
 	await _animate_trick_collection(winner_player_index)
 	show_last_completed_trick = false
 	_refresh_table()
@@ -8622,6 +8918,7 @@ func _refresh_ui() -> void:
 		_refresh_network_main_table()
 		return
 
+	_position_action_label_for_table_mode(false)
 	_refresh_header()
 	_refresh_deck_visual()
 	_refresh_player_panels()
@@ -8644,35 +8941,69 @@ func _refresh_ui() -> void:
 	_refresh_chat_controls()
 	_refresh_social_action_buttons()
 	_refresh_first_turn_roll_panel()
+	call_deferred("_align_social_controls_to_local_player_panel")
+
+
+func _position_action_label_for_table_mode(is_network_table: bool) -> void:
+	var top_offset := -262.0 if is_network_table else -274.0
+	var bottom_offset := -220.0 if is_network_table else -232.0
+	_set_control_layout(
+		action_label,
+		0.5,
+		1.0,
+		0.5,
+		1.0,
+		-490.0,
+		top_offset,
+		490.0,
+		bottom_offset
+	)
+
+
+func _align_social_controls_to_local_player_panel() -> void:
+	if (
+		not is_instance_valid(social_controls_container)
+		or player_panels.is_empty()
+		or not is_instance_valid(player_panels[HUMAN_PLAYER_INDEX])
+	):
+		return
+	var local_panel: Control = player_panels[HUMAN_PLAYER_INDEX]
+	var desired_center_y := local_panel.position.y + local_panel.size.y * 0.5
+	social_controls_container.position.y = desired_center_y - social_controls_container.size.y * 0.5
 
 
 func _refresh_header() -> void:
 	match game.current_round.state:
 		Round.State.BIDDING:
-			phase_label.text = _get_phase_text("заказ вслепую" if _is_dark_round() else "заказ взяток")
+			phase_label.text = _get_phase_text(
+				tr("TABLE_PHASE_BLIND_BIDDING") if _is_dark_round() else tr("TABLE_PHASE_BIDDING")
+			)
 		Round.State.PLAYING:
-			phase_label.text = _get_phase_text("розыгрыш взяток")
+			phase_label.text = _get_phase_text(tr("TABLE_PHASE_PLAYING"))
 		Round.State.FINISHED:
-			phase_label.text = _get_phase_text("завершена")
+			phase_label.text = _get_phase_text(tr("TABLE_PHASE_FINISHED"))
 		_:
-			phase_label.text = "Этап: подготовка"
+			phase_label.text = tr("TABLE_PHASE_SETUP")
 
 	if _is_misere_round():
-		trump_label.text = _get_special_trump_text("Мизерная")
+		trump_label.text = _get_special_trump_text(tr("ROUND_MISERE"))
 	elif _is_golden_round():
-		trump_label.text = _get_special_trump_text("Золотая")
+		trump_label.text = _get_special_trump_text(tr("ROUND_GOLDEN"))
 	elif _is_no_trump_round():
-		trump_label.text = "Бескозырка: козырей нет"
+		trump_label.text = tr("TRUMP_NO_TRUMP")
 	elif _is_dark_round() and not game.cards_are_dealt:
-		trump_label.text = "Тёмная: козырь %s · карты скрыты до завершения заказов" % game.current_round.get_trump_name()
+		trump_label.text = tr("TRUMP_DARK") % [
+			tr("ROUND_DARK"),
+			_get_localized_trump_name(game.current_round.trump),
+		]
 	elif game.trump_card == null:
-		trump_label.text = "Козырь: %s (задан)" % game.current_round.get_trump_name()
+		trump_label.text = tr("TRUMP_FIXED") % _get_localized_trump_name(game.current_round.trump)
 	elif game.trump_card.is_joker:
-		trump_label.text = "Открыта %s (бескозырка)" % game.trump_card.get_card_name()
+		trump_label.text = tr("TRUMP_OPEN_JOKER") % _get_localized_card_name(game.trump_card)
 	else:
-		trump_label.text = "Открыта %s · козырь %s" % [
-			game.trump_card.get_card_name(),
-			game.current_round.get_trump_name()
+		trump_label.text = tr("TRUMP_OPEN_CARD") % [
+			_get_localized_card_name(game.trump_card),
+			_get_localized_trump_name(game.current_round.trump),
 		]
 	trump_label.text = _format_suit_symbols_for_dark_ui(trump_label.text)
 	var should_show_action_label := is_bug_report_review_mode or (
@@ -8698,15 +9029,15 @@ func _refresh_player_panels() -> void:
 			and _get_current_player_index() == player_index
 			and game.current_round.state != Round.State.FINISHED
 		)
-		var marker := "Ход · " if is_current else ""
+		var marker := tr("PLAYER_TURN_PREFIX") if is_current else ""
 		player_panels[player_index].add_theme_stylebox_override("panel", _get_player_panel_style(player_index, is_current))
 		player_labels[player_index].text = "%s%s" % [marker, player.display_name]
 
 		if _round_uses_bids():
 			var bid_text := "—" if player.bid < 0 else str(player.bid)
-			player_stats_labels[player_index].text = _get_player_stats_bbcode(bid_text, player.tricks_taken, true)
+			_set_player_stats_label(player_stats_labels[player_index], bid_text, player.tricks_taken, true)
 		else:
-			player_stats_labels[player_index].text = _get_player_stats_bbcode("—", player.tricks_taken, false)
+			_set_player_stats_label(player_stats_labels[player_index], "—", player.tricks_taken, false)
 		_set_player_score_display(
 			player_index,
 			player.total_score,
@@ -8719,18 +9050,61 @@ func _refresh_player_panels() -> void:
 	_refresh_table_markers()
 
 
-func _get_player_stats_bbcode(bid_text: String, tricks_taken: int, uses_bids: bool) -> String:
+func _set_player_stats_label(
+	stats_label: RichTextLabel,
+	bid_text: String,
+	tricks_taken: int,
+	uses_bids: bool
+) -> void:
+	if not is_instance_valid(stats_label):
+		return
+	var available_width := stats_label.size.x - 10.0
+	if available_width <= 80.0:
+		available_width = 184.0
+	var size_candidates := [
+		Vector2i(17, 23),
+		Vector2i(16, 22),
+		Vector2i(15, 21),
+		Vector2i(14, 20),
+		Vector2i(13, 19),
+		Vector2i(12, 18),
+		Vector2i(11, 17)
+	]
+	# Казахские подписи заметно длиннее остальных; сразу начинаем с компактной
+	# пары, а затем всё равно проверяем фактическую ширину RichTextLabel.
+	var first_candidate := 3 if interface_locale == "kz" else 0
+	for candidate_index in range(first_candidate, size_candidates.size()):
+		var font_sizes: Vector2i = size_candidates[candidate_index]
+		stats_label.add_theme_font_size_override("normal_font_size", font_sizes.x)
+		stats_label.text = _get_player_stats_bbcode(
+			bid_text,
+			tricks_taken,
+			uses_bids,
+			font_sizes.x,
+			font_sizes.y
+		)
+		if stats_label.get_content_width() <= available_width:
+			return
+
+
+func _get_player_stats_bbcode(
+	bid_text: String,
+	tricks_taken: int,
+	uses_bids: bool,
+	label_font_size := 17,
+	value_font_size := 23
+) -> String:
 	if uses_bids:
 		return (
-			"[center][color=#dce8dc]Заказ[/color] "
-			+ "[font_size=23][b][color=#ffd65a]%s[/color][/b][/font_size]"
-			+ "  [color=#77927f]•[/color]  [color=#dce8dc]Взято[/color] "
-			+ "[font_size=23][b][color=#ffffff]%d[/color][/b][/font_size][/center]"
-		) % [bid_text, tricks_taken]
+			"[center][font_size=%d][color=#dce8dc]%s[/color][/font_size] "
+			+ "[font_size=%d][b][color=#ffd65a]%s[/color][/b][/font_size]"
+			+ "  [font_size=%d][color=#77927f]•[/color]  [color=#dce8dc]%s[/color][/font_size] "
+			+ "[font_size=%d][b][color=#ffffff]%d[/color][/b][/font_size][/center]"
+		) % [label_font_size, tr("PLAYER_ORDER"), value_font_size, bid_text, label_font_size, tr("PLAYER_TAKEN"), value_font_size, tricks_taken]
 	return (
-		"[center][color=#dce8dc]Взято[/color] "
-		+ "[font_size=23][b][color=#ffffff]%d[/color][/b][/font_size][/center]"
-	) % tricks_taken
+		"[center][font_size=%d][color=#dce8dc]%s[/color][/font_size] "
+		+ "[font_size=%d][b][color=#ffffff]%d[/color][/b][/font_size][/center]"
+	) % [label_font_size, tr("PLAYER_TAKEN"), value_font_size, tricks_taken]
 
 
 func _set_player_score_display(player_slot: int, target_score: int, animate_change: bool) -> void:
@@ -8790,7 +9164,7 @@ func _apply_player_score_tween_value(value: float, player_slot: int, score_delta
 	if player_slot < 0 or player_slot >= player_score_labels.size():
 		return
 	var score_label: Label = player_score_labels[player_slot]
-	score_label.text = "Счёт: %d   %s" % [roundi(value), _format_score(score_delta)]
+	score_label.text = tr("PLAYER_SCORE_CHANGE") % [roundi(value), _format_score(score_delta)]
 	score_label.add_theme_font_size_override("font_size", 21)
 	score_label.add_theme_color_override(
 		"font_color",
@@ -8806,7 +9180,7 @@ func _finish_player_score_tween(player_slot: int, target_score: int) -> void:
 
 
 func _apply_static_player_score_style(score_label: Label, score: int) -> void:
-	score_label.text = "Счёт: %d" % score
+	score_label.text = tr("PLAYER_SCORE") % score
 	score_label.add_theme_font_size_override("font_size", 19)
 	score_label.add_theme_color_override(
 		"font_color",
@@ -8951,7 +9325,7 @@ func _create_player_avatar_badges() -> void:
 	var turn_glow_material := _create_avatar_turn_glow_material()
 	for player_index in PLAYER_NAMES.size():
 		var badge := PanelContainer.new()
-		badge.tooltip_text = "Аватар игрока"
+		badge.tooltip_text = tr("PLAYER_AVATAR_TOOLTIP")
 		badge.add_theme_stylebox_override("panel", avatar_badge_style)
 		_place_player_avatar_badge(badge, player_index)
 
@@ -8994,7 +9368,7 @@ func _create_player_avatar_badges() -> void:
 		turn_label.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
 		turn_label.offset_top = -30.0
 		turn_label.offset_bottom = -4.0
-		turn_label.text = "ХОД"
+		turn_label.text = tr("TURN_BADGE")
 		turn_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		turn_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 		turn_label.add_theme_font_size_override("font_size", 17)
@@ -9009,7 +9383,7 @@ func _create_player_avatar_badges() -> void:
 		soundpad_indicator.visible = false
 		soundpad_indicator.z_index = 7
 		soundpad_indicator.text = "🔊"
-		soundpad_indicator.tooltip_text = "Этот игрок сейчас воспроизводит звук"
+		soundpad_indicator.tooltip_text = tr("PLAYER_IS_PLAYING_SOUND")
 		soundpad_indicator.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		soundpad_indicator.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 		soundpad_indicator.add_theme_font_size_override("font_size", 22)
@@ -9057,7 +9431,7 @@ func _create_player_avatar_badges() -> void:
 		gift_button.name = "PlayerGiftButton"
 		gift_button.visible = false
 		gift_button.text = "🎁"
-		gift_button.tooltip_text = "Отправить подарок"
+		gift_button.tooltip_text = tr("PLAYER_SEND_GIFT")
 		gift_button.custom_minimum_size = Vector2(40.0, 40.0)
 		gift_button.add_theme_font_size_override("font_size", 18)
 		_apply_bare_social_icon_button_style(gift_button)
@@ -9515,9 +9889,9 @@ func _refresh_table() -> void:
 	var table_title := ""
 
 	if game.active_trick == null:
-		table_title = "Последняя взятка" if show_last_completed_trick else "Следующая взятка"
+		table_title = tr("TABLE_LAST_TRICK") if show_last_completed_trick else tr("TABLE_NEXT_TRICK")
 	else:
-		table_title = "Текущая взятка"
+		table_title = tr("TABLE_CURRENT_TRICK")
 		var declaration_text := _get_active_joker_declaration_text()
 		if not declaration_text.is_empty():
 			table_title += "\n%s" % declaration_text
@@ -9568,24 +9942,24 @@ func _get_trick_card_status(
 	)
 	var joker_mode := _get_displayed_joker_mode()
 	if not is_leading_joker:
-		return "ЗАБИРАЕТ" if joker_mode == Trick.JokerMode.JOKER_WINS else "НЕ БЕРЁТ"
+		return tr("JOKER_STATUS_TAKES") if joker_mode == Trick.JokerMode.JOKER_WINS else tr("JOKER_STATUS_NOT_TAKES")
 
 	var declared_suit := _get_displayed_joker_declared_suit()
 	var forced_card_rank := _get_displayed_joker_forced_card_rank()
 	var suit_symbol := _get_suit_symbol(declared_suit)
 
 	if forced_card_rank == Trick.ForcedCardRank.HIGHEST:
-		return "%s · СТАРШАЯ" % suit_symbol
+		return "%s · %s" % [suit_symbol, tr("JOKER_STATUS_HIGH")]
 	if forced_card_rank == Trick.ForcedCardRank.LOWEST:
-		return "%s · МЛАДШАЯ" % suit_symbol
+		return "%s · %s" % [suit_symbol, tr("JOKER_STATUS_LOW")]
 	if joker_mode == Trick.JokerMode.JOKER_WINS:
-		return "%s · БЕРЁТ" % suit_symbol
+		return "%s · %s" % [suit_symbol, tr("JOKER_STATUS_TAKES")]
 	if joker_mode == Trick.JokerMode.HIGHEST_DECLARED_CARD_WINS:
-		return "%s · СТАРШАЯ" % suit_symbol
+		return "%s · %s" % [suit_symbol, tr("JOKER_STATUS_HIGH")]
 	if joker_mode == Trick.JokerMode.LOWEST_DECLARED_CARD_WINS:
-		return "%s · МЛАДШАЯ" % suit_symbol
+		return "%s · %s" % [suit_symbol, tr("JOKER_STATUS_LOW")]
 
-	return "%s · НЕ БЕРЁТ" % suit_symbol
+	return "%s · %s" % [suit_symbol, tr("JOKER_STATUS_NOT_TAKES")]
 
 
 func _get_displayed_joker_mode() -> Trick.JokerMode:
@@ -9616,7 +9990,7 @@ func _refresh_score_sheet() -> void:
 	if is_instance_valid(score_sheet_close_button):
 		score_sheet_close_button.visible = is_score_sheet_visible
 		score_sheet_close_button.disabled = false
-	score_sheet_toggle_button.text = "📋 Расписка"
+	score_sheet_toggle_button.text = tr("SCORE_SHEET_ICON")
 	score_sheet_toggle_button.disabled = false
 	score_sheet_title.text = "Расписка: %d из %d раздач сыграно · полный план партии" % [round_history.size(), TOTAL_ROUND_COUNT]
 	final_results_label.visible = _is_full_game_complete()
@@ -10034,11 +10408,11 @@ func _record_completed_game_statistics() -> void:
 
 func _get_place_text(place: int, shares_place := false) -> String:
 	if place <= 0:
-		return "место не определено"
+		return tr("RESULT_PLACE_UNDEFINED")
 
-	var place_text := "%d-е место" % place
+	var place_text := tr("RESULT_PLACE") % place
 	if shares_place:
-		place_text += " (ничья)"
+		place_text = tr("RESULT_PLACE_SHARED") % place_text
 	return place_text
 
 
@@ -10067,50 +10441,52 @@ func _refresh_history() -> void:
 		call_deferred("_scroll_round_history_to_bottom")
 		return
 	if recent_actions.is_empty():
-		history_label.text = "Ход раздачи: —"
+		history_label.text = tr("HISTORY_EMPTY")
 		return
 
-	history_label.text = _format_suit_symbols_for_light_ui("Ход раздачи\n%s" % "\n".join(recent_actions))
+	history_label.text = _format_suit_symbols_for_light_ui(
+		"%s\n%s" % [tr("HISTORY_TITLE"), "\n".join(_get_localized_history_lines(recent_actions))]
+	)
 	call_deferred("_scroll_round_history_to_bottom")
 
 
 func _get_restricted_local_history_lines() -> PackedStringArray:
-	var lines := PackedStringArray(["Последняя взятка"])
+	var lines := PackedStringArray([tr("HISTORY_LAST_BUTTON")])
 	if game.last_completed_trick_cards.is_empty():
-		lines.append("Завершённых взяток пока нет.")
+		lines.append(tr("HISTORY_NO_COMPLETED"))
 	else:
 		if game.last_trick_winner_index >= 0 and game.last_trick_winner_index < game.players.size():
-			lines.append("Забрал: %s" % game.players[game.last_trick_winner_index].display_name)
+			lines.append(tr("HISTORY_TAKEN_BY") % game.players[game.last_trick_winner_index].display_name)
 		for card_index in mini(game.last_completed_trick_cards.size(), game.last_completed_trick_played_by.size()):
 			var player_index: int = game.last_completed_trick_played_by[card_index]
 			if player_index >= 0 and player_index < game.players.size():
 				lines.append("%s — %s" % [
 					game.players[player_index].display_name,
-					game.last_completed_trick_cards[card_index].get_card_name()
+					_get_localized_card_name(game.last_completed_trick_cards[card_index])
 				])
 
 	lines.append("")
-	lines.append("Текущая взятка")
+	lines.append(tr("TABLE_CURRENT_TRICK"))
 	if game.active_trick == null or game.active_trick.played_cards.is_empty():
-		lines.append("На столе пока нет карт.")
+		lines.append(tr("HISTORY_NO_CARDS"))
 	else:
 		for card_index in mini(game.active_trick.played_cards.size(), game.active_trick.played_by.size()):
 			var player_index: int = game.active_trick.played_by[card_index]
 			if player_index >= 0 and player_index < game.players.size():
 				lines.append("%s — %s" % [
 					game.players[player_index].display_name,
-					game.active_trick.played_cards[card_index].get_card_name()
+					_get_localized_card_name(game.active_trick.played_cards[card_index])
 				])
 	return lines
 
 
 func _refresh_round_history_panel() -> void:
 	round_history_panel.visible = is_round_history_visible
-	round_history_toggle_button.text = "Последняя взятка" if match_history_mode == NetworkHost.HistoryMode.LAST_TRICK_ONLY else "История"
+	round_history_toggle_button.text = tr("HISTORY_LAST_BUTTON") if match_history_mode == NetworkHost.HistoryMode.LAST_TRICK_ONLY else tr("HISTORY_BUTTON")
 	round_history_toggle_button.tooltip_text = (
-		"Скрыть последнюю взятку" if is_round_history_visible else "Показать последнюю взятку"
+		tr("HISTORY_HIDE_LAST") if is_round_history_visible else tr("HISTORY_SHOW_LAST")
 	) if match_history_mode == NetworkHost.HistoryMode.LAST_TRICK_ONLY else (
-		"Скрыть историю" if is_round_history_visible else "Показать историю"
+		tr("HISTORY_HIDE") if is_round_history_visible else tr("HISTORY_SHOW")
 	)
 	round_history_toggle_button.disabled = false
 
@@ -10120,12 +10496,13 @@ func _refresh_round_results() -> void:
 	round_results_panel.visible = round_is_finished
 
 	if not round_is_finished:
-		round_results_title.text = "ИТОГИ РАЗДАЧИ"
+		_reset_network_round_countdown()
+		round_results_title.text = tr("RESULTS_ROUND")
 		round_results_label.text = ""
 		return
 
 	var full_game_complete := _is_full_game_complete()
-	round_results_title.text = "ИТОГИ ПАРТИИ" if full_game_complete else "ИТОГИ РАЗДАЧИ"
+	round_results_title.text = tr("RESULTS_GAME") if full_game_complete else tr("RESULTS_ROUND")
 	round_results_label.text = (
 		_format_final_standings_bbcode(_get_final_standings())
 		if full_game_complete
@@ -10137,6 +10514,25 @@ func _refresh_round_results() -> void:
 		else round_results_label.get_parsed_text()
 	)
 	_fit_round_results_panel(plain_text)
+	if full_game_complete:
+		_reset_network_round_countdown()
+	else:
+		_sync_local_round_countdown()
+
+
+func _sync_local_round_countdown() -> void:
+	var result_key := "local:%d:%d" % [game.current_round.number, round_history.size()]
+	if network_round_countdown_active and network_round_countdown_result_key == result_key:
+		return
+	network_round_countdown_result_key = result_key
+	network_round_countdown_remaining_seconds = NETWORK_NEXT_ROUND_AUTO_START_SECONDS
+	network_round_countdown_active = true
+	round_results_countdown_border.visible = true
+	round_results_countdown_border.set_time_remaining(
+		network_round_countdown_remaining_seconds,
+		NETWORK_NEXT_ROUND_AUTO_START_SECONDS,
+		tr("NEXT_ROUND_AUTO_START_TOOLTIP")
+	)
 
 
 func _fit_round_results_panel(plain_text: String) -> void:
@@ -10184,7 +10580,7 @@ func _fit_round_results_panel(plain_text: String) -> void:
 
 func _get_local_round_result_bbcode() -> String:
 	if round_history.is_empty():
-		return action_text.trim_prefix("Раздача завершена.\n")
+		return action_text.trim_prefix("%s\n" % tr("RESULT_ROUND_COMPLETE"))
 	var completed_round: Dictionary = round_history.back()
 	var uses_bids := bool(completed_round.get("uses_bids", true))
 	var player_results: Array = completed_round.get("players", [])
@@ -10225,7 +10621,7 @@ func _refresh_bid_controls() -> void:
 
 	for bid in game.current_round.cards_per_player + 1:
 		var bid_button := Button.new()
-		bid_button.text = "Заказать %d" % bid
+		bid_button.text = tr("BID_BUTTON") % bid
 		bid_button.custom_minimum_size = Vector2(104.0, 40.0)
 		_apply_table_action_button_style(bid_button)
 		bid_button.disabled = not game.current_round.can_place_bid(HUMAN_PLAYER_INDEX, bid)
@@ -10287,23 +10683,23 @@ func _refresh_joker_controls() -> void:
 	if game.active_trick == null:
 		if pending_joker_suit < 0:
 			for suit in Card.Suit.values():
-				_add_joker_suit_button("Объявить %s" % _get_suit_symbol(suit), suit)
+				_add_joker_suit_button(tr("JOKER_DECLARE_SUIT") % _get_suit_symbol(suit), suit)
 			_add_joker_cancel_button()
 			return
 
 		var suit_symbol := _get_suit_symbol(pending_joker_suit)
-		_add_joker_choice_button("%s: Джокер забирает" % suit_symbol, Trick.JokerMode.JOKER_WINS, pending_joker_suit)
-		_add_joker_choice_button("%s: старшая забирает" % suit_symbol, Trick.JokerMode.HIGHEST_DECLARED_CARD_WINS, pending_joker_suit)
-		_add_joker_choice_button("%s: младшая забирает" % suit_symbol, Trick.JokerMode.LOWEST_DECLARED_CARD_WINS, pending_joker_suit)
-		_add_joker_choice_button("%s: кладите старшую — Джокер забирает" % suit_symbol, Trick.JokerMode.JOKER_WINS, pending_joker_suit, Trick.ForcedCardRank.HIGHEST)
-		_add_joker_choice_button("%s: кладите младшую — Джокер забирает" % suit_symbol, Trick.JokerMode.JOKER_WINS, pending_joker_suit, Trick.ForcedCardRank.LOWEST)
-		_add_joker_choice_button("%s: кладите старшую — Джокер не забирает" % suit_symbol, Trick.JokerMode.NORMAL_CARD_WINS, pending_joker_suit, Trick.ForcedCardRank.HIGHEST)
-		_add_joker_choice_button("%s: кладите младшую — Джокер не забирает" % suit_symbol, Trick.JokerMode.NORMAL_CARD_WINS, pending_joker_suit, Trick.ForcedCardRank.LOWEST)
-		_add_joker_suit_button("← Выбрать другую масть", -1)
+		_add_joker_choice_button("%s: %s" % [suit_symbol, tr("JOKER_TAKES")], Trick.JokerMode.JOKER_WINS, pending_joker_suit)
+		_add_joker_choice_button(tr("JOKER_HIGH_TAKES") % suit_symbol, Trick.JokerMode.HIGHEST_DECLARED_CARD_WINS, pending_joker_suit)
+		_add_joker_choice_button(tr("JOKER_LOW_TAKES") % suit_symbol, Trick.JokerMode.LOWEST_DECLARED_CARD_WINS, pending_joker_suit)
+		_add_joker_choice_button(tr("JOKER_PLAY_HIGH_TAKES") % suit_symbol, Trick.JokerMode.JOKER_WINS, pending_joker_suit, Trick.ForcedCardRank.HIGHEST)
+		_add_joker_choice_button(tr("JOKER_PLAY_LOW_TAKES") % suit_symbol, Trick.JokerMode.JOKER_WINS, pending_joker_suit, Trick.ForcedCardRank.LOWEST)
+		_add_joker_choice_button(tr("JOKER_PLAY_HIGH_NOT_TAKES") % suit_symbol, Trick.JokerMode.NORMAL_CARD_WINS, pending_joker_suit, Trick.ForcedCardRank.HIGHEST)
+		_add_joker_choice_button(tr("JOKER_PLAY_LOW_NOT_TAKES") % suit_symbol, Trick.JokerMode.NORMAL_CARD_WINS, pending_joker_suit, Trick.ForcedCardRank.LOWEST)
+		_add_joker_suit_button(tr("JOKER_CHOOSE_OTHER_SUIT"), -1)
 		_add_joker_cancel_button()
 	else:
-		_add_joker_choice_button("Джокер забирает", Trick.JokerMode.JOKER_WINS)
-		_add_joker_choice_button("Сбросить Джокер (не забирает)", Trick.JokerMode.NORMAL_CARD_WINS)
+		_add_joker_choice_button(tr("JOKER_TAKES"), Trick.JokerMode.JOKER_WINS)
+		_add_joker_choice_button(tr("JOKER_DISCARD"), Trick.JokerMode.NORMAL_CARD_WINS)
 		_add_joker_cancel_button()
 
 
@@ -10325,7 +10721,7 @@ func _refresh_hand() -> void:
 
 	if _is_dark_round() and not game.cards_are_dealt:
 		var hidden_cards_label := Label.new()
-		hidden_cards_label.text = "Карты будут сданы после того, как все игроки сделают заказ."
+		hidden_cards_label.text = tr("HAND_HIDDEN_DARK")
 		hidden_cards_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		hidden_cards_label.add_theme_font_size_override("font_size", 16)
 		hand_container.add_child(hidden_cards_label)
@@ -10358,9 +10754,9 @@ func _refresh_hand() -> void:
 			show_availability_hint and not card_is_available
 		)
 		if card == local_premove_card:
-			card_view.set_status("ВЫБРАНО ✓")
+			card_view.set_status(tr("HAND_PREMOVE_SELECTED"))
 		elif card == local_premove_candidate:
-			card_view.set_status("ПОДТВЕРДИ")
+			card_view.set_status(tr("HAND_PREMOVE_CONFIRM"))
 		card_view.card_pressed.connect(_on_card_pressed)
 		hand_container.add_child(card_view)
 
@@ -10476,6 +10872,7 @@ func _create_player_panels() -> void:
 		stats_label.bbcode_enabled = true
 		stats_label.fit_content = true
 		stats_label.scroll_active = false
+		stats_label.autowrap_mode = TextServer.AUTOWRAP_OFF
 		stats_label.custom_minimum_size = Vector2(0.0, 32.0)
 		stats_label.add_theme_font_size_override("normal_font_size", 17)
 		stats_label.add_theme_color_override("font_color", Color(0.82, 0.88, 0.82, 1.0))
@@ -10628,28 +11025,28 @@ func _refresh_deck_visual() -> void:
 		deck_trump_artwork.texture = trump_texture
 		deck_trump_artwork.visible = trump_texture != null
 		deck_trump_label.visible = trump_texture == null
-		deck_trump_label.text = trump_card.get_card_name()
+		deck_trump_label.text = _get_localized_card_name(trump_card)
 		deck_trump_label.add_theme_font_size_override("font_size", 17)
 		deck_trump_label.add_theme_color_override(
 			"font_color",
 			Color(0.74, 0.08, 0.06, 1.0) if trump_card.suit == Card.Suit.HEARTS or trump_card.suit == Card.Suit.DIAMONDS else Color(0.08, 0.08, 0.07, 1.0)
 		)
-		deck_trump_panel.tooltip_text = "Открытая карта определяет козырь."
+		deck_trump_panel.tooltip_text = tr("TRUMP_CARD_TOOLTIP")
 		deck_caption_label.text = (
-			"Открытый Джокер · бескозырка"
+			tr("DECK_OPEN_JOKER")
 			if trump_card.is_joker
-			else "Открытый козырь · в колоде: %d" % game.deck.cards_left()
+			else tr("DECK_OPEN_TRUMP") % game.deck.cards_left()
 		)
 		return
 
-	var trump_name := game.current_round.get_trump_name()
+	var trump_name := _get_localized_trump_name(game.current_round.trump)
 	_show_scheduled_trump_suit_marker(game.current_round.trump)
 	deck_trump_panel.tooltip_text = (
-		"В этой раздаче козырей нет."
+		tr("TRUMP_NONE_TOOLTIP")
 		if game.current_round.trump == Round.TrumpSuit.NONE
-		else "Это только маркер козырной масти, не карта из колоды."
+		else tr("TRUMP_MARKER_TOOLTIP")
 	)
-	deck_caption_label.text = "Без козыря" if game.current_round.trump == Round.TrumpSuit.NONE else "Козырная масть: %s" % trump_name
+	deck_caption_label.text = tr("TRUMP_NO_SUIT") if game.current_round.trump == Round.TrumpSuit.NONE else tr("TRUMP_MARKER") % trump_name
 
 
 func _show_open_trump_card_frame() -> void:
@@ -10704,8 +11101,8 @@ func _add_card_back_artwork(card_back: Control) -> bool:
 
 
 func _create_table_markers() -> void:
-	dealer_marker = _create_table_marker("D", "Сдающий", dealer_marker_style, 18)
-	lead_marker = _create_table_marker("Заход", "Начинает текущую взятку", lead_marker_style, 14)
+	dealer_marker = _create_table_marker("D", tr("DEALER_TOOLTIP"), dealer_marker_style, 18)
+	lead_marker = _create_table_marker(tr("LEAD_MARKER"), tr("LEAD_TOOLTIP"), lead_marker_style, 14)
 	players_container.add_child(dealer_marker)
 	players_container.add_child(lead_marker)
 
@@ -10735,7 +11132,7 @@ func _create_chat_controls() -> void:
 	chat_toggle_button = Button.new()
 	chat_toggle_button.name = "ChatToggleButton"
 	chat_toggle_button.text = "💬"
-	chat_toggle_button.tooltip_text = "Открыть чат стола"
+	chat_toggle_button.tooltip_text = tr("CHAT_OPEN")
 	chat_toggle_button.visible = false
 	chat_toggle_button.z_index = 30
 	chat_toggle_button.mouse_filter = Control.MOUSE_FILTER_STOP
@@ -10791,7 +11188,7 @@ func _create_chat_controls() -> void:
 	content.add_child(header)
 	var title := Label.new()
 	title.name = "ChatTitle"
-	title.text = "ЧАТ"
+	title.text = tr("CHAT_TITLE")
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	title.add_theme_font_size_override("font_size", 17)
 	title.add_theme_color_override("font_color", Color(0.24, 0.16, 0.055, 1.0))
@@ -10826,7 +11223,7 @@ func _create_chat_controls() -> void:
 	content.add_child(input_row)
 	chat_input = LineEdit.new()
 	chat_input.name = "ChatInput"
-	chat_input.placeholder_text = "Сообщение всем игрокам…"
+	chat_input.placeholder_text = tr("CHAT_PLACEHOLDER")
 	chat_input.max_length = NetworkHost.CHAT_MESSAGE_MAX_LENGTH
 	chat_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	chat_input.custom_minimum_size = Vector2(0.0, 38.0)
@@ -10846,7 +11243,7 @@ func _create_chat_controls() -> void:
 	input_row.add_child(chat_input)
 	chat_send_button = Button.new()
 	chat_send_button.name = "ChatSendButton"
-	chat_send_button.text = "Отправить"
+	chat_send_button.text = tr("CHAT_SEND")
 	chat_send_button.custom_minimum_size = Vector2(94.0, 38.0)
 	chat_send_button.add_theme_font_size_override("font_size", 14)
 	_apply_table_action_button_style(chat_send_button)
@@ -10854,7 +11251,7 @@ func _create_chat_controls() -> void:
 	input_row.add_child(chat_send_button)
 
 	chat_status_label = Label.new()
-	chat_status_label.text = "До %d символов · не чаще одного сообщения в секунду" % NetworkHost.CHAT_MESSAGE_MAX_LENGTH
+	chat_status_label.text = tr("CHAT_LIMIT")
 	chat_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	chat_status_label.add_theme_font_size_override("font_size", 12)
 	chat_status_label.add_theme_color_override("font_color", Color(0.25, 0.34, 0.26, 1.0))
@@ -10898,18 +11295,18 @@ func _on_chat_send_pressed() -> void:
 		return
 	var message := chat_input.text.replace("\r", " ").replace("\n", " ").replace("\t", " ").strip_edges()
 	if message.is_empty():
-		chat_status_label.text = "Введите сообщение."
+		chat_status_label.text = tr("CHAT_ENTER_MESSAGE")
 		return
 	var now := Time.get_ticks_msec()
 	if now < chat_next_send_milliseconds:
-		chat_status_label.text = "Слишком быстро — подождите секунду."
+		chat_status_label.text = tr("CHAT_TOO_FAST")
 		return
 	if _submit_network_social_action({"kind": "chat", "message": message}):
 		chat_input.clear()
 		chat_next_send_milliseconds = now + CHAT_LOCAL_SEND_COOLDOWN_MILLISECONDS
-		chat_status_label.text = "Сообщение отправлено."
+		chat_status_label.text = tr("CHAT_SENT")
 	else:
-		chat_status_label.text = "Сообщение не отправлено: сетевой стол пока недоступен."
+		chat_status_label.text = tr("CHAT_SEND_FAILED")
 
 
 func _rebuild_network_chat_messages(events: Array, snapshot: Dictionary) -> void:
@@ -10953,7 +11350,7 @@ func _refresh_network_chat_log() -> void:
 	_clear_children(chat_messages_container)
 	if network_chat_messages.is_empty():
 		var empty_label := Label.new()
-		empty_label.text = "Сообщений пока нет."
+		empty_label.text = tr("CHAT_EMPTY")
 		empty_label.add_theme_font_size_override("font_size", 14)
 		empty_label.add_theme_color_override("font_color", Color(0.3, 0.34, 0.29, 1.0))
 		chat_messages_container.add_child(empty_label)
@@ -11858,6 +12255,9 @@ func _resize_soundpad_picker(content_height: float) -> void:
 
 
 func _load_soundpad_sounds() -> Array[Dictionary]:
+	if OS.has_feature("public_release"):
+		return _load_soundpad_sounds_from_paths(PublicSoundpadManifest.PATHS)
+
 	var sounds: Array[Dictionary] = []
 	var soundpad_directory: DirAccess = DirAccess.open("res://Assets/Soundboard")
 	if soundpad_directory == null:
@@ -11929,8 +12329,12 @@ func _append_soundpad_sounds_from_directory(
 
 
 func _load_soundpad_sounds_from_manifest() -> Array[Dictionary]:
+	return _load_soundpad_sounds_from_paths(SoundpadManifest.PATHS)
+
+
+func _load_soundpad_sounds_from_paths(sound_paths: PackedStringArray) -> Array[Dictionary]:
 	var sounds: Array[Dictionary] = []
-	for sound_path in SoundpadManifest.PATHS:
+	for sound_path in sound_paths:
 		if sound_path.is_empty():
 			continue
 
@@ -11946,7 +12350,10 @@ func _load_soundpad_sounds_from_manifest() -> Array[Dictionary]:
 				continue
 
 		var category_id := "root"
-		if sound_path.get_base_dir() != "res://Assets/Soundboard":
+		if sound_path.get_base_dir() not in [
+			"res://Assets/Soundboard",
+			"res://Assets/PublicSoundboard",
+		]:
 			category_id = sound_path.get_base_dir().get_file().to_lower()
 		sounds.append({
 			"title": sound_path.get_file().get_basename(),
@@ -11967,6 +12374,10 @@ func _load_soundpad_sounds_from_manifest() -> Array[Dictionary]:
 		return str(left.get("title", "")).naturalnocasecmp_to(str(right.get("title", ""))) < 0
 	)
 	return sounds
+
+
+func _get_allowed_soundpad_paths() -> PackedStringArray:
+	return PublicSoundpadManifest.PATHS if OS.has_feature("public_release") else SoundpadManifest.PATHS
 
 
 func _save_soundpad_manifest(sounds: Array[Dictionary]) -> void:
@@ -12084,7 +12495,7 @@ func _on_soundpad_selected(sound_data: Dictionary) -> void:
 		return
 	if _is_steam_p2p_main_table_active():
 		var sound_id := str(sound_data.get("path", ""))
-		if sound_id.is_empty() or sound_id not in SoundpadManifest.PATHS or not _try_consume_social_action(SocialAction.SOUNDPAD):
+		if sound_id.is_empty() or sound_id not in _get_allowed_soundpad_paths() or not _try_consume_social_action(SocialAction.SOUNDPAD):
 			return
 		soundpad_picker.visible = false
 		_submit_network_social_action({"kind": "soundpad", "sound_id": sound_id})
@@ -12125,7 +12536,7 @@ func _refresh_soundpad_controls() -> void:
 	if not is_instance_valid(soundpad_toggle_button) or not is_instance_valid(soundpad_picker):
 		return
 
-	var can_show_controls := _can_show_reaction_controls()
+	var can_show_controls := _can_show_reaction_controls() and not soundpad_sounds.is_empty()
 	soundpad_toggle_button.visible = can_show_controls
 	if not can_show_controls:
 		soundpad_picker.visible = false
@@ -12338,7 +12749,7 @@ func _on_joker_suit_reset() -> void:
 
 func _add_joker_cancel_button() -> void:
 	var cancel_button := Button.new()
-	cancel_button.text = "← Назад к картам"
+	cancel_button.text = "← %s" % tr("JOKER_CANCEL")
 	cancel_button.custom_minimum_size = Vector2(0.0, 44.0)
 	cancel_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_apply_table_action_button_style(cancel_button)
@@ -12354,7 +12765,7 @@ func _on_cancel_pending_joker_selection_pressed() -> void:
 		return
 	pending_joker_card = null
 	pending_joker_suit = -1
-	action_text = "Выбери карту для хода."
+	action_text = tr("ACTION_YOUR_TURN")
 	_refresh_ui()
 
 
@@ -12401,6 +12812,7 @@ func _process(delta: float) -> void:
 	steam_bridge.process_callbacks()
 	_refresh_social_action_buttons()
 	_process_turn_reminder(delta)
+	_process_network_round_countdown(delta)
 
 	if not turn_timer_active or not auto_turn_enabled:
 		return
@@ -12427,6 +12839,7 @@ func _process_turn_reminder(delta: float) -> void:
 		turn_reminder_was_played = false
 		turn_reminder_play_count = 0
 		turn_reminder_next_sound_seconds = TURN_REMINDER_DELAY_SECONDS
+		_play_sound(SoundEffect.TURN_START)
 	turn_reminder_elapsed_seconds += delta
 	_refresh_turn_timer_indicator()
 	if (
@@ -12796,9 +13209,9 @@ func _choose_automatic_card(player: Player) -> Card:
 		if game.current_round.round_type == Round.RoundType.MISERE:
 			return _select_misere_lead_card(player, legal_cards)
 		if wants_trick:
-			var strong_regular_lead := _select_non_joker_card_by_strength(legal_cards, true)
-			if strong_regular_lead != null:
-				return strong_regular_lead
+			var safe_regular_lead := _select_safe_winning_lead_card(player, legal_cards)
+			if safe_regular_lead != null:
+				return safe_regular_lead
 			return _get_joker_from_cards(legal_cards)
 
 		var low_lead_card := _select_non_joker_card_by_strength(legal_cards, false)
@@ -12839,8 +13252,8 @@ func _choose_hard_automatic_card(player: Player, legal_cards: Array[Card]) -> Ca
 		if game.current_round.round_type == Round.RoundType.MISERE:
 			return _select_misere_lead_card(player, legal_cards)
 		if wants_trick:
-			var strong_regular_lead := _select_non_joker_card_by_strength(legal_cards, true)
-			return strong_regular_lead if strong_regular_lead != null else _get_joker_from_cards(legal_cards)
+			var safe_regular_lead := _select_safe_winning_lead_card(player, legal_cards)
+			return safe_regular_lead if safe_regular_lead != null else _get_joker_from_cards(legal_cards)
 
 		var weak_regular_lead := _select_non_joker_card_by_strength(legal_cards, false)
 		return weak_regular_lead if weak_regular_lead != null else legal_cards[0]
@@ -13076,6 +13489,30 @@ func _get_unseen_regular_ranks_for_suit(player: Player, suit: int) -> Array[int]
 	return unseen_ranks
 
 
+func _select_safe_winning_lead_card(player: Player, cards: Array[Card]) -> Card:
+	var regular_cards: Array[Card] = []
+	var guaranteed_winners: Array[Card] = []
+	for card in cards:
+		if card.is_joker:
+			continue
+		regular_cards.append(card)
+		var has_unseen_higher_card := false
+		for unseen_rank in _get_unseen_regular_ranks_for_suit(player, card.suit):
+			if unseen_rank > card.rank:
+				has_unseen_higher_card = true
+				break
+		if not has_unseen_higher_card:
+			guaranteed_winners.append(card)
+
+	# Сначала используем карту, которую уже никто не может накрыть. Если такой
+	# нет, сбрасываем слабую и сохраняем короля/даму до выхода старшей карты.
+	if not guaranteed_winners.is_empty():
+		return _select_card_by_strength(guaranteed_winners, false)
+	if not regular_cards.is_empty():
+		return _select_card_by_strength(regular_cards, false)
+	return null
+
+
 func _select_golden_lead_card(cards: Array[Card], trump: Round.TrumpSuit) -> Card:
 	var joker := _get_joker_from_cards(cards)
 	if joker != null:
@@ -13271,6 +13708,40 @@ func _get_suit_symbol(suit: int) -> String:
 	return "?"
 
 
+func _get_localized_trump_name(trump: int) -> String:
+	match trump:
+		Round.TrumpSuit.CLUBS:
+			return "♣"
+		Round.TrumpSuit.SPADES:
+			return "♠"
+		Round.TrumpSuit.HEARTS:
+			return "♥"
+		Round.TrumpSuit.DIAMONDS:
+			return "♦"
+		Round.TrumpSuit.NONE:
+			return tr("TRUMP_NONE_NAME")
+	return tr("TRUMP_UNDEFINED_NAME")
+
+
+func _get_localized_card_name(card: Card) -> String:
+	if card == null:
+		return "—"
+	var rank_name := str(int(card.rank) + 6)
+	match card.rank:
+		Card.Rank.TEN:
+			rank_name = "10"
+		Card.Rank.JACK:
+			rank_name = "J" if interface_locale in ["en", "pl"] else "В"
+		Card.Rank.QUEEN:
+			rank_name = "Q" if interface_locale in ["en", "pl"] else "Д"
+		Card.Rank.KING:
+			rank_name = "K" if interface_locale in ["en", "pl"] else "К"
+		Card.Rank.ACE:
+			rank_name = "A" if interface_locale in ["en", "pl"] else "Т"
+	var compact_name := "%s%s" % [rank_name, _get_suit_symbol(card.suit)]
+	return "%s %s (%s)" % ["🃏", tr("JOKER_NAME"), compact_name] if card.is_joker else compact_name
+
+
 func _format_suit_symbols_for_dark_ui(plain_text: String) -> String:
 	var safe_text := plain_text.replace("[", "[lb]")
 	safe_text = safe_text.replace("♥", "[color=#ff5148][b]♥[/b][/color]")
@@ -13293,21 +13764,21 @@ func _format_suit_symbols_for_light_ui(plain_text: String) -> String:
 func _get_round_type_display_name(round_type: int) -> String:
 	match round_type:
 		Round.RoundType.DARK:
-			return "Тёмная"
+			return tr("ROUND_DARK")
 		Round.RoundType.NO_TRUMP:
-			return "Бескозырка"
+			return tr("ROUND_NO_TRUMP")
 		Round.RoundType.GOLDEN:
-			return "Золотая"
+			return tr("ROUND_GOLDEN")
 		Round.RoundType.MISERE:
-			return "Мизерная"
-	return "Обычная"
+			return tr("ROUND_MISERE")
+	return tr("ROUND_NORMAL")
 
 
 func _get_network_scheduled_trump_text(mode_name: String, round_data: Dictionary) -> String:
 	var scheduled_trump := int(round_data.get("trump", Round.TrumpSuit.NONE))
 	if scheduled_trump == Round.TrumpSuit.NONE:
-		return "%s: козырей нет" % mode_name
-	return "%s: козырь %s (по расписанию)" % [mode_name, _get_trump_name_from_suit(scheduled_trump)]
+		return tr("TRUMP_SPECIAL_NONE") % mode_name
+	return tr("TRUMP_SPECIAL_SUIT") % [mode_name, _get_localized_trump_name(scheduled_trump)]
 
 
 func _get_cards_per_player_for_current_round() -> int:
@@ -13426,18 +13897,18 @@ func _can_start_next_round() -> bool:
 
 func _get_phase_text(phase_name: String) -> String:
 	if _is_misere_round():
-		return "Мизерная %d/%d · %s" % [misere_round_index + 1, MISERE_ROUND_COUNT, phase_name]
+		return tr("TABLE_MISERE_PROGRESS") % [misere_round_index + 1, MISERE_ROUND_COUNT, phase_name]
 
 	if _is_golden_round():
-		return "Золотая %d/%d · %s" % [golden_round_index + 1, GOLDEN_ROUND_COUNT, phase_name]
+		return tr("TABLE_GOLDEN_PROGRESS") % [golden_round_index + 1, GOLDEN_ROUND_COUNT, phase_name]
 
 	if _is_no_trump_round():
-		return "Бескозырка %d/%d · %s" % [no_trump_round_index + 1, NO_TRUMP_ROUND_COUNT, phase_name]
+		return tr("TABLE_NO_TRUMP_PROGRESS") % [no_trump_round_index + 1, NO_TRUMP_ROUND_COUNT, phase_name]
 
 	if _is_dark_round():
-		return "Тёмная %d/%d · %s" % [dark_round_index + 1, DARK_ROUND_COUNT, phase_name]
+		return tr("TABLE_DARK_PROGRESS") % [dark_round_index + 1, DARK_ROUND_COUNT, phase_name]
 
-	return "Раздача %d/%d · %s" % [normal_round_index + 1, NORMAL_ROUND_COUNT, phase_name]
+	return tr("TABLE_ROUND_PROGRESS") % [normal_round_index + 1, NORMAL_ROUND_COUNT, phase_name]
 
 
 func _round_uses_bids() -> bool:
@@ -13454,14 +13925,14 @@ func _round_type_uses_bids(round_type: int) -> bool:
 
 func _get_special_trump_text(mode_name: String) -> String:
 	if game.current_round.trump == Round.TrumpSuit.NONE:
-		return "%s: козырей нет" % mode_name
+		return tr("TRUMP_SPECIAL_NONE") % mode_name
 
-	return "%s: козырь %s" % [mode_name, game.current_round.get_trump_name()]
+	return tr("TRUMP_SPECIAL_SUIT") % [mode_name, _get_localized_trump_name(game.current_round.trump)]
 
 
 func _announce_dark_cards_dealt(cards_were_hidden: bool) -> void:
 	if cards_were_hidden and game.cards_are_dealt:
-		action_text = "Все заказы сделаны. Карты сданы — начинается розыгрыш."
+		action_text = tr("ACTION_ALL_BIDS_DONE")
 		_add_history(action_text)
 
 
@@ -13489,6 +13960,41 @@ func _create_test_checkpoint() -> Dictionary:
 
 func _add_history(action: String) -> void:
 	recent_actions.append(action)
+
+
+func _get_localized_history_lines(lines: PackedStringArray) -> PackedStringArray:
+	var localized_lines: PackedStringArray = []
+	for line in lines:
+		localized_lines.append(_localize_canonical_history_line(line))
+	return localized_lines
+
+
+func _localize_canonical_history_line(line: String) -> String:
+	if line == "Все заказы сделаны. Карты сданы — начинается розыгрыш.":
+		return tr("ACTION_ALL_BIDS_DONE")
+	if line == "Раздача завершена.":
+		return tr("HISTORY_ROUND_FINISHED")
+	var patterns := [
+		{"regex": "^(.+) сыграл (.+)\\.$", "key": "ACTION_PLAYER_PLAYED"},
+		{"regex": "^(.+) заказывает ([0-9]+)\\.$", "key": "ACTION_PLAYER_BID"},
+		{"regex": "^Взятку забирает (.+)\\.$", "key": "ACTION_TRICK_WINNER"},
+		{"regex": "^Козырь: (.+)\\.$", "key": "HISTORY_TRUMP"},
+		{"regex": "^Первым заказывает: (.+)\\.$", "key": "HISTORY_FIRST_BID"},
+		{"regex": "^Раздача без заказов\\. Первым ходит: (.+)\\.$", "key": "HISTORY_FIRST_PLAY_NO_BIDS"},
+	]
+	for pattern_data in patterns:
+		var regex := RegEx.new()
+		if regex.compile(str(pattern_data["regex"])) != OK:
+			continue
+		var match_result := regex.search(line)
+		if match_result == null:
+			continue
+		var captures: Array = []
+		for capture_index in range(1, match_result.get_group_count() + 1):
+			captures.append(match_result.get_string(capture_index))
+		var translated_template := tr(str(pattern_data["key"]))
+		return translated_template % captures if captures.size() > 1 else translated_template % captures[0]
+	return line
 
 
 func _run_joker_rule_checks() -> void:

@@ -8,6 +8,7 @@ extends RefCounted
 const Command = preload("res://Scripts/core/MatchCommand.gd")
 const Snapshot = preload("res://Scripts/core/MatchStateSnapshot.gd")
 const SoundpadManifest = preload("res://Assets/Soundboard/soundpad_manifest.gd")
+const PublicSoundpadManifest = preload("res://Assets/PublicSoundboard/public_soundpad_manifest.gd")
 
 const MAX_PUBLIC_TABLE_EVENTS := 48
 const SOCIAL_ACTION_USE_LIMIT := 3
@@ -495,7 +496,12 @@ func _apply_social_action_command(command) -> bool:
 			event["sticker"] = sticker
 		"soundpad":
 			var sound_id := str(command.payload.get("sound_id", ""))
-			if sound_id.is_empty() or sound_id not in SoundpadManifest.PATHS:
+			var allowed_soundpad_paths: PackedStringArray = (
+				PublicSoundpadManifest.PATHS
+				if OS.has_feature("public_release")
+				else SoundpadManifest.PATHS
+			)
+			if sound_id.is_empty() or sound_id not in allowed_soundpad_paths:
 				last_rejection_reason = "unsupported_sound"
 				return false
 			event["sound_id"] = sound_id

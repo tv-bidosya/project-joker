@@ -35,9 +35,10 @@ func _init() -> void:
 	var accepted_action_count := 0
 	var leading_joker_count := 0
 	var response_joker_count := 0
+	var round_two_started_automatically := false
 
 	for expected_round_number in range(1, TOTAL_ROUNDS + 1):
-		if expected_round_number > 1:
+		if expected_round_number > 1 and not (expected_round_number == 2 and round_two_started_automatically):
 			assert(
 				network_match.start_next_scheduled_round(),
 				"The network schedule could not start round %d." % expected_round_number
@@ -121,6 +122,23 @@ func _init() -> void:
 				network_match.match_host.revision
 			]
 		)
+		if expected_round_number == 1:
+			network_match._process_next_round_auto_start(29.0)
+			assert(
+				network_match.match_host.game.current_round.state == Round.State.FINISHED,
+				"The host must still allow manual review before the 30-second result timeout."
+			)
+			var countdown_snapshot := network_match.get_test_table_snapshot()
+			assert(
+				is_equal_approx(float(countdown_snapshot.get("next_round_auto_start_remaining_seconds", -1.0)), 1.0),
+				"The authoritative snapshot must expose the remaining result countdown."
+			)
+			network_match._process_next_round_auto_start(1.1)
+			assert(
+				network_match.match_host.game.round_number == 2,
+				"The host must automatically start round two after 30 seconds on the results screen."
+			)
+			round_two_started_automatically = true
 
 	assert(
 		network_match.match_host.game.round_number == TOTAL_ROUNDS,

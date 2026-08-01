@@ -38,6 +38,7 @@ func _test_disconnect_temporary_bot_and_return() -> void:
 	network_match._player_index_by_steam_id[PLAYER_STEAM_ID] = PLAYER_INDEX
 
 	var original_hand_keys := _get_hand_keys(game.players[PLAYER_INDEX].hand)
+	network_match._bot_difficulty = SteamP2PMatch.BOT_DIFFICULTY_EASY
 	network_match._on_steam_peer_disconnected(OLD_PEER_ID)
 	assert(network_match.is_match_paused_for_reconnect())
 	assert(network_match.get_reconnecting_player_indices() == [PLAYER_INDEX])
@@ -56,6 +57,10 @@ func _test_disconnect_temporary_bot_and_return() -> void:
 	assert(network_match.replace_reconnecting_player_with_bot(PLAYER_INDEX))
 	assert(not network_match.is_match_paused_for_reconnect())
 	assert(network_match.get_temporary_bot_player_indices() == [PLAYER_INDEX])
+	assert(
+		network_match._get_effective_local_bot_difficulty(PLAYER_INDEX) == SteamP2PMatch.BOT_DIFFICULTY_HARD,
+		"A temporary replacement must always use hard bot strategy."
+	)
 	network_match._bot_action_delay_seconds = 0.0
 	network_match._process_local_bots(0.1)
 	assert(network_match.match_host.revision == 1, "The temporary bot must continue the disconnected player's turn.")
@@ -76,6 +81,10 @@ func _test_disconnect_temporary_bot_and_return() -> void:
 	)
 	assert(not network_match._local_bot_player_indices.has(PLAYER_INDEX))
 	assert(network_match.get_temporary_bot_player_indices().is_empty())
+	assert(
+		network_match._get_effective_local_bot_difficulty(PLAYER_INDEX) == SteamP2PMatch.BOT_DIFFICULTY_EASY,
+		"After reconnect, the seat must stop using the forced hard replacement difficulty."
+	)
 	assert(network_match._connected_client_peers_by_player.get(PLAYER_INDEX, 0) == NEW_PEER_ID)
 	assert(_get_hand_keys(game.players[PLAYER_INDEX].hand) == original_hand_keys)
 

@@ -10,6 +10,8 @@ func _run() -> void:
 	root.add_child(main_scene)
 	await process_frame
 
+	main_scene.interface_locale = "ru"
+	TranslationServer.set_locale("ru")
 	main_scene._build_main_menu_content()
 	var main_menu_buttons := _get_button_texts(main_scene.menu_content)
 	assert("Новая игра с ботами" in main_menu_buttons)
@@ -61,7 +63,7 @@ func _run() -> void:
 
 	main_scene._show_settings_menu()
 	var settings_buttons := _get_button_texts(main_scene.menu_content)
-	for expected_section in ["Звук", "Оформление", "Игра", "Экран"]:
+	for expected_section in ["Звук", "Оформление", "Игра", "Экран", "Язык"]:
 		assert(expected_section in settings_buttons)
 	assert(main_scene.menu_content.find_child("SoundVolumeSlider", true, false) == null)
 

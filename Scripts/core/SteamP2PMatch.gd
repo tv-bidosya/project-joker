@@ -13,6 +13,8 @@ const MatchCommand = preload("res://Scripts/core/MatchCommand.gd")
 const BOT_ACTION_DELAY_SECONDS := 0.65
 const HUMAN_AUTO_TURN_INACTIVITY_SECONDS := 120.0
 const HUMAN_AUTO_TURN_COUNTDOWN_SECONDS := 60.0
+const NEXT_ROUND_AUTO_START_SECONDS := 30.0
+const NEXT_ROUND_COUNTDOWN_SYNC_INTERVAL_SECONDS := 1.0
 const BOT_DIFFICULTY_EASY := 0
 const BOT_DIFFICULTY_NORMAL := 1
 const BOT_DIFFICULTY_HARD := 2
@@ -33,6 +35,8 @@ var _bot_action_delay_seconds := 0.0
 var _human_auto_turn_decision_key := ""
 var _human_auto_turn_elapsed_seconds := 0.0
 var _human_auto_turn_enabled_by_player: Dictionary = {}
+var _next_round_auto_start_elapsed_seconds := 0.0
+var _next_round_countdown_sync_elapsed_seconds := 0.0
 var _join_request_attempt_count := 0
 var _steam_peer_connection_reported := false
 var _connected_remote_peer_ids: Dictionary = {}
@@ -56,6 +60,7 @@ func _init() -> void:
 func start_first_real_round() -> bool:
 	if not super.start_first_real_round():
 		return false
+	_reset_next_round_auto_start()
 	_set_status("Steam P2P: начата первая обычная раздача. Хост раздал по одной карте и ждёт подтверждение личных рук.")
 	return true
 
@@ -63,6 +68,7 @@ func start_first_real_round() -> bool:
 func start_next_scheduled_round() -> bool:
 	if not super.start_next_scheduled_round():
 		return false
+	_reset_next_round_auto_start()
 	_set_status("Steam P2P: хост начал следующую раздачу и отправляет каждому только его закрытую руку.")
 	return true
 
@@ -148,6 +154,7 @@ func stop() -> void:
 	_human_auto_turn_decision_key = ""
 	_human_auto_turn_elapsed_seconds = 0.0
 	_human_auto_turn_enabled_by_player.clear()
+	_reset_next_round_auto_start()
 	_join_request_attempt_count = 0
 	_steam_peer_connection_reported = false
 	_connected_remote_peer_ids.clear()
@@ -198,6 +205,14 @@ func get_temporary_bot_player_indices() -> Array[int]:
 
 func set_bot_difficulty(difficulty: int) -> void:
 	_bot_difficulty = clampi(difficulty, BOT_DIFFICULTY_EASY, BOT_DIFFICULTY_HARD)
+
+
+func _get_effective_local_bot_difficulty(player_index: int) -> int:
+	# Временная замена отвечает за уже начатую партию живого игрока и всегда
+	# играет максимально осмысленно, независимо от сложности обычных ботов.
+	if _temporary_bot_player_indices.has(player_index):
+		return BOT_DIFFICULTY_HARD
+	return _bot_difficulty
 
 
 func update_local_display_name(display_name: String) -> bool:
@@ -255,6 +270,7 @@ func _process(delta: float) -> void:
 	if mode == Mode.HOST:
 		_process_local_bots(delta)
 		_process_human_auto_turn(delta)
+		_process_next_round_auto_start(delta)
 
 
 func is_lobby_full() -> bool:
@@ -398,9 +414,44 @@ func _append_reconnect_state(snapshot: Dictionary) -> Dictionary:
 	var recipient_player_index := int(snapshot.get("recipient_player_index", -1))
 	if is_host():
 		snapshot["recipient_auto_turn_enabled"] = _human_auto_turn_enabled_by_player.has(recipient_player_index)
+		snapshot["next_round_auto_start_total_seconds"] = NEXT_ROUND_AUTO_START_SECONDS
+		snapshot["next_round_auto_start_remaining_seconds"] = _get_next_round_auto_start_remaining_seconds()
 	elif not snapshot.has("recipient_auto_turn_enabled"):
 		snapshot["recipient_auto_turn_enabled"] = _local_auto_turn_enabled
 	return snapshot
+
+
+func _process_next_round_auto_start(delta: float) -> void:
+	if not can_start_next_scheduled_round():
+		_reset_next_round_auto_start()
+		return
+
+	_next_round_auto_start_elapsed_seconds = minf(
+		NEXT_ROUND_AUTO_START_SECONDS,
+		_next_round_auto_start_elapsed_seconds + maxf(0.0, delta)
+	)
+	_next_round_countdown_sync_elapsed_seconds += maxf(0.0, delta)
+	if _next_round_countdown_sync_elapsed_seconds >= NEXT_ROUND_COUNTDOWN_SYNC_INTERVAL_SECONDS:
+		_next_round_countdown_sync_elapsed_seconds = fmod(
+			_next_round_countdown_sync_elapsed_seconds,
+			NEXT_ROUND_COUNTDOWN_SYNC_INTERVAL_SECONDS
+		)
+		_send_current_player_snapshots()
+
+	if _next_round_auto_start_elapsed_seconds < NEXT_ROUND_AUTO_START_SECONDS:
+		return
+	start_next_scheduled_round()
+
+
+func _get_next_round_auto_start_remaining_seconds() -> float:
+	if not can_start_next_scheduled_round():
+		return 0.0
+	return maxf(0.0, NEXT_ROUND_AUTO_START_SECONDS - _next_round_auto_start_elapsed_seconds)
+
+
+func _reset_next_round_auto_start() -> void:
+	_next_round_auto_start_elapsed_seconds = 0.0
+	_next_round_countdown_sync_elapsed_seconds = 0.0
 
 
 func _get_reconnecting_player_indices() -> Array[int]:
@@ -943,12 +994,13 @@ func _get_local_bot_bid(player_index: int, round: Round) -> int:
 		if not valid_dark_bids.is_empty():
 			return valid_dark_bids[_bot_random.randi_range(0, valid_dark_bids.size() - 1)]
 
-	if _bot_difficulty == BOT_DIFFICULTY_EASY:
+	var effective_difficulty := _get_effective_local_bot_difficulty(player_index)
+	if effective_difficulty == BOT_DIFFICULTY_EASY:
 		return valid_bids[0]
 
 	var player: Player = match_host.game.players[player_index]
 	var estimate := _estimate_local_bot_bid(player, round)
-	if _bot_difficulty == BOT_DIFFICULTY_HARD:
+	if effective_difficulty == BOT_DIFFICULTY_HARD:
 		estimate = _estimate_hard_local_bot_bid(player, round, estimate)
 	var selected_bid := valid_bids[0]
 	for valid_bid in valid_bids:
@@ -1012,7 +1064,11 @@ func _get_local_bot_card_payload(player_index: int) -> Dictionary:
 	if legal_cards.is_empty():
 		return {}
 
-	var selected_card := _choose_local_bot_card(player, legal_cards)
+	var selected_card := _choose_local_bot_card(
+		player,
+		legal_cards,
+		_get_effective_local_bot_difficulty(player_index)
+	)
 	if selected_card == null:
 		return {}
 	if not selected_card.is_joker:
@@ -1028,10 +1084,11 @@ func _get_local_bot_card_payload(player_index: int) -> Dictionary:
 	}
 
 
-func _choose_local_bot_card(player: Player, legal_cards: Array[Card]) -> Card:
-	if _bot_difficulty == BOT_DIFFICULTY_EASY:
+func _choose_local_bot_card(player: Player, legal_cards: Array[Card], difficulty := -1) -> Card:
+	var effective_difficulty: int = _bot_difficulty if difficulty < 0 else difficulty
+	if effective_difficulty == BOT_DIFFICULTY_EASY:
 		return legal_cards[_bot_random.randi_range(0, legal_cards.size() - 1)]
-	if _bot_difficulty == BOT_DIFFICULTY_HARD:
+	if effective_difficulty == BOT_DIFFICULTY_HARD:
 		return _choose_hard_local_bot_card(player, legal_cards)
 
 	var wants_trick := _local_bot_wants_trick(player)
@@ -1039,9 +1096,9 @@ func _choose_local_bot_card(player: Player, legal_cards: Array[Card]) -> Card:
 		if match_host.game.current_round.round_type == Round.RoundType.MISERE:
 			return _select_local_bot_misere_lead_card(player, legal_cards)
 		if wants_trick:
-			var strong_regular_lead := _select_local_bot_non_joker_by_strength(legal_cards, true)
-			if strong_regular_lead != null:
-				return strong_regular_lead
+			var safe_regular_lead := _select_safe_local_bot_lead_card(player, legal_cards)
+			if safe_regular_lead != null:
+				return safe_regular_lead
 			return _get_local_bot_joker(legal_cards)
 		var low_lead_card := _select_local_bot_non_joker_by_strength(legal_cards, false)
 		return low_lead_card if low_lead_card != null else legal_cards[0]
@@ -1073,7 +1130,11 @@ func _choose_hard_local_bot_card(player: Player, legal_cards: Array[Card]) -> Ca
 			return _select_golden_local_bot_lead_card(legal_cards, match_host.game.current_round.trump)
 		if match_host.game.current_round.round_type == Round.RoundType.MISERE:
 			return _select_local_bot_misere_lead_card(player, legal_cards)
-		var regular_lead := _select_local_bot_non_joker_by_strength(legal_cards, wants_trick)
+		var regular_lead := (
+			_select_safe_local_bot_lead_card(player, legal_cards)
+			if wants_trick
+			else _select_local_bot_non_joker_by_strength(legal_cards, false)
+		)
 		return regular_lead if regular_lead != null else _get_local_bot_joker(legal_cards)
 
 	if wants_trick:
@@ -1166,6 +1227,28 @@ func _get_local_bot_unseen_regular_ranks(player: Player, suit: int) -> Array[int
 		if not known_ranks.has(rank):
 			unseen_ranks.append(rank)
 	return unseen_ranks
+
+
+func _select_safe_local_bot_lead_card(player: Player, cards: Array[Card]) -> Card:
+	var regular_cards: Array[Card] = []
+	var guaranteed_winners: Array[Card] = []
+	for card in cards:
+		if card.is_joker:
+			continue
+		regular_cards.append(card)
+		var has_unseen_higher_card := false
+		for unseen_rank in _get_local_bot_unseen_regular_ranks(player, card.suit):
+			if unseen_rank > card.rank:
+				has_unseen_higher_card = true
+				break
+		if not has_unseen_higher_card:
+			guaranteed_winners.append(card)
+
+	if not guaranteed_winners.is_empty():
+		return _select_local_bot_card_by_strength(guaranteed_winners, false)
+	if not regular_cards.is_empty():
+		return _select_local_bot_card_by_strength(regular_cards, false)
+	return null
 
 
 func _select_golden_local_bot_lead_card(cards: Array[Card], trump: Round.TrumpSuit) -> Card:
