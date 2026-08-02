@@ -71,7 +71,7 @@ const BUILT_IN_AVATAR_COUNT := 4
 const CUSTOM_AVATAR_INDEX := BUILT_IN_AVATAR_COUNT
 const HUMAN_AVATAR_COUNT := BUILT_IN_AVATAR_COUNT + 1
 const LOCAL_BOT_AVATAR_INDICES: Array[int] = [1, 2, 0]
-const GAME_VERSION := "0.3.8"
+const GAME_VERSION := "0.3.9"
 # Внутренний просмотр отчётов доступен только при запуске из редактора и может
 # быть дополнительно отключён этим переключателем. Создание отчёта игроком не зависит от него.
 const DEVELOPER_REPORT_TOOLS_ENABLED := true
@@ -3305,16 +3305,16 @@ func _refresh_network_main_score_sheet(snapshot: Dictionary, round_data: Diction
 			var completed_round: Dictionary = completed_round_variant
 			completed_rounds[int(completed_round.get("round_number", 0))] = completed_round
 
-	score_sheet_title.text = "Сетевая расписка: %d из %d раздач сыграно · полный план партии" % [completed_rounds.size(), TOTAL_ROUND_COUNT]
+	score_sheet_title.text = tr("SCORE_SHEET_NETWORK_TITLE") % [completed_rounds.size(), TOTAL_ROUND_COUNT]
 	var header_row := _create_score_sheet_row()
-	_add_score_sheet_cell(header_row, "№", true, false, false, SCORE_SHEET_NUMBER_COLUMN_WIDTH)
-	_add_score_sheet_cell(header_row, "Режим", true, false, false, SCORE_SHEET_MODE_COLUMN_WIDTH)
-	_add_score_sheet_cell(header_row, "Карт", true, false, false, SCORE_SHEET_CARDS_COLUMN_WIDTH)
-	_add_score_sheet_cell(header_row, "Козырь", true, false, false, SCORE_SHEET_TRUMP_COLUMN_WIDTH)
+	_add_score_sheet_cell(header_row, tr("SCORE_SHEET_COL_NUMBER"), true, false, false, SCORE_SHEET_NUMBER_COLUMN_WIDTH)
+	_add_score_sheet_cell(header_row, tr("SCORE_SHEET_COL_MODE"), true, false, false, SCORE_SHEET_MODE_COLUMN_WIDTH)
+	_add_score_sheet_cell(header_row, tr("SCORE_SHEET_COL_CARDS"), true, false, false, SCORE_SHEET_CARDS_COLUMN_WIDTH)
+	_add_score_sheet_cell(header_row, tr("SCORE_SHEET_COL_TRUMP"), true, false, false, SCORE_SHEET_TRUMP_COLUMN_WIDTH)
 	var players_by_index: Dictionary = _get_network_players_by_index(snapshot)
 	for player_index in range(PLAYER_NAMES.size()):
 		var player_data: Dictionary = players_by_index.get(player_index, {})
-		_add_score_sheet_player_header(header_row, player_index, str(player_data.get("display_name", "Игрок %d" % (player_index + 1))))
+		_add_score_sheet_player_header(header_row, player_index, str(player_data.get("display_name", tr("SCORE_SHEET_PLAYER") % (player_index + 1))))
 	score_sheet_grid.add_child(header_row)
 
 	var current_round_number := int(round_data.get("number", 0))
@@ -3327,17 +3327,17 @@ func _refresh_network_main_score_sheet(snapshot: Dictionary, round_data: Diction
 
 		if has_completed_round:
 			var completed_round: Dictionary = completed_rounds[round_number]
-			trump_name = str(completed_round.get("trump_name", trump_name))
+			trump_name = _localize_score_sheet_trump_name(str(completed_round.get("trump_name", trump_name)))
 		elif is_current_round:
 			var trump_card: Card = _create_network_table_card(snapshot.get("trump_card", {}))
 			if trump_card != null:
-				trump_name = "без козыря" if trump_card.is_joker else _get_suit_symbol(trump_card.suit)
+				trump_name = tr("TRUMP_NONE_NAME") if trump_card.is_joker else _get_suit_symbol(trump_card.suit)
 			else:
-				trump_name = _get_trump_name_from_suit(int(round_data.get("trump", Round.TrumpSuit.RANDOM)))
+				trump_name = _get_localized_trump_name(int(round_data.get("trump", Round.TrumpSuit.RANDOM)))
 
 		var row := _create_score_sheet_row()
 		_add_score_sheet_cell(row, str(round_number), false, is_current_round, is_future_round, SCORE_SHEET_NUMBER_COLUMN_WIDTH)
-		_add_score_sheet_cell(row, str(round_plan.get("label", "Раздача %d" % round_number)), false, is_current_round, is_future_round, SCORE_SHEET_MODE_COLUMN_WIDTH)
+		_add_score_sheet_cell(row, str(round_plan.get("label", tr("SCORE_SHEET_ROUND_FALLBACK") % round_number)), false, is_current_round, is_future_round, SCORE_SHEET_MODE_COLUMN_WIDTH)
 		_add_score_sheet_cell(row, str(int(round_plan.get("cards_per_player", 0))), false, is_current_round, is_future_round, SCORE_SHEET_CARDS_COLUMN_WIDTH)
 		_add_score_sheet_cell(row, trump_name, false, is_current_round, is_future_round, SCORE_SHEET_TRUMP_COLUMN_WIDTH)
 
@@ -3365,7 +3365,7 @@ func _refresh_network_main_score_sheet(snapshot: Dictionary, round_data: Diction
 		score_sheet_grid.add_child(row)
 
 	var total_row := _create_score_sheet_row()
-	_add_score_sheet_cell(total_row, "Итого", false, false, false, SCORE_SHEET_NUMBER_COLUMN_WIDTH, true)
+	_add_score_sheet_cell(total_row, tr("SCORE_SHEET_TOTAL"), false, false, false, SCORE_SHEET_NUMBER_COLUMN_WIDTH, true)
 	_add_score_sheet_cell(total_row, "", false, false, false, SCORE_SHEET_MODE_COLUMN_WIDTH, true)
 	_add_score_sheet_cell(total_row, "", false, false, false, SCORE_SHEET_CARDS_COLUMN_WIDTH, true)
 	_add_score_sheet_cell(total_row, "", false, false, false, SCORE_SHEET_TRUMP_COLUMN_WIDTH, true)
@@ -3374,7 +3374,7 @@ func _refresh_network_main_score_sheet(snapshot: Dictionary, round_data: Diction
 		_add_score_sheet_player_group(
 			total_row,
 			player_index,
-			PackedStringArray(["", "", "Счёт: %d" % int(player_data.get("total_score", 0))]),
+			PackedStringArray(["", "", tr("SCORE_SHEET_SCORE_TOTAL") % int(player_data.get("total_score", 0))]),
 			false,
 			false,
 			true
@@ -9992,7 +9992,7 @@ func _refresh_score_sheet() -> void:
 		score_sheet_close_button.disabled = false
 	score_sheet_toggle_button.text = tr("SCORE_SHEET_ICON")
 	score_sheet_toggle_button.disabled = false
-	score_sheet_title.text = "Расписка: %d из %d раздач сыграно · полный план партии" % [round_history.size(), TOTAL_ROUND_COUNT]
+	score_sheet_title.text = tr("SCORE_SHEET_TITLE") % [round_history.size(), TOTAL_ROUND_COUNT]
 	final_results_label.visible = _is_full_game_complete()
 
 	if final_results_label.visible:
@@ -10011,10 +10011,10 @@ func _refresh_score_sheet() -> void:
 		completed_rounds[int(completed_round["round_number"])] = completed_round
 
 	var header_row := _create_score_sheet_row()
-	_add_score_sheet_cell(header_row, "№", true, false, false, SCORE_SHEET_NUMBER_COLUMN_WIDTH)
-	_add_score_sheet_cell(header_row, "Режим", true, false, false, SCORE_SHEET_MODE_COLUMN_WIDTH)
-	_add_score_sheet_cell(header_row, "Карт", true, false, false, SCORE_SHEET_CARDS_COLUMN_WIDTH)
-	_add_score_sheet_cell(header_row, "Козырь", true, false, false, SCORE_SHEET_TRUMP_COLUMN_WIDTH)
+	_add_score_sheet_cell(header_row, tr("SCORE_SHEET_COL_NUMBER"), true, false, false, SCORE_SHEET_NUMBER_COLUMN_WIDTH)
+	_add_score_sheet_cell(header_row, tr("SCORE_SHEET_COL_MODE"), true, false, false, SCORE_SHEET_MODE_COLUMN_WIDTH)
+	_add_score_sheet_cell(header_row, tr("SCORE_SHEET_COL_CARDS"), true, false, false, SCORE_SHEET_CARDS_COLUMN_WIDTH)
+	_add_score_sheet_cell(header_row, tr("SCORE_SHEET_COL_TRUMP"), true, false, false, SCORE_SHEET_TRUMP_COLUMN_WIDTH)
 	for player_index in game.players.size():
 		_add_score_sheet_player_header(header_row, player_index)
 	score_sheet_grid.add_child(header_row)
@@ -10028,9 +10028,9 @@ func _refresh_score_sheet() -> void:
 
 		if has_completed_round:
 			var completed_round_record: Dictionary = completed_rounds[round_number]
-			trump_name = str(completed_round_record["trump_name"])
+			trump_name = _localize_score_sheet_trump_name(str(completed_round_record["trump_name"]))
 		elif is_current_round:
-			trump_name = game.current_round.get_trump_name()
+			trump_name = _get_localized_trump_name(game.current_round.trump)
 
 		var score_sheet_row := _create_score_sheet_row()
 		_add_score_sheet_cell(score_sheet_row, str(round_number), false, is_current_round, is_future_round, SCORE_SHEET_NUMBER_COLUMN_WIDTH)
@@ -10060,7 +10060,7 @@ func _refresh_score_sheet() -> void:
 		score_sheet_grid.add_child(score_sheet_row)
 
 	var total_row := _create_score_sheet_row()
-	_add_score_sheet_cell(total_row, "Итого", false, false, false, SCORE_SHEET_NUMBER_COLUMN_WIDTH, true)
+	_add_score_sheet_cell(total_row, tr("SCORE_SHEET_TOTAL"), false, false, false, SCORE_SHEET_NUMBER_COLUMN_WIDTH, true)
 	_add_score_sheet_cell(total_row, "", false, false, false, SCORE_SHEET_MODE_COLUMN_WIDTH, true)
 	_add_score_sheet_cell(total_row, "", false, false, false, SCORE_SHEET_CARDS_COLUMN_WIDTH, true)
 	_add_score_sheet_cell(total_row, "", false, false, false, SCORE_SHEET_TRUMP_COLUMN_WIDTH, true)
@@ -10068,7 +10068,7 @@ func _refresh_score_sheet() -> void:
 		_add_score_sheet_player_group(
 			total_row,
 			player_index,
-			PackedStringArray(["", "", "Счёт: %d" % game.players[player_index].total_score]),
+			PackedStringArray(["", "", tr("SCORE_SHEET_SCORE_TOTAL") % game.players[player_index].total_score]),
 			false,
 			false,
 			true
@@ -10081,9 +10081,9 @@ func _get_planned_round(round_number: int) -> Dictionary:
 
 	if round_index < NORMAL_ROUND_COUNT:
 		var cards_per_player := round_index + 1 if round_index < 8 else 9
-		var trump_name := "случайный козырь" if round_index < 8 else _get_trump_name_from_suit(_get_fixed_trump_for_special_round(round_index - 8))
+		var trump_name := tr("SCORE_SHEET_RANDOM_TRUMP") if round_index < 8 else _get_localized_trump_name(_get_fixed_trump_for_special_round(round_index - 8))
 		return {
-			"label": "Обычная %d/%d" % [round_index + 1, NORMAL_ROUND_COUNT],
+			"label": tr("SCORE_SHEET_ROUND_PROGRESS") % [tr("ROUND_NORMAL"), round_index + 1, NORMAL_ROUND_COUNT],
 			"cards_per_player": cards_per_player,
 			"trump_name": trump_name,
 			"uses_bids": true
@@ -10092,35 +10092,35 @@ func _get_planned_round(round_number: int) -> Dictionary:
 	round_index -= NORMAL_ROUND_COUNT
 	if round_index < DARK_ROUND_COUNT:
 		return {
-			"label": "Тёмная %d/%d · вслепую" % [round_index + 1, DARK_ROUND_COUNT],
+			"label": (tr("SCORE_SHEET_ROUND_PROGRESS") % [tr("ROUND_DARK"), round_index + 1, DARK_ROUND_COUNT]) + tr("SCORE_SHEET_BLIND_SUFFIX"),
 			"cards_per_player": 9,
-			"trump_name": _get_trump_name_from_suit(_get_fixed_trump_for_special_round(round_index)),
+			"trump_name": _get_localized_trump_name(_get_fixed_trump_for_special_round(round_index)),
 			"uses_bids": true
 		}
 
 	round_index -= DARK_ROUND_COUNT
 	if round_index < NO_TRUMP_ROUND_COUNT:
 		return {
-			"label": "Бескозырка %d/%d" % [round_index + 1, NO_TRUMP_ROUND_COUNT],
+			"label": tr("SCORE_SHEET_ROUND_PROGRESS") % [tr("ROUND_NO_TRUMP"), round_index + 1, NO_TRUMP_ROUND_COUNT],
 			"cards_per_player": 9,
-			"trump_name": "без козыря",
+			"trump_name": tr("TRUMP_NONE_NAME"),
 			"uses_bids": true
 		}
 
 	round_index -= NO_TRUMP_ROUND_COUNT
 	if round_index < GOLDEN_ROUND_COUNT:
 		return {
-			"label": "Золотая %d/%d · без заказов" % [round_index + 1, GOLDEN_ROUND_COUNT],
+			"label": (tr("SCORE_SHEET_ROUND_PROGRESS") % [tr("ROUND_GOLDEN"), round_index + 1, GOLDEN_ROUND_COUNT]) + tr("SCORE_SHEET_NO_BIDS_SUFFIX"),
 			"cards_per_player": 9,
-			"trump_name": _get_trump_name_from_suit(_get_fixed_trump_for_special_round(round_index)),
+			"trump_name": _get_localized_trump_name(_get_fixed_trump_for_special_round(round_index)),
 			"uses_bids": false
 		}
 
 	round_index -= GOLDEN_ROUND_COUNT
 	return {
-		"label": "Мизерная %d/%d · без заказов" % [round_index + 1, MISERE_ROUND_COUNT],
+		"label": (tr("SCORE_SHEET_ROUND_PROGRESS") % [tr("ROUND_MISERE"), round_index + 1, MISERE_ROUND_COUNT]) + tr("SCORE_SHEET_NO_BIDS_SUFFIX"),
 		"cards_per_player": 9,
-		"trump_name": _get_trump_name_from_suit(_get_fixed_trump_for_special_round(round_index)),
+		"trump_name": _get_localized_trump_name(_get_fixed_trump_for_special_round(round_index)),
 		"uses_bids": false
 	}
 
@@ -10139,6 +10139,17 @@ func _get_trump_name_from_suit(trump: Round.TrumpSuit) -> String:
 			return "без козыря"
 
 	return "случайный козырь"
+
+
+func _localize_score_sheet_trump_name(trump_name: String) -> String:
+	match trump_name:
+		"без козыря":
+			return tr("TRUMP_NONE_NAME")
+		"не определён":
+			return tr("TRUMP_UNDEFINED_NAME")
+		"случайный козырь":
+			return tr("SCORE_SHEET_RANDOM_TRUMP")
+	return trump_name
 
 
 func _create_score_sheet_row() -> HBoxContainer:
@@ -10170,9 +10181,9 @@ func _add_score_sheet_player_header(row: HBoxContainer, player_index: int, displ
 	var columns_row := HBoxContainer.new()
 	columns_row.add_theme_constant_override("separation", 4)
 	group_content.add_child(columns_row)
-	_add_score_sheet_cell(columns_row, "Заказ", true, false, false, SCORE_SHEET_BID_COLUMN_WIDTH)
-	_add_score_sheet_cell(columns_row, "Взято", true, false, false, SCORE_SHEET_TRICKS_COLUMN_WIDTH)
-	_add_score_sheet_cell(columns_row, "Δ счёта", true, false, false, SCORE_SHEET_SCORE_COLUMN_WIDTH)
+	_add_score_sheet_cell(columns_row, tr("SCORE_SHEET_COL_BID"), true, false, false, SCORE_SHEET_BID_COLUMN_WIDTH)
+	_add_score_sheet_cell(columns_row, tr("SCORE_SHEET_COL_TAKEN"), true, false, false, SCORE_SHEET_TRICKS_COLUMN_WIDTH)
+	_add_score_sheet_cell(columns_row, tr("SCORE_SHEET_COL_SCORE_CHANGE"), true, false, false, SCORE_SHEET_SCORE_COLUMN_WIDTH)
 	row.add_child(group)
 
 
@@ -13992,6 +14003,8 @@ func _localize_canonical_history_line(line: String) -> String:
 		var captures: Array = []
 		for capture_index in range(1, match_result.get_group_count() + 1):
 			captures.append(match_result.get_string(capture_index))
+		if str(pattern_data["key"]) == "ACTION_PLAYER_BID" and captures.size() > 1:
+			captures[1] = int(captures[1])
 		var translated_template := tr(str(pattern_data["key"]))
 		return translated_template % captures if captures.size() > 1 else translated_template % captures[0]
 	return line

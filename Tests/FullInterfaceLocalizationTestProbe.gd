@@ -67,6 +67,31 @@ func _run() -> void:
 	_check("перебір 2 (замовлення 0)" in ukrainian_over_result, "Ukrainian overbid result: %s" % ukrainian_over_result)
 	for russian_fragment in ["заказ", "выполнен", "перебор", "счёт"]:
 		_check(russian_fragment not in ukrainian_exact_result and russian_fragment not in ukrainian_over_result, "Russian round-result fragment remains: %s" % russian_fragment)
+	_check(
+		main_scene._localize_canonical_history_line("Олег заказывает 2.") == "Олег замовляє 2.",
+		"Ukrainian localized bid history must preserve its numeric value."
+	)
+
+	main_scene.is_score_sheet_visible = true
+	main_scene._refresh_score_sheet()
+	var ukrainian_score_sheet := _get_visible_texts(main_scene.score_sheet_panel)
+	for expected_text in ["Режим", "Карт", "Козир", "Замовлено", "Взято", "Δ рахунку", "Разом"]:
+		_check(expected_text in ukrainian_score_sheet, "Missing Ukrainian score-sheet text: %s" % expected_text)
+	_check(main_scene.score_sheet_title.text.begins_with("Розписка: зіграно"), "Ukrainian score-sheet title: %s" % main_scene.score_sheet_title.text)
+	_check("Звичайна 1/13" in ukrainian_score_sheet, "Ukrainian normal-round label is missing.")
+	_check("випадковий козир" in ukrainian_score_sheet, "Ukrainian random-trump label is missing.")
+	for russian_fragment in ["Обычная", "случайный козырь", "Итого", "Счёт"]:
+		_check(russian_fragment not in ukrainian_score_sheet, "Russian score-sheet fragment remains: %s" % russian_fragment)
+	main_scene._refresh_network_main_score_sheet(
+		{"completed_rounds": [], "players": []},
+		{"number": 1, "trump": Round.TrumpSuit.RANDOM}
+	)
+	_check(main_scene.score_sheet_title.text.begins_with("Мережева розписка: зіграно"), "Ukrainian network score-sheet title: %s" % main_scene.score_sheet_title.text)
+	var ukrainian_network_score_sheet := _get_visible_texts(main_scene.score_sheet_panel)
+	_check("Звичайна 1/13" in ukrainian_network_score_sheet, "Ukrainian network score-sheet round label is missing.")
+	_check("випадковий козир" in ukrainian_network_score_sheet, "Ukrainian network random-trump label is missing.")
+	main_scene.is_score_sheet_visible = false
+	main_scene._refresh_score_sheet()
 
 	main_scene.music_is_paused = true
 	main_scene._refresh_music_player()
@@ -104,6 +129,11 @@ func _run() -> void:
 	_check(main_scene.score_sheet_toggle_button.text == "📋 Есеп кестесі", "Kazakh score sheet: %s" % main_scene.score_sheet_toggle_button.text)
 	_check(main_scene.round_history_toggle_button.text == "Тарих", "Kazakh history: %s" % main_scene.round_history_toggle_button.text)
 	_check(main_scene.hand_sort_by_suit_button.text == "Түсі бойынша", "Kazakh suit sort: %s" % main_scene.hand_sort_by_suit_button.text)
+
+	main_scene._build_pause_menu_content()
+	var kazakh_pause_menu := _get_visible_texts(main_scene.menu_content)
+	_check("Баптаулар" in kazakh_pause_menu, "Kazakh pause-menu settings button is missing.")
+	_check("Настройки" not in kazakh_pause_menu, "Russian settings button remains in the Kazakh pause menu.")
 
 	main_scene._show_settings_menu()
 	var kazakh_settings := _get_visible_texts(main_scene.menu_content)
