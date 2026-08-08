@@ -587,7 +587,8 @@ func _record_completed_round(round_scores: Array[int]) -> void:
 		player_results.append({
 			"bid": player.bid,
 			"tricks_taken": player.tricks_taken,
-			"round_score": round_scores[player_index]
+			"round_score": round_scores[player_index],
+			"jokers_dealt": int(game.jokers_dealt_this_round[player_index])
 		})
 
 	completed_round_history.append({

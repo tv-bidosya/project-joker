@@ -54,8 +54,8 @@ const ROUND_RESULTS_PANEL_TOP := 270.0
 const ROUND_RESULTS_PANEL_FIXED_HEIGHT := 92.0
 const ROUND_RESULTS_PANEL_ROW_HEIGHT := 26.0
 const NETWORK_NEXT_ROUND_AUTO_START_SECONDS := 30.0
-const INACTIVITY_AUTO_TURN_DELAY_SECONDS := 120.0
-const AUTO_TURN_DURATION_SECONDS := 60.0
+const INACTIVITY_AUTO_TURN_DELAY_SECONDS := 90.0
+const AUTO_TURN_DURATION_SECONDS := 45.0
 const REACTION_DISPLAY_DURATION := 1.25
 const SOUNDPAD_BUBBLE_DISPLAY_DURATION := 1.6
 const CHAT_NOTIFICATION_DISPLAY_DURATION := 1.5
@@ -366,6 +366,7 @@ var avatar_action_hide_generations: Dictionary = {}
 var avatar_mute_buttons: Array[Button] = []
 var avatar_gift_buttons: Array[Button] = []
 var avatar_soundpad_indicators: Array[Label] = []
+var avatar_turn_timer_indicators: Array[TurnTimerIndicator] = []
 var avatar_mute_hovered_slots: Dictionary = {}
 var muted_network_player_indices: Dictionary = {}
 var soundpad_active_indicator_counts: Dictionary = {}
@@ -501,8 +502,8 @@ var match_history_mode := NetworkHost.HistoryMode.FULL
 var bot_difficulty: BotDifficulty = BotDifficulty.NORMAL
 var tutorial_enabled := false
 var auto_turn_enabled := false
-var interface_locale := "uk"
-var interface_locale_was_chosen := false
+var interface_locale := "en"
+var interface_locale_was_chosen := true
 var turn_timer_active := false
 var turn_timer_remaining := AUTO_TURN_DURATION_SECONDS
 var social_action_uses: Dictionary = {
@@ -757,8 +758,6 @@ func _ready() -> void:
 		steam_bridge.initialize_for_diagnostics()
 		steam_bridge.join_lobby_from_launch()
 		_show_steam_lobby_menu()
-	elif not interface_locale_was_chosen:
-		_show_language_settings_menu(true)
 	else:
 		_show_main_menu()
 
@@ -4420,6 +4419,7 @@ func _format_final_standings_bbcode(standings: Array[Dictionary]) -> String:
 				"[center][font_size=19][b][color=#ffd86a]%s %s · %s[/color][/b][/font_size]"
 				+ "  [color=#d7e3d7]%s[/color] [font_size=21][b][color=#ffffff]%d[/color][/b][/font_size]"
 				+ "  [color=#708c77]•[/color] [color=#d7e3d7]%s[/color] [b]%d[/b]"
+				+ "  [color=#708c77]•[/color] [color=#d7e3d7]%s[/color] [b]%d[/b]"
 				+ "  [color=#708c77]•[/color] [color=#d7e3d7]%s[/color] [b]%d[/b][/center]"
 			) % [
 				prefix,
@@ -4430,7 +4430,9 @@ func _format_final_standings_bbcode(standings: Array[Dictionary]) -> String:
 				tr("RESULT_TOTAL_TRICKS"),
 				int(standing.get("tricks_taken", 0)),
 				tr("RESULT_EXACT_BIDS"),
-				int(standing.get("exact_orders", 0))
+				int(standing.get("exact_orders", 0)),
+				tr("RESULT_JOKERS_DEALT"),
+				int(standing.get("jokers_dealt", 0))
 			]
 		)
 	return "\n".join(final_lines)
@@ -4447,19 +4449,20 @@ func _get_network_final_result_lines(snapshot: Dictionary) -> PackedStringArray:
 		var place := int(standing.get("place", 0))
 		var shares_place := bool(standing.get("shares_place", false))
 		var prefix := "🏆" if place == 1 and not shares_place else "🤝" if shares_place else "•"
-		result_lines.append(tr("RESULT_FINAL_PLAIN") % [
+		result_lines.append((tr("RESULT_FINAL_PLAIN") % [
 			prefix,
 			_get_place_text(place, shares_place),
 			str(standing.get("name", "Игрок")),
 			int(standing.get("score", 0)),
 			int(standing.get("tricks_taken", 0)),
 			int(standing.get("exact_orders", 0))
-		])
+		]) + " · %s: %d" % [tr("RESULT_JOKERS_DEALT"), int(standing.get("jokers_dealt", 0))])
 	return result_lines
 
 
 func _get_network_final_standings(snapshot: Dictionary) -> Array[Dictionary]:
 	var total_tricks_by_player: Dictionary = {}
+	var total_jokers_by_player: Dictionary = {}
 	for completed_round_variant in snapshot.get("completed_rounds", []):
 		if not (completed_round_variant is Dictionary):
 			continue
@@ -4469,6 +4472,10 @@ func _get_network_final_standings(snapshot: Dictionary) -> Array[Dictionary]:
 				total_tricks_by_player[player_index] = (
 					int(total_tricks_by_player.get(player_index, 0))
 					+ int((player_results[player_index] as Dictionary).get("tricks_taken", 0))
+				)
+				total_jokers_by_player[player_index] = (
+					int(total_jokers_by_player.get(player_index, 0))
+					+ int((player_results[player_index] as Dictionary).get("jokers_dealt", 0))
 				)
 
 	var standings: Array[Dictionary] = []
@@ -4483,6 +4490,7 @@ func _get_network_final_standings(snapshot: Dictionary) -> Array[Dictionary]:
 			"score": int(player_data.get("total_score", 0)),
 			"tricks_taken": int(total_tricks_by_player.get(player_index, 0)),
 			"exact_orders": int(player_data.get("exact_orders_completed", 0)),
+			"jokers_dealt": int(total_jokers_by_player.get(player_index, 0)),
 			"place": 0,
 			"shares_place": false
 		})
@@ -5647,7 +5655,7 @@ func _normalize_interface_locale(locale_code: String) -> String:
 	var normalized_locale := locale_code.strip_edges().replace("-", "_").to_lower()
 	if normalized_locale.contains("_"):
 		normalized_locale = normalized_locale.get_slice("_", 0)
-	return normalized_locale if normalized_locale in SUPPORTED_INTERFACE_LOCALES else "uk"
+	return normalized_locale if normalized_locale in SUPPORTED_INTERFACE_LOCALES else "en"
 
 
 func _refresh_localized_interface() -> void:
@@ -5876,8 +5884,8 @@ func _show_game_settings_menu() -> void:
 	)
 	_add_settings_toggle(
 		"SettingsAutoTurnToggle",
-		"Автоход · 60 секунд",
-		"Если ты не ходишь 2 минуты, режим включится автоматически и останется активным. Отключить его можно здесь вручную.",
+		"Автоход · 45 секунд",
+		"Если ты не ходишь 1 минуту 30 секунд, режим включится автоматически и останется активным. Отключить его можно здесь вручную.",
 		auto_turn_enabled,
 		_on_auto_turn_toggled
 	)
@@ -6705,18 +6713,19 @@ func _select_music_track(direction: int) -> void:
 func _load_persistent_settings() -> void:
 	var config := ConfigFile.new()
 	if config.load(PERSISTENT_SETTINGS_PATH) != OK:
-		interface_locale = "uk"
-		interface_locale_was_chosen = false
+		interface_locale = "en"
+		interface_locale_was_chosen = true
 		TranslationServer.set_locale(interface_locale)
 		return
 
 	interface_locale = _normalize_interface_locale(
-		str(config.get_value("localization", "locale", "ru"))
+		str(config.get_value("localization", "locale", "en"))
 	)
-	# Existing prototype installations had no locale field and remain Russian
-	# until the player explicitly changes the language. A genuinely clean
-	# installation starts with the recommended Ukrainian language picker.
-	interface_locale_was_chosen = bool(config.get_value("localization", "chosen", true))
+	# Старый незавершённый экран первого запуска больше не блокирует меню:
+	# такая установка переходит на новый базовый английский язык.
+	if not bool(config.get_value("localization", "chosen", true)):
+		interface_locale = "en"
+	interface_locale_was_chosen = true
 	TranslationServer.set_locale(interface_locale)
 
 	for player_index in PLAYER_NAMES.size():
@@ -9390,7 +9399,7 @@ func _create_player_avatar_badges() -> void:
 		soundpad_indicator.add_theme_color_override("font_outline_color", Color(0.02, 0.04, 0.03, 0.95))
 		soundpad_indicator.add_theme_constant_override("outline_size", 5)
 		soundpad_indicator.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		_set_control_layout(soundpad_indicator, 0.5, 0.0, 0.5, 0.0, -16.0, -40.0, 16.0, -8.0)
+		_set_control_layout(soundpad_indicator, 0.5, 0.5, 0.5, 0.5, -18.0, -18.0, 18.0, 18.0)
 		avatar_content.add_child(soundpad_indicator)
 
 		var undo_vote_badge := PanelContainer.new()
@@ -9454,11 +9463,13 @@ func _create_player_avatar_badges() -> void:
 		badge.mouse_entered.connect(_on_avatar_mute_hover_entered.bind(player_index))
 		badge.mouse_exited.connect(_on_avatar_mute_hover_exited.bind(player_index))
 
+		var player_turn_timer_indicator := TurnTimerIndicator.new()
+		player_turn_timer_indicator.visible = false
+		player_turn_timer_indicator.z_index = 2
+		avatar_content.add_child(player_turn_timer_indicator)
+		avatar_turn_timer_indicators.append(player_turn_timer_indicator)
 		if player_index == HUMAN_PLAYER_INDEX:
-			turn_timer_indicator = TurnTimerIndicator.new()
-			turn_timer_indicator.visible = false
-			turn_timer_indicator.z_index = 2
-			avatar_content.add_child(turn_timer_indicator)
+			turn_timer_indicator = player_turn_timer_indicator
 		players_container.add_child(badge)
 		avatar_badges.append(badge)
 		avatar_images.append(avatar_image)
@@ -10272,7 +10283,8 @@ func _record_completed_round(round_scores: Array[int]) -> void:
 		player_results.append({
 			"bid": player.bid,
 			"tricks_taken": player.tricks_taken,
-			"round_score": round_scores[player_index]
+			"round_score": round_scores[player_index],
+			"jokers_dealt": int(game.jokers_dealt_this_round[player_index])
 		})
 
 	round_history.append({
@@ -10312,13 +10324,15 @@ func _get_final_results_text() -> String:
 		var place_prefix := "🏆" if place == 1 and not shares_place else "🤝" if shares_place else "•"
 		var place_text := _get_place_text(place, shares_place)
 
-		result_lines.append("%s %s: %s — %d очк. · %d вз. · точных заказов: %d" % [
+		result_lines.append("%s %s: %s — %d очк. · %d вз. · точных заказов: %d · %s: %d" % [
 			place_prefix,
 			place_text,
 			standing["name"],
 			standing["score"],
 			standing["tricks_taken"],
-			standing["exact_orders"]
+			standing["exact_orders"],
+			tr("RESULT_JOKERS_DEALT"),
+			standing["jokers_dealt"]
 		])
 
 	return "\n".join(result_lines)
@@ -10334,6 +10348,7 @@ func _get_final_standings() -> Array[Dictionary]:
 			"score": player.total_score,
 			"tricks_taken": _get_total_tricks_for_player(player.player_id),
 			"exact_orders": player.exact_orders_completed,
+			"jokers_dealt": _get_total_jokers_for_player(player.player_id),
 			"place": 0,
 			"shares_place": false
 		})
@@ -10440,6 +10455,15 @@ func _get_total_tricks_for_player(player_index: int) -> int:
 		total_tricks += int(player_result["tricks_taken"])
 
 	return total_tricks
+
+
+func _get_total_jokers_for_player(player_index: int) -> int:
+	var total_jokers := 0
+	for round_record in round_history:
+		var player_results: Array = round_record.get("players", [])
+		if player_index >= 0 and player_index < player_results.size():
+			total_jokers += int((player_results[player_index] as Dictionary).get("jokers_dealt", 0))
+	return total_jokers
 
 
 func _format_score(score: int) -> String:
@@ -12918,8 +12942,9 @@ func _reset_turn_reminder() -> void:
 	turn_reminder_was_played = false
 	turn_reminder_play_count = 0
 	turn_reminder_next_sound_seconds = TURN_REMINDER_DELAY_SECONDS
-	if _is_steam_p2p_main_table_active() and is_instance_valid(turn_timer_indicator):
-		turn_timer_indicator.visible = false
+	if _is_steam_p2p_main_table_active():
+		for indicator in avatar_turn_timer_indicators:
+			indicator.visible = false
 
 
 func _is_human_decision_pending() -> bool:
@@ -12951,25 +12976,24 @@ func _refresh_turn_timer_indicator() -> void:
 		return
 
 	if _is_steam_p2p_main_table_active():
-		var current_decision_key := _get_local_turn_reminder_decision_key()
-		var network_countdown_delay := 0.0 if auto_turn_enabled else INACTIVITY_AUTO_TURN_DELAY_SECONDS
-		var should_show_network_timer := (
-			not current_decision_key.is_empty()
-			and current_decision_key == turn_reminder_decision_key
-			and turn_reminder_elapsed_seconds >= network_countdown_delay
-		)
-		turn_timer_indicator.visible = should_show_network_timer
-		if should_show_network_timer:
-			turn_timer_indicator.set_time_remaining(
-				maxf(
-					0.0,
-					AUTO_TURN_DURATION_SECONDS
-					- (turn_reminder_elapsed_seconds - network_countdown_delay)
-				),
-				AUTO_TURN_DURATION_SECONDS
+		for indicator in avatar_turn_timer_indicators:
+			indicator.visible = false
+		var snapshot := _get_network_main_snapshot()
+		var active_player_index := int(snapshot.get("active_auto_turn_player_index", -1))
+		var viewer_index := int(snapshot.get("recipient_player_index", 0))
+		var relative_slot := posmod(active_player_index - viewer_index, PLAYER_NAMES.size())
+		if active_player_index >= 0 and relative_slot < avatar_turn_timer_indicators.size():
+			var network_indicator := avatar_turn_timer_indicators[relative_slot]
+			var total_seconds := float(snapshot.get("active_auto_turn_total_seconds", AUTO_TURN_DURATION_SECONDS))
+			network_indicator.visible = true
+			network_indicator.set_time_remaining(
+				float(snapshot.get("active_auto_turn_remaining_seconds", total_seconds)),
+				total_seconds
 			)
 		return
 
+	for indicator in avatar_turn_timer_indicators:
+		indicator.visible = indicator == turn_timer_indicator and indicator.visible
 	var should_show_timer := auto_turn_enabled and turn_timer_active and _is_human_decision_pending()
 	turn_timer_indicator.visible = should_show_timer
 	if should_show_timer:

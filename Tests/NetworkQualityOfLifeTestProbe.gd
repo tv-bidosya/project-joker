@@ -38,14 +38,14 @@ func _test_turn_reminder(main_scene: Variant) -> void:
 	main_scene._process_turn_reminder(10.0)
 	assert(main_scene.turn_reminder_play_count == 2, "Turn reminder must repeat every ten seconds")
 	main_scene._reset_turn_reminder()
-	main_scene._process_turn_reminder(119.9)
-	assert(not main_scene.turn_timer_active, "Fallback auto-turn timer must stay hidden during the first two minutes")
+	main_scene._process_turn_reminder(89.9)
+	assert(not main_scene.turn_timer_active, "Fallback auto-turn timer must stay hidden during the first 90 seconds")
 	main_scene._process_turn_reminder(0.2)
-	assert(main_scene.turn_timer_active, "Fallback auto-turn timer must start after two minutes of inactivity")
-	assert(main_scene.auto_turn_enabled, "Two minutes of inactivity must latch auto-turn on until the player disables it")
-	assert(is_equal_approx(main_scene.turn_timer_remaining, 60.0), "Fallback auto-turn countdown must start at 60 seconds")
+	assert(main_scene.turn_timer_active, "Fallback auto-turn timer must start after 90 seconds of inactivity")
+	assert(main_scene.auto_turn_enabled, "90 seconds of inactivity must latch auto-turn on until the player disables it")
+	assert(is_equal_approx(main_scene.turn_timer_remaining, 45.0), "Fallback auto-turn countdown must start at 45 seconds")
 	var bids_before_timeout: int = main_scene.game.current_round.bids_made
-	main_scene._process(60.1)
+	main_scene._process(45.1)
 	assert(main_scene.game.current_round.bids_made > bids_before_timeout, "Fallback countdown must finish with a valid local auto-bid")
 	assert(not main_scene.turn_timer_active, "Fallback countdown must stop after the automatic decision")
 	main_scene._process_turn_reminder(0.1)
@@ -67,15 +67,15 @@ func _test_network_human_auto_turn() -> void:
 	steam_match.match_host = LocalMatchHost.new(network_game)
 	var initial_revision: int = steam_match.match_host.revision
 	steam_match._process_human_auto_turn(0.0)
-	steam_match._process_human_auto_turn(119.9)
-	assert(steam_match.match_host.revision == initial_revision, "Network auto-turn must wait during the first two minutes")
+	steam_match._process_human_auto_turn(89.9)
+	assert(steam_match.match_host.revision == initial_revision, "Network auto-turn must wait during the first 90 seconds")
 	steam_match._process_human_auto_turn(0.2)
-	assert(steam_match.match_host.revision == initial_revision, "Network auto-turn must start a 60-second grace countdown after two minutes")
+	assert(steam_match.match_host.revision == initial_revision, "Network auto-turn must start a 45-second grace countdown after 90 seconds")
 	assert(steam_match._human_auto_turn_enabled_by_player.has(0), "Network AFK must latch auto-turn on for that player")
-	steam_match._process_human_auto_turn(59.7)
+	steam_match._process_human_auto_turn(44.7)
 	assert(steam_match.match_host.revision == initial_revision, "Network auto-turn must wait until the grace countdown ends")
 	steam_match._process_human_auto_turn(0.3)
-	assert(steam_match.match_host.revision == initial_revision + 1, "Host must perform a network auto-turn after 120 plus 60 seconds")
+	assert(steam_match.match_host.revision == initial_revision + 1, "Host must perform a network auto-turn after 90 plus 45 seconds")
 	assert(network_game.current_round.bids_made == 1, "Timed-out network bidder must receive a valid automatic bid")
 	for player_index in range(1, 4):
 		steam_match._set_player_auto_turn_enabled(player_index, true, false)
@@ -84,7 +84,7 @@ func _test_network_human_auto_turn() -> void:
 	while network_game.current_round.state == Round.State.BIDDING and bid_guard < 4:
 		steam_match._reset_human_auto_turn()
 		steam_match._process_human_auto_turn(0.0)
-		steam_match._process_human_auto_turn(60.1)
+		steam_match._process_human_auto_turn(45.1)
 		bid_guard += 1
 	assert(network_game.current_round.state == Round.State.PLAYING, "Network auto-turn must finish the bidding phase")
 
@@ -94,7 +94,7 @@ func _test_network_human_auto_turn() -> void:
 	var hand_size_before: int = network_game.players[playing_player_index].hand.size()
 	steam_match._reset_human_auto_turn()
 	steam_match._process_human_auto_turn(0.0)
-	steam_match._process_human_auto_turn(60.1)
+	steam_match._process_human_auto_turn(45.1)
 	assert(steam_match.match_host.revision == playing_revision + 1, "Host must play a legal network card after the timeout")
 	assert(network_game.players[playing_player_index].hand.size() == hand_size_before - 1, "Timed-out network player must play exactly one card")
 	steam_match.set_local_auto_turn_enabled(false)
@@ -106,10 +106,10 @@ func _test_network_human_auto_turn() -> void:
 	steam_match.match_host = LocalMatchHost.new(reset_game)
 	steam_match._reset_human_auto_turn()
 	steam_match._process_human_auto_turn(0.0)
-	steam_match._process_human_auto_turn(60.1)
-	assert(steam_match.match_host.revision == 0, "Manual disable must restore the initial two-minute AFK wait")
-	steam_match._process_human_auto_turn(60.0)
-	assert(steam_match.match_host.revision == 0, "Two-minute AFK must enable the timer without making an immediate move")
+	steam_match._process_human_auto_turn(45.1)
+	assert(steam_match.match_host.revision == 0, "Manual disable must restore the initial 90-second AFK wait")
+	steam_match._process_human_auto_turn(45.0)
+	assert(steam_match.match_host.revision == 0, "90-second AFK must enable the timer without making an immediate move")
 	assert(steam_match._human_auto_turn_enabled_by_player.has(0), "AFK must be able to latch auto-turn on again after manual disable")
 	steam_match.free()
 
@@ -119,6 +119,7 @@ func _test_network_menu_stays_open(main_scene: Variant) -> void:
 	main_scene.add_child(steam_match)
 	steam_match.mode = LoopbackNetwork.Mode.HOST
 	steam_match._transport_active = true
+	steam_match.lobby_round_started = true
 	var network_game := Game.new(["Хост", "Игрок 2", "Игрок 3", "Игрок 4"])
 	network_game.dealer_index = 3
 	assert(network_game.start_round(1, Round.RoundType.NORMAL, Round.TrumpSuit.CLUBS))
@@ -129,6 +130,12 @@ func _test_network_menu_stays_open(main_scene: Variant) -> void:
 	assert(not main_scene._get_local_turn_reminder_decision_key().is_empty(), "Network host must be reminded only on the host's own turn")
 	network_game.current_round.current_player_index = 1
 	assert(main_scene._get_local_turn_reminder_decision_key().is_empty(), "Network host must stay silent during another player's turn")
+	steam_match._set_player_auto_turn_enabled(1, true, false)
+	steam_match._process_human_auto_turn(0.0)
+	steam_match._process_human_auto_turn(1.0)
+	main_scene._refresh_turn_timer_indicator()
+	assert(main_scene.avatar_turn_timer_indicators[1].visible, "Every peer must see the active player's network auto-turn timer")
+	assert(not main_scene.avatar_turn_timer_indicators[0].visible, "The network timer must be attached only to the active player's avatar")
 	main_scene.is_pause_menu_open = true
 	main_scene.menu_overlay.visible = true
 	main_scene._refresh_network_main_table()

@@ -17,13 +17,9 @@ func _init() -> void:
 
 func _run() -> void:
 	var main_scene: Variant = load("res://Scenes/main.tscn").instantiate()
+	assert(main_scene.interface_locale == "en", "English must be the built-in locale before saved settings are loaded")
 	root.add_child(main_scene)
 	await process_frame
-
-	assert(
-		"Українська" in _get_button_texts(main_scene.menu_content),
-		"A clean profile must show the language picker before the main menu"
-	)
 
 	for locale_code in EXPECTED_MAIN_BUTTONS:
 		main_scene.interface_locale = locale_code

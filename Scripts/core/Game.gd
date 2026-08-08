@@ -19,6 +19,7 @@ var dealer_index := -1
 var last_trick_winner_index := -1
 var round_number := 0
 var cards_are_dealt := false
+var jokers_dealt_this_round: Array[int] = []
 
 var _random := RandomNumberGenerator.new()
 
@@ -56,6 +57,8 @@ func start_round(
 	)
 
 	_reset_players_for_round()
+	jokers_dealt_this_round.resize(players.size())
+	jokers_dealt_this_round.fill(0)
 	cards_are_dealt = false
 	trump_card = null
 
@@ -185,7 +188,8 @@ func create_snapshot() -> Dictionary:
 		"dealer_index": dealer_index,
 		"last_trick_winner_index": last_trick_winner_index,
 		"round_number": round_number,
-		"cards_are_dealt": cards_are_dealt
+		"cards_are_dealt": cards_are_dealt,
+		"jokers_dealt_this_round": jokers_dealt_this_round.duplicate()
 	}
 
 
@@ -220,6 +224,9 @@ func restore_snapshot(snapshot: Dictionary) -> void:
 	last_trick_winner_index = snapshot["last_trick_winner_index"]
 	round_number = snapshot["round_number"]
 	cards_are_dealt = snapshot["cards_are_dealt"]
+	jokers_dealt_this_round.assign(snapshot.get("jokers_dealt_this_round", []))
+	if jokers_dealt_this_round.size() != players.size():
+		jokers_dealt_this_round.resize(players.size())
 
 
 func _deal_cards(cards_per_player: int) -> void:
@@ -233,6 +240,8 @@ func _deal_cards(cards_per_player: int) -> void:
 				return
 
 			players[player_index].receive_card(card)
+			if card.is_joker:
+				jokers_dealt_this_round[player_index] += 1
 
 	for player in players:
 		player.sort_hand()

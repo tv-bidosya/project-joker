@@ -183,6 +183,7 @@ RESULT_ROUND_COMPLETE,"Round complete.","Роздачу завершено.","Ro
 RESULT_GAME_COMPLETE,"Game complete.","Партію завершено.","Gra zakończona.","Партыя завершана.","Ойын аяқталды.","Партия завершена."
 RESULT_TOTAL_TRICKS,"total tricks","усього взяток","łącznie lew","усяго ўзятак","барлық ұтыс","всего взяток"
 RESULT_EXACT_BIDS,"exact bids","точних замовлень","trafionych zakładów","дакладных заказаў","дәл тапсырыстар","точных заказов"
+RESULT_JOKERS_DEALT,"Jokers dealt","джокерів на руках","rozdanych Jokerów","джокераў на руках","қолға түскен Джокерлер","джокеров на руках"
 RESULT_FINAL_PLAIN,"%s %s · %s — %d pts · total %d tricks · exact bids: %d","%s %s · %s — %d оч. · усього %d вз. · точних замовлень: %d","%s %s · %s — %d pkt · łącznie %d lew · trafionych zakładów: %d","%s %s · %s — %d ачк. · усяго %d уз. · дакладных заказаў: %d","%s %s · %s — %d ұпай · барлығы %d ұтыс · дәл тапсырыс: %d","%s %s · %s — %d очк. · всего %d вз. · точных заказов: %d"
 RESULT_PLACE_UNDEFINED,"place not determined","місце не визначено","miejsce nieustalone","месца не вызначана","орын анықталмады","место не определено"
 RESULT_PLACE,"place %d","%d-е місце","%d. miejsce","%d-е месца","%d-орын","%d-е место"

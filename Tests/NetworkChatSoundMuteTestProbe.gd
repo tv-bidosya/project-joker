@@ -143,7 +143,12 @@ func _run() -> void:
 	main_scene.sound_volume_percent = 60
 	var playing_sound: AudioStream = main_scene._create_procedural_sound(440.0, 440.0, 1.0, 0.2, 0.0)
 	main_scene._play_soundpad_stream(playing_sound, 1, 1)
-	assert(main_scene.avatar_soundpad_indicators[1].visible, "The speaker must stay visible beside the player while their clip is playing")
+	assert(main_scene.avatar_soundpad_indicators[1].visible, "The speaker must stay visible on the player's avatar while their clip is playing")
+	assert(
+		is_equal_approx(main_scene.avatar_soundpad_indicators[1].anchor_left, 0.5)
+		and is_equal_approx(main_scene.avatar_soundpad_indicators[1].anchor_top, 0.5),
+		"The active soundpad speaker must be centred on the avatar instead of overlapping hover actions"
+	)
 	main_scene.avatar_mute_buttons[1].set_meta("network_player_index", 1)
 	main_scene._on_avatar_mute_button_pressed(1)
 	assert(not main_scene.avatar_soundpad_indicators[1].visible, "Muting a player must immediately hide their active speaker")

@@ -11,8 +11,9 @@ const MatchCommand = preload("res://Scripts/core/MatchCommand.gd")
 
 
 const BOT_ACTION_DELAY_SECONDS := 0.65
-const HUMAN_AUTO_TURN_INACTIVITY_SECONDS := 120.0
-const HUMAN_AUTO_TURN_COUNTDOWN_SECONDS := 60.0
+const HUMAN_AUTO_TURN_INACTIVITY_SECONDS := 90.0
+const HUMAN_AUTO_TURN_COUNTDOWN_SECONDS := 45.0
+const HUMAN_AUTO_TURN_SYNC_INTERVAL_SECONDS := 1.0
 const NEXT_ROUND_AUTO_START_SECONDS := 30.0
 const NEXT_ROUND_COUNTDOWN_SYNC_INTERVAL_SECONDS := 1.0
 const BOT_DIFFICULTY_EASY := 0
@@ -34,6 +35,7 @@ var _expected_remote_player_count := 0
 var _bot_action_delay_seconds := 0.0
 var _human_auto_turn_decision_key := ""
 var _human_auto_turn_elapsed_seconds := 0.0
+var _human_auto_turn_sync_elapsed_seconds := 0.0
 var _human_auto_turn_enabled_by_player: Dictionary = {}
 var _next_round_auto_start_elapsed_seconds := 0.0
 var _next_round_countdown_sync_elapsed_seconds := 0.0
@@ -153,6 +155,7 @@ func stop() -> void:
 	_bot_action_delay_seconds = 0.0
 	_human_auto_turn_decision_key = ""
 	_human_auto_turn_elapsed_seconds = 0.0
+	_human_auto_turn_sync_elapsed_seconds = 0.0
 	_human_auto_turn_enabled_by_player.clear()
 	_reset_next_round_auto_start()
 	_join_request_attempt_count = 0
@@ -414,6 +417,18 @@ func _append_reconnect_state(snapshot: Dictionary) -> Dictionary:
 	var recipient_player_index := int(snapshot.get("recipient_player_index", -1))
 	if is_host():
 		snapshot["recipient_auto_turn_enabled"] = _human_auto_turn_enabled_by_player.has(recipient_player_index)
+		var active_auto_turn_player_index := _get_active_human_player_index()
+		var active_auto_turn_enabled := (
+			active_auto_turn_player_index >= 0
+			and _human_auto_turn_enabled_by_player.has(active_auto_turn_player_index)
+		)
+		snapshot["active_auto_turn_player_index"] = active_auto_turn_player_index if active_auto_turn_enabled else -1
+		snapshot["active_auto_turn_total_seconds"] = HUMAN_AUTO_TURN_COUNTDOWN_SECONDS
+		snapshot["active_auto_turn_remaining_seconds"] = (
+			maxf(0.0, HUMAN_AUTO_TURN_COUNTDOWN_SECONDS - _human_auto_turn_elapsed_seconds)
+			if active_auto_turn_enabled
+			else 0.0
+		)
 		snapshot["next_round_auto_start_total_seconds"] = NEXT_ROUND_AUTO_START_SECONDS
 		snapshot["next_round_auto_start_remaining_seconds"] = _get_next_round_auto_start_remaining_seconds()
 	elif not snapshot.has("recipient_auto_turn_enabled"):
@@ -861,6 +876,14 @@ func _process_human_auto_turn(delta: float) -> void:
 
 	_human_auto_turn_elapsed_seconds += delta
 	var auto_turn_is_enabled := _human_auto_turn_enabled_by_player.has(player_index)
+	if auto_turn_is_enabled:
+		_human_auto_turn_sync_elapsed_seconds += maxf(0.0, delta)
+		if _human_auto_turn_sync_elapsed_seconds >= HUMAN_AUTO_TURN_SYNC_INTERVAL_SECONDS:
+			_human_auto_turn_sync_elapsed_seconds = fmod(
+				_human_auto_turn_sync_elapsed_seconds,
+				HUMAN_AUTO_TURN_SYNC_INTERVAL_SECONDS
+			)
+			_queue_player_snapshots_for_delivery()
 	var timeout_seconds := HUMAN_AUTO_TURN_COUNTDOWN_SECONDS if auto_turn_is_enabled else HUMAN_AUTO_TURN_INACTIVITY_SECONDS
 	if _human_auto_turn_elapsed_seconds < timeout_seconds:
 		return
@@ -914,6 +937,7 @@ func _get_human_auto_turn_decision_key(player_index: int) -> String:
 func _reset_human_auto_turn() -> void:
 	_human_auto_turn_decision_key = ""
 	_human_auto_turn_elapsed_seconds = 0.0
+	_human_auto_turn_sync_elapsed_seconds = 0.0
 
 
 func _set_player_auto_turn_enabled(player_index: int, enabled: bool, announce: bool) -> void:
@@ -929,9 +953,9 @@ func _set_player_auto_turn_enabled(player_index: int, enabled: bool, announce: b
 	if announce and match_host != null and player_index < match_host.game.players.size():
 		var player_name: String = str(match_host.game.players[player_index].display_name)
 		if enabled:
-			_set_status("У игрока %s включён автоход на 60 секунд." % player_name)
+			_set_status("У игрока %s включён автоход на 45 секунд." % player_name)
 		else:
-			_set_status("Игрок %s отключил автоход. Следующая AFK-проверка начнётся с 2 минут." % player_name)
+			_set_status("Игрок %s отключил автоход. Следующая AFK-проверка начнётся с 1 минуты 30 секунд." % player_name)
 
 
 func _submit_local_bot_action(player_index: int, is_human_timeout: bool = false) -> bool:
@@ -972,7 +996,7 @@ func _submit_local_bot_action(player_index: int, is_human_timeout: bool = false)
 	var action_text := "заказал %d" % int(command.payload.get("bid", 0)) if command.type == MatchCommand.Type.BID else "сыграл карту"
 	if is_human_timeout:
 		var player_name: String = str(match_host.game.players[player_index].display_name)
-		_set_status("У игрока %s закончился 60-секундный таймер — выполнен автоход: %s." % [player_name, action_text])
+		_set_status("У игрока %s закончился 45-секундный таймер — выполнен автоход: %s." % [player_name, action_text])
 	else:
 		_set_status("Бот %d %s. Ревизия %d отправляется подключённому игроку." % [player_index - 1, action_text, match_host.revision])
 	return true
