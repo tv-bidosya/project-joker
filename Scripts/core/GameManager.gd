@@ -74,8 +74,8 @@ const LOCAL_BOT_AVATAR_INDICES: Array[int] = [1, 2, 0]
 const GAME_VERSION := "0.3.9"
 # Внутренний просмотр отчётов доступен только при запуске из редактора и может
 # быть дополнительно отключён этим переключателем. Создание отчёта игроком не зависит от него.
-const DEVELOPER_REPORT_TOOLS_ENABLED := true
 const PERSISTENT_SETTINGS_PATH := "user://project_joker_settings.cfg"
+const AUDIO_DEFAULTS_VERSION := 1
 const SESSION_SAVE_PATH := "user://project_joker_session.save"
 const SESSION_SAVE_VERSION := 1
 const CUSTOM_PROFILE_AVATAR_PATH := "user://project_joker_profile_avatar.png"
@@ -241,7 +241,8 @@ enum SoundEffect {
 	CARD,
 	TRICK,
 	TURN_START,
-	TURN_REMINDER
+	TURN_REMINDER,
+	TURN_REMINDER_URGENT
 }
 
 
@@ -503,7 +504,8 @@ var bot_difficulty: BotDifficulty = BotDifficulty.NORMAL
 var tutorial_enabled := false
 var auto_turn_enabled := false
 var interface_locale := "en"
-var interface_locale_was_chosen := true
+var interface_locale_was_chosen := false
+var persistent_settings_writes_enabled := true
 var turn_timer_active := false
 var turn_timer_remaining := AUTO_TURN_DURATION_SECONDS
 var social_action_uses: Dictionary = {
@@ -516,10 +518,10 @@ var social_action_cooldown_until: Dictionary = {
 	SocialAction.STICKER: 0,
 	SocialAction.SOUNDPAD: 0
 }
-var sound_volume_index := 2
-var sound_volume_percent := 60
-var music_volume_index := 2
-var music_volume_percent := 60
+var sound_volume_index := 3
+var sound_volume_percent := 100
+var music_volume_index := 3
+var music_volume_percent := 100
 var music_track_index := 0
 var music_is_paused := false
 var music_player_hidden := false
@@ -814,9 +816,9 @@ func _create_table_visual_styles() -> void:
 	_apply_table_text_button_style(round_history_toggle_button)
 	_apply_table_text_button_style(score_sheet_toggle_button)
 	_apply_table_text_button_style(pause_menu_button)
-	_apply_table_action_button_style(hand_sort_by_suit_button)
-	_apply_table_action_button_style(hand_sort_trumps_left_button)
-	_apply_table_action_button_style(undo_button)
+	_apply_compact_table_action_button_style(hand_sort_by_suit_button, 34.0)
+	_apply_compact_table_action_button_style(hand_sort_trumps_left_button, 34.0)
+	_apply_compact_table_action_button_style(undo_button, 34.0)
 	_apply_table_action_button_style(next_round_button)
 	next_round_button.add_theme_font_size_override("font_size", 18)
 
@@ -1019,6 +1021,19 @@ func _apply_table_action_button_style(button: Button) -> void:
 	button.add_theme_stylebox_override("disabled", disabled_style)
 
 
+func _apply_compact_table_action_button_style(button: Button, minimum_height: float) -> void:
+	_apply_table_action_button_style(button)
+	button.add_theme_font_size_override("font_size", 14)
+	button.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	button.custom_minimum_size = Vector2(button.custom_minimum_size.x, minimum_height)
+	for style_name in [&"normal", &"hover", &"pressed", &"disabled"]:
+		var style := button.get_theme_stylebox(style_name) as StyleBoxFlat
+		if style == null:
+			continue
+		style.content_margin_left = 8.0
+		style.content_margin_right = 8.0
+
+
 func _apply_table_text_button_style(button: Button) -> void:
 	button.add_theme_font_size_override("font_size", 16)
 	button.add_theme_color_override("font_color", Color(0.84, 0.91, 0.84, 1.0))
@@ -1131,22 +1146,12 @@ func _build_main_menu_content() -> void:
 	_add_menu_button(tr("MENU_TUTORIAL"), _show_tutorial_menu)
 	_add_menu_button(tr("MENU_PROFILE"), _show_profile_menu)
 	_add_menu_button(tr("MENU_STATISTICS"), _show_statistics_menu)
-	if _developer_report_tools_enabled():
-		_add_menu_button(tr("MENU_DEV_TOOLS"), _show_developer_tools_menu)
 	_add_menu_button(tr("MENU_SETTINGS"), _show_settings_menu)
 	_add_menu_button(tr("MENU_QUIT"), _on_quit_pressed)
 
 
-func _developer_report_tools_enabled() -> bool:
-	return DEVELOPER_REPORT_TOOLS_ENABLED and OS.has_feature("editor")
-
-
 func _get_build_version_text() -> String:
-	return (
-		tr("BUILD_DEVELOPER") % GAME_VERSION
-		if _developer_report_tools_enabled()
-		else tr("BUILD_PLAYER") % GAME_VERSION
-	)
+	return tr("BUILD_PLAYER") % GAME_VERSION
 
 
 func _show_developer_tools_menu() -> void:
@@ -2873,8 +2878,8 @@ func _refresh_network_main_action_controls(snapshot: Dictionary, round_data: Dic
 	for bid in available_bids:
 		var bid_button := Button.new()
 		bid_button.text = tr("BID_BUTTON") % bid
-		bid_button.custom_minimum_size = Vector2(104.0, 40.0)
-		_apply_table_action_button_style(bid_button)
+		bid_button.custom_minimum_size = Vector2(100.0, 36.0)
+		_apply_compact_table_action_button_style(bid_button, 36.0)
 		bid_button.pressed.connect(_on_submit_loopback_test_bid_pressed.bind(bid))
 		bid_controls.add_child(bid_button)
 
@@ -4835,7 +4840,7 @@ func _add_new_game_avatar_preview(row: HBoxContainer, player_index: int, avatar_
 	var preview_panel := PanelContainer.new()
 	preview_panel.name = "NewGameAvatarPreview%d" % player_index
 	preview_panel.custom_minimum_size = Vector2(48.0, 48.0)
-	preview_panel.tooltip_text = "Аватар из профиля" if player_index == HUMAN_PLAYER_INDEX else "Фиксированный аватар бота"
+	preview_panel.tooltip_text = tr("Аватар из профиля") if player_index == HUMAN_PLAYER_INDEX else tr("Фиксированный аватар бота")
 	preview_panel.set_meta("avatar_index", avatar_index)
 	preview_panel.add_theme_stylebox_override(
 		"panel",
@@ -5240,7 +5245,7 @@ func _on_profile_avatar_file_selected(source_path: String) -> void:
 	var image: Image = Image.load_from_file(source_path)
 	if image == null or image.is_empty():
 		if is_instance_valid(profile_avatar_status_label):
-			profile_avatar_status_label.text = "Не удалось прочитать картинку. Выбери PNG, JPG или WebP."
+			profile_avatar_status_label.text = tr("Не удалось прочитать картинку. Выбери PNG, JPG или WebP.")
 		return
 
 	var largest_side := maxi(image.get_width(), image.get_height())
@@ -5254,7 +5259,7 @@ func _on_profile_avatar_file_selected(source_path: String) -> void:
 	var save_result: Error = image.save_png(local_avatar_path)
 	if save_result != OK or not FileAccess.file_exists(CUSTOM_PROFILE_AVATAR_PATH):
 		if is_instance_valid(profile_avatar_status_label):
-			profile_avatar_status_label.text = "Не удалось сохранить личный аватар."
+			profile_avatar_status_label.text = tr("Не удалось сохранить личный аватар.")
 		return
 
 	pending_profile_avatar_path = CUSTOM_PROFILE_AVATAR_PATH
@@ -5284,11 +5289,11 @@ func _update_profile_avatar_status() -> void:
 		return
 
 	if not pending_profile_avatar_path.is_empty():
-		profile_avatar_status_label.text = "Личная картинка готова. Нажми «Сохранить профиль», чтобы применить её."
+		profile_avatar_status_label.text = tr("Личная картинка готова. Нажми «Сохранить профиль», чтобы применить её.")
 	elif is_instance_valid(profile_avatar_selector) and profile_avatar_selector.selected == CUSTOM_AVATAR_INDEX:
-		profile_avatar_status_label.text = "Сначала выбери файл PNG, JPG или WebP."
+		profile_avatar_status_label.text = tr("Сначала выбери файл PNG, JPG или WebP.")
 	else:
-		profile_avatar_status_label.text = "Используется один из встроенных авторских аватаров."
+		profile_avatar_status_label.text = tr("Используется один из встроенных авторских аватаров.")
 
 
 func _update_profile_avatar_preview() -> void:
@@ -5307,7 +5312,11 @@ func _update_profile_avatar_preview() -> void:
 	var preview_texture := _load_avatar_texture_from_path(preview_path)
 	profile_avatar_preview.texture = preview_texture
 	profile_avatar_preview_placeholder.visible = preview_texture == null
-	profile_avatar_preview_placeholder.text = "Выбери\nкартинку" if selected_avatar_index == CUSTOM_AVATAR_INDEX else "Аватар\nне найден"
+	profile_avatar_preview_placeholder.text = (
+		tr("Выбери картинку").replace(" ", "\n")
+		if selected_avatar_index == CUSTOM_AVATAR_INDEX
+		else tr("Аватар не найден").replace(" ", "\n")
+	)
 
 
 func _create_profile_music_file_dialog() -> void:
@@ -5507,11 +5516,11 @@ func _update_profile_music_status() -> void:
 		return
 
 	if custom_music_paths.is_empty():
-		profile_music_status_label.text = "Сейчас доступны только три встроенные темы игры."
+		profile_music_status_label.text = tr("Сейчас доступны только три встроенные темы игры.")
 		return
 
 	var available_track_count := _get_available_custom_music_paths().size()
-	profile_music_status_label.text = "В плейлисте: %d · доступны сейчас: %d." % [custom_music_paths.size(), available_track_count]
+	profile_music_status_label.text = tr("В плейлисте: %d · доступны сейчас: %d.") % [custom_music_paths.size(), available_track_count]
 
 
 func _refresh_profile_music_playlist() -> void:
@@ -5521,7 +5530,7 @@ func _refresh_profile_music_playlist() -> void:
 	_clear_children(profile_music_playlist_container)
 	if custom_music_paths.is_empty():
 		var empty_label := Label.new()
-		empty_label.text = "Личных треков пока нет."
+		empty_label.text = tr("Личных треков пока нет.")
 		empty_label.add_theme_font_size_override("font_size", 15)
 		empty_label.add_theme_color_override("font_color", Color(0.72, 0.85, 0.76, 1.0))
 		profile_music_playlist_container.add_child(empty_label)
@@ -5535,7 +5544,10 @@ func _refresh_profile_music_playlist() -> void:
 		profile_music_playlist_container.add_child(row)
 
 		var track_label := Label.new()
-		track_label.text = "♫ %s%s" % [_shorten_music_title(track_path.get_file()), "" if _is_custom_music_path_supported(track_path) else " — файл не найден"]
+		track_label.text = "♫ %s%s" % [
+			_shorten_music_title(track_path.get_file()),
+			"" if _is_custom_music_path_supported(track_path) else tr(" — файл не найден")
+		]
 		track_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		track_label.clip_text = true
 		track_label.tooltip_text = track_path
@@ -5544,7 +5556,7 @@ func _refresh_profile_music_playlist() -> void:
 		row.add_child(track_label)
 
 		var remove_button := Button.new()
-		remove_button.text = "Убрать"
+		remove_button.text = tr("Убрать")
 		remove_button.custom_minimum_size = Vector2(82.0, 32.0)
 		remove_button.add_theme_font_size_override("font_size", 14)
 		remove_button.pressed.connect(_on_remove_profile_music_pressed.bind(track_path))
@@ -5552,7 +5564,7 @@ func _refresh_profile_music_playlist() -> void:
 
 	if custom_music_paths.size() > preview_count:
 		var remaining_label := Label.new()
-		remaining_label.text = "…ещё %d треков. Полный список с поиском — в плеере за столом." % (custom_music_paths.size() - preview_count)
+		remaining_label.text = tr("…ещё %d треков. Полный список с поиском — в плеере за столом.") % (custom_music_paths.size() - preview_count)
 		remaining_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		remaining_label.add_theme_font_size_override("font_size", 14)
 		remaining_label.add_theme_color_override("font_color", Color(0.72, 0.85, 0.76, 1.0))
@@ -5639,11 +5651,12 @@ func _show_language_settings_menu(first_launch := false) -> void:
 		_add_menu_button(tr("MENU_BACK"), _show_settings_menu)
 
 
-func _on_interface_locale_selected(locale_code: String, first_launch: bool) -> void:
+func _on_interface_locale_selected(locale_code: String, first_launch: bool, persist_selection := true) -> void:
 	interface_locale = _normalize_interface_locale(locale_code)
 	interface_locale_was_chosen = true
 	TranslationServer.set_locale(interface_locale)
-	_save_persistent_settings()
+	if persist_selection:
+		_save_persistent_settings()
 	_refresh_localized_interface()
 	if first_launch:
 		_show_main_menu()
@@ -5933,22 +5946,22 @@ func _show_statistics_menu(return_to_final_menu := false) -> void:
 	else:
 		var wins: int = int(local_statistics["wins"])
 		var win_rate := int(round(float(wins) * 100.0 / float(completed_games)))
-		_add_menu_label("Сыграно партий: %d" % completed_games, 20, Color(0.97, 0.86, 0.55, 1.0))
-		_add_menu_label("Победы: %d (%d%%)" % [wins, win_rate], 18)
-		_add_menu_label("Места: 2-е — %d · 3-е — %d · 4-е — %d" % [
+		_add_menu_label(tr("Сыграно партий: %d") % completed_games, 20, Color(0.97, 0.86, 0.55, 1.0))
+		_add_menu_label(tr("Победы: %d (%d%%)") % [wins, win_rate], 18)
+		_add_menu_label(tr("Места: 2-е — %d · 3-е — %d · 4-е — %d") % [
 			int(local_statistics["second_places"]),
 			int(local_statistics["third_places"]),
 			int(local_statistics["fourth_places"])
 		], 16, Color(0.72, 0.85, 0.76, 1.0))
 
 		if bool(local_statistics["has_best_score"]):
-			_add_menu_label("Лучший счёт: %d" % int(local_statistics["best_score"]), 18, Color(0.97, 0.86, 0.55, 1.0))
+			_add_menu_label(tr("Лучший счёт: %d") % int(local_statistics["best_score"]), 18, Color(0.97, 0.86, 0.55, 1.0))
 
 		_add_menu_spacer(10.0)
 		_add_menu_label("Последняя партия", 18, Color(0.97, 0.86, 0.55, 1.0))
 		var last_place: int = int(local_statistics["last_place"])
 		var last_place_text := _get_place_text(last_place, bool(local_statistics["last_shared_place"]))
-		_add_menu_label("%s · счёт %d · точных заказов: %d" % [
+		_add_menu_label(tr("%s · счёт %d · точных заказов: %d") % [
 			last_place_text,
 			int(local_statistics["last_score"]),
 			int(local_statistics["last_exact_orders"])
@@ -6197,8 +6210,8 @@ func _refresh_first_turn_roll_panel(network_state: Dictionary = {}, network_seat
 	var winner_player_index := int(network_state.get("winner_player_index", -1)) if is_network_roll else local_first_turn_roll_winner_index
 	var player_names := _get_first_turn_roll_player_names(network_seats if is_network_roll else [])
 
-	first_turn_roll_title.text = "ПЕРЕБРОС ЛИДЕРОВ" if roll_round > 1 and winner_player_index < 0 else "РОЗЫГРЫШ ПЕРВОГО ХОДА"
-	first_turn_roll_subtitle.text = "Победитель первым заказывает и начинает игру"
+	first_turn_roll_title.text = tr("ПЕРЕБРОС ЛИДЕРОВ") if roll_round > 1 and winner_player_index < 0 else tr("РОЗЫГРЫШ ПЕРВОГО ХОДА")
+	first_turn_roll_subtitle.text = tr("Победитель первым заказывает и начинает игру")
 	for player_index in PLAYER_NAMES.size():
 		var is_contender := contenders.has(player_index)
 		var roll_value := int(values[player_index]) if player_index < values.size() else -1
@@ -6214,45 +6227,45 @@ func _refresh_first_turn_roll_panel(network_state: Dictionary = {}, network_seat
 		)
 
 	if winner_player_index >= 0:
-		first_turn_roll_status.text = "%s выигрывает и будет первым заказывать и ходить" % player_names[winner_player_index]
+		first_turn_roll_status.text = tr("%s выигрывает и будет первым заказывать и ходить") % player_names[winner_player_index]
 	elif phase == LoopbackNetwork.FirstTurnRollPhase.REVEAL:
-		first_turn_roll_status.text = "Ничья у лидеров — сейчас будет переброс"
+		first_turn_roll_status.text = tr("Ничья у лидеров — сейчас будет переброс")
 	elif is_network_roll:
 		var submitted_count := 0
 		for player_index in contenders:
 			if player_index < submitted.size() and bool(submitted[player_index]):
 				submitted_count += 1
-		first_turn_roll_status.text = "Кубики готовы: %d из %d · значения откроются одновременно" % [submitted_count, contenders.size()]
+		first_turn_roll_status.text = tr("Кубики готовы: %d из %d · значения откроются одновременно") % [submitted_count, contenders.size()]
 	elif roll_round > 0:
-		first_turn_roll_status.text = "Ничья у лидеров — нужен переброс"
+		first_turn_roll_status.text = tr("Ничья у лидеров — нужен переброс")
 	else:
-		first_turn_roll_status.text = "Все участники бросают кубики одновременно"
+		first_turn_roll_status.text = tr("Все участники бросают кубики одновременно")
 
 	if is_network_roll:
 		var network_match = _get_active_network_match()
 		if winner_player_index >= 0:
-			first_turn_roll_button.text = "Начать первую раздачу" if network_match != null and network_match.is_host() else "Ждём запуска раздачи хостом"
+			first_turn_roll_button.text = tr("Начать первую раздачу") if network_match != null and network_match.is_host() else tr("Ждём запуска раздачи хостом")
 			first_turn_roll_button.disabled = network_match == null or not network_match.can_start_first_real_round()
 		elif phase == LoopbackNetwork.FirstTurnRollPhase.REVEAL:
-			first_turn_roll_button.text = "Готовим переброс…"
+			first_turn_roll_button.text = tr("Готовим переброс…")
 			first_turn_roll_button.disabled = true
 		elif network_match != null and not contenders.has(network_match.get_test_table_viewer_index()):
-			first_turn_roll_button.text = "Перебрасывают лидеры · ждём"
+			first_turn_roll_button.text = tr("Перебрасывают лидеры · ждём")
 			first_turn_roll_button.disabled = true
 		elif network_match != null and network_match.can_submit_first_turn_roll():
-			first_turn_roll_button.text = "Перебросить кубик" if roll_round > 1 else "Бросить кубик"
+			first_turn_roll_button.text = tr("Перебросить кубик") if roll_round > 1 else tr("Бросить кубик")
 			first_turn_roll_button.disabled = false
 		else:
-			first_turn_roll_button.text = "Кубик брошен ✓ · ждём остальных"
+			first_turn_roll_button.text = tr("Кубик брошен ✓ · ждём остальных")
 			first_turn_roll_button.disabled = true
 	elif winner_player_index >= 0:
-		first_turn_roll_button.text = "Начать первую раздачу"
+		first_turn_roll_button.text = tr("Начать первую раздачу")
 		first_turn_roll_button.disabled = false
 	elif local_first_turn_roll_contenders.has(HUMAN_PLAYER_INDEX):
-		first_turn_roll_button.text = "Перебросить кубик" if roll_round > 0 else "Бросить кубик"
+		first_turn_roll_button.text = tr("Перебросить кубик") if roll_round > 0 else tr("Бросить кубик")
 		first_turn_roll_button.disabled = false
 	else:
-		first_turn_roll_button.text = "Боты перебрасывают кубики…"
+		first_turn_roll_button.text = tr("Боты перебрасывают кубики…")
 		first_turn_roll_button.disabled = true
 
 
@@ -6260,7 +6273,7 @@ func _get_first_turn_roll_player_names(network_seats: Array) -> Array[String]:
 	var player_names: Array[String] = []
 	player_names.resize(PLAYER_NAMES.size())
 	for player_index in PLAYER_NAMES.size():
-		player_names[player_index] = game.players[player_index].display_name if player_index < game.players.size() else "Игрок %d" % (player_index + 1)
+		player_names[player_index] = game.players[player_index].display_name if player_index < game.players.size() else tr("Игрок %d") % (player_index + 1)
 	for seat_variant in network_seats:
 		if not (seat_variant is Dictionary):
 			continue
@@ -6317,13 +6330,13 @@ func _add_first_turn_roll_player_slot(
 	state_label.add_theme_font_size_override("font_size", 13)
 	state_label.add_theme_color_override("font_color", Color(0.72, 0.83, 0.73, 1.0))
 	if is_winner:
-		state_label.text = "ПЕРВЫЙ ХОД"
+		state_label.text = tr("ПЕРВЫЙ ХОД")
 	elif not is_contender:
-		state_label.text = "вне переброса"
+		state_label.text = tr("вне переброса")
 	elif has_submitted and roll_value < 0:
-		state_label.text = "бросок сделан"
+		state_label.text = tr("бросок сделан")
 	else:
-		state_label.text = "участвует"
+		state_label.text = tr("участвует")
 	content.add_child(state_label)
 
 
@@ -6714,18 +6727,19 @@ func _load_persistent_settings() -> void:
 	var config := ConfigFile.new()
 	if config.load(PERSISTENT_SETTINGS_PATH) != OK:
 		interface_locale = "en"
-		interface_locale_was_chosen = true
+		interface_locale_was_chosen = false
 		TranslationServer.set_locale(interface_locale)
 		return
 
-	interface_locale = _normalize_interface_locale(
-		str(config.get_value("localization", "locale", "en"))
+	# Старое поле `chosen` не отличало реальный выбор от автоматически
+	# записанной локали прототипа. Новый флаг появляется только после нажатия
+	# языка в настройках; до этого любая установка получает базовый English.
+	interface_locale_was_chosen = bool(config.get_value("localization", "user_selected", false))
+	interface_locale = (
+		_normalize_interface_locale(str(config.get_value("localization", "locale", "en")))
+		if interface_locale_was_chosen
+		else "en"
 	)
-	# Старый незавершённый экран первого запуска больше не блокирует меню:
-	# такая установка переходит на новый базовый английский язык.
-	if not bool(config.get_value("localization", "chosen", true)):
-		interface_locale = "en"
-	interface_locale_was_chosen = true
 	TranslationServer.set_locale(interface_locale)
 
 	for player_index in PLAYER_NAMES.size():
@@ -6774,16 +6788,23 @@ func _load_persistent_settings() -> void:
 	active_online_match_started = bool(config.get_value("online", "active_match_started", false))
 	tutorial_enabled = bool(config.get_value("game", "tutorial_enabled", tutorial_enabled))
 	auto_turn_enabled = bool(config.get_value("game", "auto_turn_enabled", auto_turn_enabled))
-	var saved_sound_volume: int = int(config.get_value("audio", "sound_volume", sound_volume_index))
-	sound_volume_index = clampi(saved_sound_volume, 0, SOUND_VOLUME_COUNT - 1)
-	var saved_sound_percent: int = int(config.get_value("audio", "sound_volume_percent", -1))
-	sound_volume_percent = clampi(saved_sound_percent, 0, 100) if saved_sound_percent >= 0 else _get_sound_volume_percent_for_index(sound_volume_index)
-	sound_volume_index = _get_sound_volume_index_for_percent(sound_volume_percent)
-	var saved_music_volume: int = int(config.get_value("audio", "music_volume", music_volume_index))
-	music_volume_index = clampi(saved_music_volume, 0, MUSIC_VOLUME_COUNT - 1)
-	var saved_music_percent: int = int(config.get_value("audio", "music_volume_percent", -1))
-	music_volume_percent = clampi(saved_music_percent, 0, 100) if saved_music_percent >= 0 else _get_music_volume_percent_for_index(music_volume_index)
-	music_volume_index = _get_music_volume_index_for_percent(music_volume_percent)
+	var audio_defaults_are_current := int(config.get_value("audio", "defaults_version", 0)) >= AUDIO_DEFAULTS_VERSION
+	if audio_defaults_are_current:
+		var saved_sound_volume: int = int(config.get_value("audio", "sound_volume", sound_volume_index))
+		sound_volume_index = clampi(saved_sound_volume, 0, SOUND_VOLUME_COUNT - 1)
+		var saved_sound_percent: int = int(config.get_value("audio", "sound_volume_percent", -1))
+		sound_volume_percent = clampi(saved_sound_percent, 0, 100) if saved_sound_percent >= 0 else _get_sound_volume_percent_for_index(sound_volume_index)
+		sound_volume_index = _get_sound_volume_index_for_percent(sound_volume_percent)
+		var saved_music_volume: int = int(config.get_value("audio", "music_volume", music_volume_index))
+		music_volume_index = clampi(saved_music_volume, 0, MUSIC_VOLUME_COUNT - 1)
+		var saved_music_percent: int = int(config.get_value("audio", "music_volume_percent", -1))
+		music_volume_percent = clampi(saved_music_percent, 0, 100) if saved_music_percent >= 0 else _get_music_volume_percent_for_index(music_volume_index)
+		music_volume_index = _get_music_volume_index_for_percent(music_volume_percent)
+	else:
+		sound_volume_index = 3
+		sound_volume_percent = 100
+		music_volume_index = 3
+		music_volume_percent = 100
 	var saved_music_track: int = int(config.get_value("audio", "music_track", music_track_index))
 	music_track_index = maxi(0, saved_music_track)
 	music_is_paused = bool(config.get_value("audio", "music_paused", false))
@@ -6817,10 +6838,13 @@ func _load_persistent_settings() -> void:
 
 
 func _save_persistent_settings() -> void:
+	if not persistent_settings_writes_enabled:
+		return
 	var config := ConfigFile.new()
 
 	config.set_value("localization", "locale", interface_locale)
 	config.set_value("localization", "chosen", interface_locale_was_chosen)
+	config.set_value("localization", "user_selected", interface_locale_was_chosen)
 
 	for player_index in PLAYER_NAMES.size():
 		config.set_value("players", "name_%d" % player_index, configured_player_names[player_index])
@@ -6842,6 +6866,7 @@ func _save_persistent_settings() -> void:
 	config.set_value("audio", "sound_volume_percent", sound_volume_percent)
 	config.set_value("audio", "music_volume", music_volume_index)
 	config.set_value("audio", "music_volume_percent", music_volume_percent)
+	config.set_value("audio", "defaults_version", AUDIO_DEFAULTS_VERSION)
 	config.set_value("audio", "music_track", music_track_index)
 	config.set_value("audio", "music_paused", music_is_paused)
 	config.set_value("audio", "music_player_hidden", music_player_hidden)
@@ -7421,6 +7446,9 @@ func _create_sound_players() -> void:
 		preload("res://Assets/Audio/KenneyCasino/chips-collide-3.ogg"),
 		preload("res://Assets/Audio/KenneyCasino/chips-collide-4.ogg")
 	]
+	# После мягкого первого напоминания используем собственный короткий
+	# восходящий звон: он заметнее фишек и не требует отдельного аудио-ассета.
+	sound_streams[SoundEffect.TURN_REMINDER_URGENT] = _create_double_reminder_chime()
 
 	for player_number in 3:
 		var player := AudioStreamPlayer.new()
@@ -7465,6 +7493,39 @@ func _create_procedural_sound(
 		var release := pow(maxf(0.0, 1.0 - progress), 1.7)
 		var sample: float = (tone + overtone * overtone_mix) * attack * release * amplitude
 		_write_pcm_sample(data, sample_index, sample)
+
+	var stream := AudioStreamWAV.new()
+	stream.format = AudioStreamWAV.FORMAT_16_BITS
+	stream.mix_rate = mix_rate
+	stream.stereo = false
+	stream.data = data
+	return stream
+
+
+func _create_double_reminder_chime() -> AudioStreamWAV:
+	var mix_rate := 22050
+	var duration := 0.46
+	var sample_count := roundi(duration * mix_rate)
+	var data := PackedByteArray()
+	data.resize(sample_count * 2)
+	var strike_starts := [0.0, 0.19]
+	var strike_frequencies := [1320.0, 1660.0]
+
+	for sample_index in sample_count:
+		var time_seconds := float(sample_index) / float(mix_rate)
+		var sample := 0.0
+		for strike_index in strike_starts.size():
+			var elapsed: float = time_seconds - float(strike_starts[strike_index])
+			if elapsed < 0.0 or elapsed >= 0.27:
+				continue
+			var frequency: float = float(strike_frequencies[strike_index])
+			var attack := minf(elapsed / 0.004, 1.0)
+			var release := pow(maxf(0.0, 1.0 - elapsed / 0.27), 2.35)
+			var fundamental := sin(TAU * frequency * elapsed)
+			var bell_overtone := sin(TAU * frequency * 2.42 * elapsed) * 0.46
+			var shimmer := sin(TAU * frequency * 3.87 * elapsed) * 0.18
+			sample += (fundamental + bell_overtone + shimmer) * attack * release * 0.36
+		_write_pcm_sample(data, sample_index, clampf(sample, -1.0, 1.0))
 
 	var stream := AudioStreamWAV.new()
 	stream.format = AudioStreamWAV.FORMAT_16_BITS
@@ -10657,8 +10718,8 @@ func _refresh_bid_controls() -> void:
 	for bid in game.current_round.cards_per_player + 1:
 		var bid_button := Button.new()
 		bid_button.text = tr("BID_BUTTON") % bid
-		bid_button.custom_minimum_size = Vector2(104.0, 40.0)
-		_apply_table_action_button_style(bid_button)
+		bid_button.custom_minimum_size = Vector2(100.0, 36.0)
+		_apply_compact_table_action_button_style(bid_button, 36.0)
 		bid_button.disabled = not game.current_round.can_place_bid(HUMAN_PLAYER_INDEX, bid)
 		bid_button.pressed.connect(_on_bid_pressed.bind(bid))
 		bid_controls.add_child(bid_button)
@@ -12892,7 +12953,11 @@ func _process_turn_reminder(delta: float) -> void:
 	turn_reminder_next_sound_seconds = (
 		floorf(turn_reminder_elapsed_seconds / TURN_REMINDER_DELAY_SECONDS) + 1.0
 	) * TURN_REMINDER_DELAY_SECONDS
-	_play_sound(SoundEffect.TURN_REMINDER)
+	_play_sound(
+		SoundEffect.TURN_REMINDER
+		if turn_reminder_play_count == 1
+		else SoundEffect.TURN_REMINDER_URGENT
+	)
 
 
 func _get_local_turn_reminder_decision_key() -> String:

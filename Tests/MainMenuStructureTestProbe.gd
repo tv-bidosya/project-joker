@@ -20,6 +20,7 @@ func _run() -> void:
 	assert("Профиль" in main_menu_buttons)
 	assert("Статистика" in main_menu_buttons)
 	assert("Настройки" in main_menu_buttons)
+	assert("Инструменты разработчика" not in main_menu_buttons)
 	assert("Правила" not in main_menu_buttons, "Rules must live inside the training section")
 	assert(
 		not _contains_label_fragment(main_scene.menu_content, "32 раздачи:"),

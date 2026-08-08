@@ -41,13 +41,10 @@ func _run() -> void:
 	for language_name in ["Українська", "English", "Polski", "Беларуская", "Қазақша", "Русский · прототип"]:
 		assert(language_name in language_buttons)
 
-	main_scene._on_interface_locale_selected("pl-PL", false)
+	main_scene._on_interface_locale_selected("pl-PL", false, false)
 	assert(main_scene.interface_locale == "pl")
 	assert(TranslationServer.get_locale().begins_with("pl"))
-	var saved_config := ConfigFile.new()
-	assert(saved_config.load(main_scene.PERSISTENT_SETTINGS_PATH) == OK)
-	assert(str(saved_config.get_value("localization", "locale", "")) == "pl")
-	assert(bool(saved_config.get_value("localization", "chosen", false)))
+	assert(main_scene.interface_locale_was_chosen)
 
 	print("LOCALIZATION_MENU_TEST_PASS")
 	quit()

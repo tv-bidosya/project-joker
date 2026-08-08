@@ -13,8 +13,11 @@ func _run() -> void:
 	root.add_child(main_scene)
 	await process_frame
 
-	main_scene._on_interface_locale_selected("en", false)
+	main_scene._on_interface_locale_selected("en", false, false)
 	await process_frame
+	main_scene._build_main_menu_content()
+	var english_main_menu := _get_visible_texts(main_scene.menu_content)
+	_check("Developer tools" not in english_main_menu, "Developer tools must not appear in the player menu.")
 	_check(main_scene.phase_label.text == "Stage: preparation", "English phase: %s" % main_scene.phase_label.text)
 	_check(main_scene.action_label.text == "Preparing the game", "English action: %s" % main_scene.action_label.text)
 	_check(main_scene.score_sheet_toggle_button.text == "📋 Score sheet", "English score sheet: %s" % main_scene.score_sheet_toggle_button.text)
@@ -45,8 +48,54 @@ func _run() -> void:
 	var english_setup := _get_visible_texts(main_scene.menu_content)
 	for expected_text in ["New game with bots", "Start game", "Bot difficulty", "History"]:
 		_check(expected_text in english_setup, "Missing English setup text: %s" % expected_text)
+	_check(
+		_contains_fragment(english_setup, "In limited mode, the log shows only"),
+		"English limited-history explanation is missing."
+	)
+	_check(not _contains_fragment(english_setup, "В ограниченном режиме"), "Russian history hint remains in English setup.")
 
-	main_scene._on_interface_locale_selected("uk", false)
+	main_scene._show_tutorial_menu()
+	var english_tutorial := _get_visible_texts(main_scene.menu_content)
+	for expected_fragment in ["In-game tips", "Shows brief explanations", "Bidding: before play", "Game rules"]:
+		_check(_contains_fragment(english_tutorial, expected_fragment), "Missing English tutorial text: %s" % expected_fragment)
+	_check(not _contains_fragment(english_tutorial, "Подсказки во время игры"), "Russian text remains in English tutorial.")
+
+	main_scene._show_rules_menu(true)
+	var english_rules := _get_visible_texts(main_scene.menu_content)
+	for expected_fragment in ["Game rules", "Four players take part", "Scoring", "The Joker may be used"]:
+		_check(_contains_fragment(english_rules, expected_fragment), "Missing English rules text: %s" % expected_fragment)
+	_check(not _contains_fragment(english_rules, "Подсчёт очков"), "Russian text remains in English rules.")
+
+	main_scene._show_profile_menu()
+	var english_profile := _get_visible_texts(main_scene.menu_content)
+	for expected_fragment in ["Profile", "Player name", "The Steam version will later", "Profile music"]:
+		_check(_contains_fragment(english_profile, expected_fragment), "Missing English profile text: %s" % expected_fragment)
+	for russian_fragment in ["Steam-версии", "Личная картинка", "Сначала выбери", "Используется один"]:
+		_check(not _contains_fragment(english_profile, russian_fragment), "Russian profile fragment remains: %s" % russian_fragment)
+
+	main_scene._show_music_profile_menu()
+	var english_profile_music := _get_visible_texts(main_scene.menu_content)
+	for expected_fragment in ["Profile music", "Build a personal playlist", "MP3, Ogg Vorbis", "Add files", "Back to profile"]:
+		_check(_contains_fragment(english_profile_music, expected_fragment), "Missing English profile-music text: %s" % expected_fragment)
+	_check(not _contains_fragment(english_profile_music, "Поддерживаются"), "Russian text remains in English profile music.")
+
+	main_scene._show_statistics_menu()
+	var english_statistics := _get_visible_texts(main_scene.menu_content)
+	for expected_fragment in ["Statistics", "Results from fully completed local games"]:
+		_check(_contains_fragment(english_statistics, expected_fragment), "Missing English statistics text: %s" % expected_fragment)
+	_check(not _contains_fragment(english_statistics, "Результаты полностью"), "Russian text remains in English statistics.")
+
+	main_scene._begin_local_first_turn_roll()
+	await process_frame
+	var english_first_roll := _get_visible_texts(main_scene.first_turn_roll_panel)
+	for expected_fragment in ["FIRST MOVE ROLL", "All players roll their dice", "participating", "Roll die"]:
+		_check(_contains_fragment(english_first_roll, expected_fragment), "Missing English first-roll text: %s" % expected_fragment)
+	for russian_fragment in ["Все участники", "участвует", "ПЕРВЫЙ ХОД"]:
+		_check(not _contains_fragment(english_first_roll, russian_fragment), "Russian first-roll fragment remains: %s" % russian_fragment)
+	main_scene.local_first_turn_roll_active = false
+	main_scene.first_turn_roll_panel.visible = false
+
+	main_scene._on_interface_locale_selected("uk", false, false)
 	await process_frame
 	for stats_label in main_scene.player_stats_labels:
 		_check(
@@ -114,7 +163,7 @@ func _run() -> void:
 	_check(is_equal_approx(main_scene.round_results_countdown_border.remaining_ratio, 0.5), "The countdown border must represent remaining time.")
 	main_scene._reset_network_round_countdown()
 
-	main_scene._on_interface_locale_selected("kz", false)
+	main_scene._on_interface_locale_selected("kz", false, false)
 	await process_frame
 	for stats_label in main_scene.player_stats_labels:
 		_check(
@@ -163,3 +212,10 @@ func _get_visible_texts(node: Node) -> Array[String]:
 			result.append((child as Button).text)
 		result.append_array(_get_visible_texts(child))
 	return result
+
+
+func _contains_fragment(texts: Array[String], fragment: String) -> bool:
+	for visible_text in texts:
+		if fragment in visible_text:
+			return true
+	return false

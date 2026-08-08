@@ -13,6 +13,7 @@ func _run() -> void:
 	var main_scene: Variant = load("res://Scenes/main.tscn").instantiate()
 	root.add_child(main_scene)
 	await process_frame
+	main_scene.persistent_settings_writes_enabled = false
 	await _test_turn_reminder(main_scene)
 	_test_network_human_auto_turn()
 	_test_network_menu_stays_open(main_scene)
@@ -25,7 +26,8 @@ func _test_turn_reminder(main_scene: Variant) -> void:
 	main_scene.game = Game.new(["Я", "Бот 1", "Бот 2", "Бот 3"])
 	main_scene.game.dealer_index = 3
 	assert(main_scene.game.start_round(1, Round.RoundType.NORMAL, Round.TrumpSuit.CLUBS))
-	main_scene.sound_volume_index = 0
+	main_scene.sound_volume_index = 2
+	main_scene.sound_volume_percent = 60
 	main_scene.bot_speed_index = 2
 	main_scene.auto_turn_enabled = false
 	main_scene._stop_human_turn_timer()
@@ -35,8 +37,18 @@ func _test_turn_reminder(main_scene: Variant) -> void:
 	main_scene._process_turn_reminder(0.2)
 	assert(main_scene.turn_reminder_was_played, "Turn reminder must trigger after ten seconds")
 	assert(main_scene.turn_reminder_play_count == 1, "The first reminder must be counted")
+	var urgent_stream: AudioStream = main_scene.sound_streams[main_scene.SoundEffect.TURN_REMINDER_URGENT]
+	assert(urgent_stream.get_length() >= 0.4, "The urgent reminder must contain two clearly separated bell strikes")
+	for sound_player: AudioStreamPlayer in main_scene.sound_players:
+		assert(sound_player.stream != urgent_stream, "The ten-second reminder must keep the softer casino-chip sound")
 	main_scene._process_turn_reminder(10.0)
 	assert(main_scene.turn_reminder_play_count == 2, "Turn reminder must repeat every ten seconds")
+	var urgent_reminder_was_used := false
+	for sound_player: AudioStreamPlayer in main_scene.sound_players:
+		if sound_player.stream == urgent_stream:
+			urgent_reminder_was_used = true
+	assert(urgent_reminder_was_used, "Every reminder from twenty seconds onward must use the brighter chime")
+	main_scene.sound_volume_index = 0
 	main_scene._reset_turn_reminder()
 	main_scene._process_turn_reminder(89.9)
 	assert(not main_scene.turn_timer_active, "Fallback auto-turn timer must stay hidden during the first 90 seconds")
