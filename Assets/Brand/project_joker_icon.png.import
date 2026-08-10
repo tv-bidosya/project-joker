@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://dkytlnknc8yki"
-path="res://.godot/imported/avatar_moon.png-460f2ef0e6f6f7c8c507102725fa6639.ctex"
+uid="uid://blof2nf46trxn"
+path="res://.godot/imported/project_joker_icon.png-1929e93b7f9e0ba396afc81b02c79923.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://Assets/Avatars/avatar_moon.png"
-dest_files=["res://.godot/imported/avatar_moon.png-460f2ef0e6f6f7c8c507102725fa6639.ctex"]
+source_file="res://Assets/Brand/project_joker_icon.png"
+dest_files=["res://.godot/imported/project_joker_icon.png-1929e93b7f9e0ba396afc81b02c79923.ctex"]
 
 [params]
 

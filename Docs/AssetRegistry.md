@@ -15,11 +15,11 @@
 | `Assets/Effects/Joker/laughing_jester_middle_fingers.png` | edited 2.5D Joker celebration overlay (RGBA PNG) | OpenAI ImageGen / Project Joker, 2026-07-29 | OpenAI Terms of Use — https://openai.com/policies/terms-of-use/ | да | да, изменены жесты, очищен alpha-край и уменьшено до 640×640 | нет | не требуется | финальный промпт и обработка в `Assets/Effects/Joker/README.md` | готово |
 | `Assets/Social/FluentEmoji3D/*.png` | 30 social reaction and gift images (3D-style PNG) | Microsoft / Fluent Emoji | MIT — https://github.com/microsoft/fluentui-emoji/blob/main/LICENSE | да | нет, исходные PNG сохранены без изменений | да | bundled license | официальный репозиторий, `Assets/Social/FluentEmoji3D/README.md` и `THIRD_PARTY_LICENSE.txt` | готово |
 | `Assets/Audio/KenneyCasino/*.ogg` | игровые звуковые эффекты карт и фишек | Kenney Vleugels / Kenney.nl | CC0 1.0 — https://kenney.nl/assets/casino-audio | да | нет, выбранные OGG сохранены без изменений | нет | не требуется | страница источника, `Assets/Audio/KenneyCasino/README.md` и `LICENSE.txt` | готово |
-| `Assets/Avatars/avatar_*.png` | four built-in player avatars (PNG) | Project Joker; исходное авторство нужно подтвердить | проверить | проверить | неизвестно | проверить | определить после подтверждения | коммит `72f54d7` и `Assets/Avatars/README.md`, но исходные материалы/разрешение не зафиксированы | проверить |
+| `Assets/Avatars/{avatar_fox_v2,avatar_clown,avatar_ace,avatar_mystery}.png` | four original built-in player and bot avatars (PNG) | OpenAI ImageGen / Project Joker, 2026-08-10 | OpenAI Terms of Use — https://openai.com/policies/terms-of-use/ | да | да, уменьшены до 512×512 | нет | не требуется | финальный сводный промпт и происхождение в `Assets/Avatars/README.md` | готово |
 | `Assets/Soundboard/{Bright Female,Mature Female}/*.wav`, `solo-clap.wav`, `wolf-whistle.wav` | 19 звуков закрытого/тестового саундпада | cicifyre и OwlishMedia / OpenGameArt | CC0 1.0 — https://opengameart.org/content/voice-clip-packs-for-visual-novels-and-rpgs и https://opengameart.org/content/sound-effects-pack | да | нет | нет | не требуется | страницы наборов, вложенные `readme.txt` и `Assets/PublicSoundboard/SOURCES.md` | готово |
 | `Assets/Soundboard/custom/{yapidar,yebiwe}.mp3` | две оригинальные голосовые записи | владелец Project Joker и друзья | оригинальный материал Project Joker; владелец проекта подтвердил происхождение 2026-08-10 | да, при сохранении разрешений участников | нет | нет | не требуется | `Assets/Soundboard/custom/SOURCES.md`; владельцу проекта сохранить согласия участников | готово с подтверждением владельца |
 | `Assets/PublicSoundboard/**/*.{mp3,ogg,wav}` | публичный саундпад: 19 CC0-звуков и 2 оригинальные записи | cicifyre, OwlishMedia, владелец Project Joker и друзья | CC0 1.0 для OpenGameArt; оригинальные записи Project Joker | да | нет | нет | не требуется; источники всё равно сохранены | `Assets/PublicSoundboard/SOURCES.md` и `public_soundpad_manifest.gd` | готово; для оригинальных записей сохранить согласия участников |
-| `icon.svg` | application icon | стандартная иконка Godot из нового проекта | не использовать как финальный бренд Project Joker | проверить | нет | проверить | не применимо | файл совпадает со стандартной иконкой Godot | заменить до публичной страницы и сборки |
+| `Assets/Brand/project_joker_icon.{png,ico}` | original application icon | OpenAI ImageGen / Project Joker, 2026-08-10 | OpenAI Terms of Use — https://openai.com/policies/terms-of-use/ | да | да, PNG уменьшен и собран multi-resolution ICO | нет | не требуется | финальный промпт и происхождение в `Assets/Brand/README.md` | готово |
 | Godot Engine в экспортируемом EXE | игровой движок | Godot Engine contributors | MIT — https://godotengine.org/license/ | да | нет | да | `THIRD_PARTY_NOTICES.md` или экран лицензий | полный MIT-текст добавлен в `THIRD_PARTY_NOTICES.md` | готово |
 | GodotSteam в Steam-шаблоне | интеграция Steamworks | GodotSteam contributors | MIT — https://godotsteam.com/ | да | нет | да | `THIRD_PARTY_NOTICES.md` | перед релизом скопировать точный notice из фактически используемого шаблона и записать его версию | проверить перед собственным App ID |
 
@@ -36,7 +36,8 @@
 - Публичная папка содержит отдельные копии всех 21 проверенных файлов и заполненный
   манифест. Для двух оригинальных записей владельцу проекта нужно хранить согласия
   участвовавших друзей.
-- Стандартная иконка Godot должна быть заменена собственным логотипом.
+- Стандартная иконка Godot заменена собственным знаком Project Joker; перед
+  страницей магазина проверить читаемость PNG/ICO в размерах 16, 32 и 64 пикселя.
 - Для Godot Engine добавлен notice; для конкретного Steam-шаблона GodotSteam
   notice сверяется при переходе на собственный App ID.
 

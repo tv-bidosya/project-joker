@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://djiupmdkfayl6"
-path="res://.godot/imported/avatar_spark.png-2f4f89b916fa7935653d18f16531040c.ctex"
+uid="uid://kgbv1acpu840"
+path="res://.godot/imported/avatar_clown.png-85a247eaed70b05313d65a547b4ec46c.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://Assets/Avatars/avatar_spark.png"
-dest_files=["res://.godot/imported/avatar_spark.png-2f4f89b916fa7935653d18f16531040c.ctex"]
+source_file="res://Assets/Avatars/avatar_clown.png"
+dest_files=["res://.godot/imported/avatar_clown.png-85a247eaed70b05313d65a547b4ec46c.ctex"]
 
 [params]
 

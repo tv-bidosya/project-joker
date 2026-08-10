@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://b2bnhgu28upc7"
-path="res://.godot/imported/avatar_fox.png-87d03aa8f754ac5e19b44fe20eecd303.ctex"
+uid="uid://cp2gcg58ppnaf"
+path="res://.godot/imported/avatar_ace.png-4e028884b164fbbc0d2755ce5b9035ec.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://Assets/Avatars/avatar_fox.png"
-dest_files=["res://.godot/imported/avatar_fox.png-87d03aa8f754ac5e19b44fe20eecd303.ctex"]
+source_file="res://Assets/Avatars/avatar_ace.png"
+dest_files=["res://.godot/imported/avatar_ace.png-4e028884b164fbbc0d2755ce5b9035ec.ctex"]
 
 [params]
 

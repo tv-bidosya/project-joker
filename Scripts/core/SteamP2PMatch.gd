@@ -808,6 +808,7 @@ func _rebuild_host_lobby_seats() -> void:
 			if is_local_bot
 			else stored_player_name
 		)
+		var default_bot_avatar_index := player_index % 4 if is_local_bot else 0
 		lobby_seats.append({
 			"player_index": player_index,
 			"display_name": display_name,
@@ -817,7 +818,7 @@ func _rebuild_host_lobby_seats() -> void:
 			"assigned": is_assigned,
 			"confirmed": is_confirmed,
 			"reconnecting": is_reconnecting,
-			"avatar_index": int(_avatar_index_by_player.get(player_index, 0)),
+			"avatar_index": int(_avatar_index_by_player.get(player_index, default_bot_avatar_index)),
 			"avatar_data": str(_avatar_data_by_player.get(player_index, ""))
 		})
 

@@ -70,8 +70,7 @@ const CHAT_VISIBLE_MESSAGE_LIMIT := 40
 const BUILT_IN_AVATAR_COUNT := 4
 const CUSTOM_AVATAR_INDEX := BUILT_IN_AVATAR_COUNT
 const HUMAN_AVATAR_COUNT := BUILT_IN_AVATAR_COUNT + 1
-const LOCAL_BOT_AVATAR_INDICES: Array[int] = [1, 2, 0]
-const GAME_VERSION := "0.3.9"
+const GAME_VERSION := "0.4.1"
 # Внутренний просмотр отчётов доступен только при запуске из редактора и может
 # быть дополнительно отключён этим переключателем. Создание отчёта игроком не зависит от него.
 const PERSISTENT_SETTINGS_PATH := "user://project_joker_settings.cfg"
@@ -536,6 +535,7 @@ var configured_avatar_indices: Array[int] = [0, 1, 2, 3]
 var custom_profile_avatar_path := ""
 var network_avatar_texture_cache: Dictionary = {}
 var new_game_name_inputs: Array[LineEdit] = []
+var new_game_bot_avatar_selectors: Array[OptionButton] = []
 var new_game_bot_difficulty_selector: OptionButton
 var new_game_history_mode_selector: OptionButton
 var profile_name_input: LineEdit
@@ -4793,8 +4793,9 @@ func _show_new_game_setup() -> void:
 	menu_overlay.visible = true
 	_clear_children(menu_content)
 	new_game_name_inputs.clear()
+	new_game_bot_avatar_selectors.clear()
 	_add_menu_title("Новая игра с ботами", "Укажи имена игроков и параметры локальной партии")
-	_add_menu_label("Твой аватар берётся из профиля. У ботов всегда используются Солнце, Луна и Лис.", 14, Color(0.72, 0.85, 0.76, 1.0))
+	_add_menu_label("Твой аватар берётся из профиля. Для каждого бота можно выбрать отдельный образ.", 14, Color(0.72, 0.85, 0.76, 1.0))
 
 	for player_index in PLAYER_NAMES.size():
 		_add_new_game_player_row(player_index)
@@ -4830,9 +4831,7 @@ func _add_new_game_player_row(player_index: int) -> void:
 	row.add_child(name_input)
 	new_game_name_inputs.append(name_input)
 
-	var avatar_index := configured_avatar_indices[HUMAN_PLAYER_INDEX]
-	if player_index != HUMAN_PLAYER_INDEX:
-		avatar_index = LOCAL_BOT_AVATAR_INDICES[player_index - 1]
+	var avatar_index := configured_avatar_indices[player_index]
 	_add_new_game_avatar_preview(row, player_index, avatar_index)
 
 
@@ -4840,7 +4839,7 @@ func _add_new_game_avatar_preview(row: HBoxContainer, player_index: int, avatar_
 	var preview_panel := PanelContainer.new()
 	preview_panel.name = "NewGameAvatarPreview%d" % player_index
 	preview_panel.custom_minimum_size = Vector2(48.0, 48.0)
-	preview_panel.tooltip_text = tr("Аватар из профиля") if player_index == HUMAN_PLAYER_INDEX else tr("Фиксированный аватар бота")
+	preview_panel.tooltip_text = tr("Аватар из профиля") if player_index == HUMAN_PLAYER_INDEX else tr("Выбранный аватар бота")
 	preview_panel.set_meta("avatar_index", avatar_index)
 	preview_panel.add_theme_stylebox_override(
 		"panel",
@@ -4874,13 +4873,37 @@ func _add_new_game_avatar_preview(row: HBoxContainer, player_index: int, avatar_
 		placeholder.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		preview_content.add_child(placeholder)
 
-	var avatar_label := Label.new()
-	avatar_label.text = tr("Профиль") if player_index == HUMAN_PLAYER_INDEX else _get_avatar_option_label(avatar_index)
-	avatar_label.custom_minimum_size = Vector2(76.0, 38.0)
-	avatar_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	avatar_label.add_theme_font_size_override("font_size", 14)
-	avatar_label.add_theme_color_override("font_color", Color(0.72, 0.85, 0.76, 1.0))
-	row.add_child(avatar_label)
+	if player_index == HUMAN_PLAYER_INDEX:
+		var avatar_label := Label.new()
+		avatar_label.text = tr("Профиль")
+		avatar_label.custom_minimum_size = Vector2(108.0, 38.0)
+		avatar_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		avatar_label.add_theme_font_size_override("font_size", 14)
+		avatar_label.add_theme_color_override("font_color", Color(0.72, 0.85, 0.76, 1.0))
+		row.add_child(avatar_label)
+		return
+
+	var avatar_selector := OptionButton.new()
+	avatar_selector.name = "BotAvatarSelector%d" % player_index
+	avatar_selector.custom_minimum_size = Vector2(150.0, 38.0)
+	avatar_selector.add_theme_font_size_override("font_size", 14)
+	for option_index in BUILT_IN_AVATAR_COUNT:
+		avatar_selector.add_item(_get_avatar_option_label(option_index))
+	avatar_selector.selected = clampi(avatar_index, 0, BUILT_IN_AVATAR_COUNT - 1)
+	avatar_selector.item_selected.connect(
+		Callable(self, "_on_new_game_bot_avatar_selected").bind(player_index, preview_texture)
+	)
+	row.add_child(avatar_selector)
+	new_game_bot_avatar_selectors.append(avatar_selector)
+
+
+func _on_new_game_bot_avatar_selected(selected_index: int, player_index: int, preview_texture: TextureRect) -> void:
+	if player_index <= HUMAN_PLAYER_INDEX or player_index >= configured_avatar_indices.size():
+		return
+	var avatar_index := clampi(selected_index, 0, BUILT_IN_AVATAR_COUNT - 1)
+	configured_avatar_indices[player_index] = avatar_index
+	if is_instance_valid(preview_texture):
+		preview_texture.texture = _load_avatar_texture_from_path(_get_avatar_texture_path_for_index(avatar_index))
 
 
 func _add_new_game_bot_difficulty_row() -> void:
@@ -4934,8 +4957,6 @@ func _add_new_game_history_mode_row() -> void:
 func _start_configured_new_game() -> void:
 	for player_index in PLAYER_NAMES.size():
 		configured_player_names[player_index] = _sanitize_player_name(new_game_name_inputs[player_index].text, str(PLAYER_NAMES[player_index]))
-		if player_index != HUMAN_PLAYER_INDEX:
-			configured_avatar_indices[player_index] = LOCAL_BOT_AVATAR_INDICES[player_index - 1]
 
 	bot_difficulty = clampi(new_game_bot_difficulty_selector.selected, 0, BOT_DIFFICULTY_COUNT - 1)
 	match_history_mode = clampi(
@@ -4953,11 +4974,11 @@ func _get_avatar_option_label(avatar_index: int) -> String:
 		0:
 			return tr("Лис")
 		1:
-			return tr("Солнце")
+			return tr("Клоун")
 		2:
-			return tr("Луна")
+			return tr("Чародейка")
 		3:
-			return tr("Искра")
+			return tr("Тайна")
 		CUSTOM_AVATAR_INDEX:
 			return tr("Своя картинка")
 
@@ -9273,11 +9294,11 @@ func _get_player_avatar_symbol(player_index: int) -> String:
 		0:
 			return "★"
 		1:
-			return "☀"
+			return "♣"
 		2:
-			return "☾"
+			return "♦"
 		3:
-			return "✦"
+			return "?"
 
 	return "•"
 
@@ -9287,11 +9308,11 @@ func _get_avatar_symbol_for_index(avatar_index: int) -> String:
 		0:
 			return "★"
 		1:
-			return "☀"
+			return "♣"
 		2:
-			return "☾"
+			return "♦"
 		3:
-			return "✦"
+			return "?"
 	return "•"
 
 
@@ -9359,13 +9380,13 @@ func _get_avatar_texture_path_for_index(avatar_index: int, custom_avatar_path: S
 
 	match avatar_index:
 		0:
-			return "res://Assets/Avatars/avatar_fox.png"
+			return "res://Assets/Avatars/avatar_fox_v2.png"
 		1:
-			return "res://Assets/Avatars/avatar_sun.png"
+			return "res://Assets/Avatars/avatar_clown.png"
 		2:
-			return "res://Assets/Avatars/avatar_moon.png"
+			return "res://Assets/Avatars/avatar_ace.png"
 		3:
-			return "res://Assets/Avatars/avatar_spark.png"
+			return "res://Assets/Avatars/avatar_mystery.png"
 
 	return ""
 
