@@ -1,0 +1,24 @@
+[remap]
+
+importer="wav"
+type="AudioStreamWAV"
+uid="uid://ddk3pkb7av4on"
+path="res://.godot/imported/what3.wav-85cc6b476c50cd9b3bb7aa50ed041fc4.sample"
+
+[deps]
+
+source_file="res://Assets/PublicSoundboard/Mature Female/what3.wav"
+dest_files=["res://.godot/imported/what3.wav-85cc6b476c50cd9b3bb7aa50ed041fc4.sample"]
+
+[params]
+
+force/8_bit=false
+force/mono=false
+force/max_rate=false
+force/max_rate_hz=44100
+edit/trim=false
+edit/normalize=false
+edit/loop_mode=0
+edit/loop_begin=0
+edit/loop_end=-1
+compress/mode=2

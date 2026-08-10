@@ -16,8 +16,9 @@
 | `Assets/Social/FluentEmoji3D/*.png` | 30 social reaction and gift images (3D-style PNG) | Microsoft / Fluent Emoji | MIT — https://github.com/microsoft/fluentui-emoji/blob/main/LICENSE | да | нет, исходные PNG сохранены без изменений | да | bundled license | официальный репозиторий, `Assets/Social/FluentEmoji3D/README.md` и `THIRD_PARTY_LICENSE.txt` | готово |
 | `Assets/Audio/KenneyCasino/*.ogg` | игровые звуковые эффекты карт и фишек | Kenney Vleugels / Kenney.nl | CC0 1.0 — https://kenney.nl/assets/casino-audio | да | нет, выбранные OGG сохранены без изменений | нет | не требуется | страница источника, `Assets/Audio/KenneyCasino/README.md` и `LICENSE.txt` | готово |
 | `Assets/Avatars/avatar_*.png` | four built-in player avatars (PNG) | Project Joker; исходное авторство нужно подтвердить | проверить | проверить | неизвестно | проверить | определить после подтверждения | коммит `72f54d7` и `Assets/Avatars/README.md`, но исходные материалы/разрешение не зафиксированы | проверить |
-| `Assets/Soundboard/**/*.{mp3,ogg,wav}` | закрытый мемный саундпад | разные интернет-источники | не подтверждена пофайлово | не подтверждено | неизвестно | неизвестно | не определено | 42 файла без пофайловых ссылок и разрешений | только закрытые тесты; исключить из публичной сборки |
-| `Assets/PublicSoundboard/**/*.{mp3,ogg,wav}` | публичный саундпад | добавляется пофайлово | только CC0, CC BY либо отдельное коммерческое разрешение | да после проверки | указывать | зависит от лицензии | `THIRD_PARTY_NOTICES.md` при необходимости | отдельная строка на каждый файл или единый проверенный набор | пока пусто |
+| `Assets/Soundboard/{Bright Female,Mature Female}/*.wav`, `solo-clap.wav`, `wolf-whistle.wav` | 19 звуков закрытого/тестового саундпада | cicifyre и OwlishMedia / OpenGameArt | CC0 1.0 — https://opengameart.org/content/voice-clip-packs-for-visual-novels-and-rpgs и https://opengameart.org/content/sound-effects-pack | да | нет | нет | не требуется | страницы наборов, вложенные `readme.txt` и `Assets/PublicSoundboard/SOURCES.md` | готово |
+| `Assets/Soundboard/custom/{yapidar,yebiwe}.mp3` | две оригинальные голосовые записи | владелец Project Joker и друзья | оригинальный материал Project Joker; владелец проекта подтвердил происхождение 2026-08-10 | да, при сохранении разрешений участников | нет | нет | не требуется | `Assets/Soundboard/custom/SOURCES.md`; владельцу проекта сохранить согласия участников | готово с подтверждением владельца |
+| `Assets/PublicSoundboard/**/*.{mp3,ogg,wav}` | публичный саундпад: 19 CC0-звуков и 2 оригинальные записи | cicifyre, OwlishMedia, владелец Project Joker и друзья | CC0 1.0 для OpenGameArt; оригинальные записи Project Joker | да | нет | нет | не требуется; источники всё равно сохранены | `Assets/PublicSoundboard/SOURCES.md` и `public_soundpad_manifest.gd` | готово; для оригинальных записей сохранить согласия участников |
 | `icon.svg` | application icon | стандартная иконка Godot из нового проекта | не использовать как финальный бренд Project Joker | проверить | нет | проверить | не применимо | файл совпадает со стандартной иконкой Godot | заменить до публичной страницы и сборки |
 | Godot Engine в экспортируемом EXE | игровой движок | Godot Engine contributors | MIT — https://godotengine.org/license/ | да | нет | да | `THIRD_PARTY_NOTICES.md` или экран лицензий | полный MIT-текст добавлен в `THIRD_PARTY_NOTICES.md` | готово |
 | GodotSteam в Steam-шаблоне | интеграция Steamworks | GodotSteam contributors | MIT — https://godotsteam.com/ | да | нет | да | `THIRD_PARTY_NOTICES.md` | перед релизом скопировать точный notice из фактически используемого шаблона и записать его версию | проверить перед собственным App ID |
@@ -30,9 +31,11 @@
   промптами и строками реестра.
 - Тридцать Fluent Emoji имеют локальную копию MIT-лицензии.
 - Четыре встроенных аватара пока требуют подтверждения исходного авторства.
-- Сорок два файла закрытого саундпада не имеют пофайлового подтверждения и
-  запрещены для публичного PCK.
-- Публичная папка саундпада пока пуста.
+- Старый неподтверждённый мемный саундпад удалён. Текущий набор состоит из
+  19 CC0-звуков OpenGameArt и двух оригинальных записей Project Joker.
+- Публичная папка содержит отдельные копии всех 21 проверенных файлов и заполненный
+  манифест. Для двух оригинальных записей владельцу проекта нужно хранить согласия
+  участвовавших друзей.
 - Стандартная иконка Godot должна быть заменена собственным логотипом.
 - Для Godot Engine добавлен notice; для конкретного Steam-шаблона GodotSteam
   notice сверяется при переходе на собственный App ID.

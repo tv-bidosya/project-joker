@@ -1,0 +1,24 @@
+[remap]
+
+importer="wav"
+type="AudioStreamWAV"
+uid="uid://bibtpuy0xuyp1"
+path="res://.godot/imported/why3.wav-76dfedeef7d12dde3298bac2c58c90a8.sample"
+
+[deps]
+
+source_file="res://Assets/Soundboard/Mature Female/why3.wav"
+dest_files=["res://.godot/imported/why3.wav-76dfedeef7d12dde3298bac2c58c90a8.sample"]
+
+[params]
+
+force/8_bit=false
+force/mono=false
+force/max_rate=false
+force/max_rate_hz=44100
+edit/trim=false
+edit/normalize=false
+edit/loop_mode=0
+edit/loop_begin=0
+edit/loop_end=-1
+compress/mode=2

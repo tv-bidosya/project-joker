@@ -1,0 +1,24 @@
+[remap]
+
+importer="wav"
+type="AudioStreamWAV"
+uid="uid://d00td3idbwhja"
+path="res://.godot/imported/02-how are you.wav-d52594dd724d00b6a5650b21db236a99.sample"
+
+[deps]
+
+source_file="res://Assets/Soundboard/Bright Female/02-how are you.wav"
+dest_files=["res://.godot/imported/02-how are you.wav-d52594dd724d00b6a5650b21db236a99.sample"]
+
+[params]
+
+force/8_bit=false
+force/mono=false
+force/max_rate=false
+force/max_rate_hz=44100
+edit/trim=false
+edit/normalize=false
+edit/loop_mode=0
+edit/loop_begin=0
+edit/loop_end=-1
+compress/mode=2
