@@ -26,8 +26,11 @@ const LOBBY_COMPARISON_EQUAL := 0
 const LOBBY_DISTANCE_WORLDWIDE := 3
 const FRIEND_FLAG_IMMEDIATE := 4
 const LOBBY_BROWSER_RESULT_LIMIT := 50
+const LOBBY_PROTOCOL_VERSION := 6
 const LOBBY_STATE_WAITING := "waiting"
 const LOBBY_STATE_PLAYING := "playing"
+const MATCH_MODE_CLASSIC := "classic"
+const MATCH_MODE_TEAMS_2V2 := "teams_2v2"
 const P2P_MATCH_CHANNEL := 42
 const P2P_SEND_RELIABLE := 2
 const MAX_P2P_PACKET_BYTES := 32 * 1024
@@ -46,6 +49,8 @@ var _lobby_status := "Steam-комната ещё не создана."
 var _local_lobby_ready := false
 var _pending_join_source := ""
 var _pending_lobby_visibility: LobbyVisibility = LobbyVisibility.FRIENDS_ONLY
+var _pending_match_mode := MATCH_MODE_CLASSIC
+var _pending_team_one_name := "Команда 1"
 var _public_lobbies: Array[Dictionary] = []
 var _friend_lobbies: Array[Dictionary] = []
 var _friend_lobby_ids: Dictionary = {}
@@ -269,10 +274,14 @@ func process_callbacks() -> void:
 
 
 func create_friends_lobby() -> Dictionary:
-	return create_lobby(LobbyVisibility.FRIENDS_ONLY)
+	return create_lobby(LobbyVisibility.FRIENDS_ONLY, MATCH_MODE_CLASSIC)
 
 
-func create_lobby(visibility: int = LobbyVisibility.FRIENDS_ONLY) -> Dictionary:
+func create_lobby(
+	visibility: int = LobbyVisibility.FRIENDS_ONLY,
+	match_mode: String = MATCH_MODE_CLASSIC,
+	team_one_name: String = "Команда 1"
+) -> Dictionary:
 	if not _initialized:
 		_lobby_status = "Сначала подключи Steam-клиент."
 		lobby_status_changed.emit()
@@ -294,6 +303,8 @@ func create_lobby(visibility: int = LobbyVisibility.FRIENDS_ONLY) -> Dictionary:
 		LobbyVisibility.PRIVATE,
 		LobbyVisibility.PUBLIC
 	)
+	_pending_match_mode = match_mode if match_mode == MATCH_MODE_TEAMS_2V2 else MATCH_MODE_CLASSIC
+	_pending_team_one_name = _sanitize_team_name(team_one_name, "Команда 1")
 	_lobby_status = "Создаём Steam-комнату «%s» на четыре места…" % _get_visibility_label(_pending_lobby_visibility)
 	steam_api.call(&"createLobby", _get_steam_lobby_type(_pending_lobby_visibility), LOBBY_MEMBER_LIMIT)
 	lobby_status_changed.emit()
@@ -322,7 +333,7 @@ func request_lobby_browser() -> Dictionary:
 		return get_lobby_browser_state()
 
 	steam_api.call(&"addRequestLobbyListStringFilter", "project", "project_joker", LOBBY_COMPARISON_EQUAL)
-	steam_api.call(&"addRequestLobbyListStringFilter", "protocol", "5", LOBBY_COMPARISON_EQUAL)
+	steam_api.call(&"addRequestLobbyListStringFilter", "protocol", str(LOBBY_PROTOCOL_VERSION), LOBBY_COMPARISON_EQUAL)
 	steam_api.call(&"addRequestLobbyListStringFilter", "state", LOBBY_STATE_WAITING, LOBBY_COMPARISON_EQUAL)
 	if steam_api.has_method(&"addRequestLobbyListFilterSlotsAvailable"):
 		steam_api.call(&"addRequestLobbyListFilterSlotsAvailable", 1)
@@ -450,6 +461,84 @@ func set_local_lobby_ready(ready: bool) -> Dictionary:
 	return get_lobby_state()
 
 
+func set_local_lobby_team(team_id: int) -> Dictionary:
+	var state := get_lobby_state()
+	if _lobby_id <= 0 or str(state.get("match_mode", MATCH_MODE_CLASSIC)) != MATCH_MODE_TEAMS_2V2:
+		return state
+	var local_steam_id := get_local_steam_id()
+	if local_steam_id == int(state.get("lobby_owner", 0)):
+		team_id = 0
+	team_id = clampi(team_id, 0, 1)
+	var team_size := 0
+	for member_variant in state.get("members", []):
+		if member_variant is Dictionary:
+			var member: Dictionary = member_variant
+			if int(member.get("steam_id", 0)) != local_steam_id and int(member.get("team_id", -1)) == team_id:
+				team_size += 1
+	if team_size >= 2:
+		_lobby_status = "В выбранной команде уже два игрока."
+		lobby_status_changed.emit()
+		return get_lobby_state()
+	var steam_api := _get_steam_api()
+	if steam_api == null or not steam_api.has_method(&"setLobbyMemberData"):
+		return state
+	_local_lobby_ready = false
+	steam_api.call(&"setLobbyMemberData", _lobby_id, "pj_team", str(team_id))
+	steam_api.call(&"setLobbyMemberData", _lobby_id, "pj_ready", "0")
+	_lobby_status = "Команда выбрана. Подтверди готовность после настройки комнаты."
+	lobby_status_changed.emit()
+	return get_lobby_state()
+
+
+func set_local_lobby_team_name(team_name: String) -> Dictionary:
+	var state := get_lobby_state()
+	if _lobby_id <= 0 or str(state.get("match_mode", MATCH_MODE_CLASSIC)) != MATCH_MODE_TEAMS_2V2:
+		return state
+	var local_steam_id := get_local_steam_id()
+	var local_team_id := int(state.get("local_team_id", -1))
+	var safe_name := _sanitize_team_name(team_name, "Команда %d" % (local_team_id + 1))
+	var steam_api := _get_steam_api()
+	if steam_api == null:
+		return state
+	if local_steam_id == int(state.get("lobby_owner", 0)) and local_team_id == 0 and steam_api.has_method(&"setLobbyData"):
+		steam_api.call(&"setLobbyData", _lobby_id, "pj_team_0_name", safe_name)
+	elif local_team_id == 1 and bool(state.get("local_is_team_captain", false)) and steam_api.has_method(&"setLobbyMemberData"):
+		steam_api.call(&"setLobbyMemberData", _lobby_id, "pj_team_name", safe_name)
+	else:
+		_lobby_status = "Название команды может менять только её капитан."
+		lobby_status_changed.emit()
+		return get_lobby_state()
+	_local_lobby_ready = false
+	if steam_api.has_method(&"setLobbyMemberData"):
+		steam_api.call(&"setLobbyMemberData", _lobby_id, "pj_ready", "0")
+	_lobby_status = "Название команды обновлено."
+	lobby_status_changed.emit()
+	return get_lobby_state()
+
+
+func kick_lobby_member(member_steam_id: int) -> Dictionary:
+	var state := get_lobby_state()
+	var local_steam_id := get_local_steam_id()
+	if _lobby_id <= 0 or local_steam_id != int(state.get("lobby_owner", 0)) or member_steam_id <= 0 or member_steam_id == local_steam_id:
+		return state
+	if str(state.get("match_state", LOBBY_STATE_WAITING)) != LOBBY_STATE_WAITING:
+		_lobby_status = "Исключать игроков можно только до начала партии."
+		lobby_status_changed.emit()
+		return state
+	var steam_api := _get_steam_api()
+	if steam_api == null or not steam_api.has_method(&"setLobbyData"):
+		return state
+	var kicked_ids := _parse_steam_id_list(str(steam_api.call(&"getLobbyData", _lobby_id, "pj_kicked_ids")))
+	kicked_ids[member_steam_id] = true
+	var serialized_ids: PackedStringArray = []
+	for kicked_id in kicked_ids.keys():
+		serialized_ids.append(str(int(kicked_id)))
+	steam_api.call(&"setLobbyData", _lobby_id, "pj_kicked_ids", ",".join(serialized_ids))
+	_lobby_status = "Игрок исключён из комнаты."
+	lobby_status_changed.emit()
+	return get_lobby_state()
+
+
 func set_fill_empty_seats_with_bots(enabled: bool) -> Dictionary:
 	if _lobby_id <= 0:
 		_lobby_status = "Ботов можно добавить только внутри Steam-комнаты."
@@ -567,6 +656,9 @@ func get_lobby_state() -> Dictionary:
 	var history_mode := 0
 	var visibility := LobbyVisibility.FRIENDS_ONLY
 	var match_state := LOBBY_STATE_WAITING
+	var match_mode := MATCH_MODE_CLASSIC
+	var team_names := ["Команда 1", "Команда 2"]
+	var kicked_ids: Dictionary = {}
 	var host_name := ""
 	var protocol := 0
 	var members: Array[Dictionary] = []
@@ -594,9 +686,39 @@ func get_lobby_state() -> Dictionary:
 			match_state = str(steam_api.call(&"getLobbyData", _lobby_id, "state"))
 			if match_state.is_empty():
 				match_state = LOBBY_STATE_WAITING
+			match_mode = str(steam_api.call(&"getLobbyData", _lobby_id, "mode"))
+			if match_mode != MATCH_MODE_TEAMS_2V2:
+				match_mode = MATCH_MODE_CLASSIC
+			team_names[0] = _sanitize_team_name(
+				str(steam_api.call(&"getLobbyData", _lobby_id, "pj_team_0_name")),
+				"Команда 1"
+			)
+			team_names[1] = _sanitize_team_name(
+				str(steam_api.call(&"getLobbyData", _lobby_id, "pj_team_1_name")),
+				"Команда 2"
+			)
+			kicked_ids = _parse_steam_id_list(str(steam_api.call(&"getLobbyData", _lobby_id, "pj_kicked_ids")))
 			host_name = str(steam_api.call(&"getLobbyData", _lobby_id, "host_name"))
 			protocol = int(steam_api.call(&"getLobbyData", _lobby_id, "protocol"))
 		members = _get_lobby_members(steam_api, member_count, lobby_owner)
+
+	var team_counts := [0, 0]
+	var team_one_captain_steam_id := 0
+	for member_variant in members:
+		var member: Dictionary = member_variant
+		var team_id := int(member.get("team_id", -1))
+		if team_id >= 0 and team_id < 2:
+			team_counts[team_id] += 1
+		if team_id == 1 and team_one_captain_steam_id <= 0:
+			team_one_captain_steam_id = int(member.get("steam_id", 0))
+			team_names[1] = _sanitize_team_name(str(member.get("team_name_request", "")), str(team_names[1]))
+	var local_steam_id := get_local_steam_id()
+	var local_team_id := -1
+	for member_variant in members:
+		var member: Dictionary = member_variant
+		if int(member.get("steam_id", 0)) == local_steam_id:
+			local_team_id = int(member.get("team_id", -1))
+			break
 
 	return {
 		"initialized": _initialized,
@@ -610,6 +732,15 @@ func get_lobby_state() -> Dictionary:
 		"fill_empty_seats_with_bots": fill_empty_seats_with_bots,
 		"bot_difficulty": bot_difficulty,
 		"history_mode": history_mode,
+		"match_mode": match_mode,
+		"team_names": team_names,
+		"team_counts": team_counts,
+		"local_team_id": local_team_id,
+		"local_is_team_captain": (
+			(local_team_id == 0 and local_steam_id == lobby_owner)
+			or (local_team_id == 1 and local_steam_id == team_one_captain_steam_id)
+		),
+		"kicked_steam_ids": kicked_ids.keys(),
 		"visibility": visibility,
 		"visibility_label": _get_visibility_label(visibility),
 		"match_state": match_state,
@@ -661,8 +792,8 @@ func _on_lobby_created(result: int, lobby_id: int) -> void:
 	var steam_api := _get_steam_api()
 	if steam_api != null:
 		steam_api.call(&"setLobbyData", _lobby_id, "project", "project_joker")
-		steam_api.call(&"setLobbyData", _lobby_id, "protocol", "5")
-		steam_api.call(&"setLobbyData", _lobby_id, "mode", "standard")
+		steam_api.call(&"setLobbyData", _lobby_id, "protocol", str(LOBBY_PROTOCOL_VERSION))
+		steam_api.call(&"setLobbyData", _lobby_id, "mode", _pending_match_mode)
 		steam_api.call(&"setLobbyData", _lobby_id, "state", LOBBY_STATE_WAITING)
 		steam_api.call(&"setLobbyData", _lobby_id, "pj_visibility", str(_pending_lobby_visibility))
 		steam_api.call(&"setLobbyData", _lobby_id, "host_name", _persona_name.left(40))
@@ -670,6 +801,11 @@ func _on_lobby_created(result: int, lobby_id: int) -> void:
 		steam_api.call(&"setLobbyData", _lobby_id, "pj_fill_bots", "0")
 		steam_api.call(&"setLobbyData", _lobby_id, "pj_bot_difficulty", "1")
 		steam_api.call(&"setLobbyData", _lobby_id, "pj_history_mode", "0")
+		steam_api.call(&"setLobbyData", _lobby_id, "pj_team_0_name", _pending_team_one_name)
+		steam_api.call(&"setLobbyData", _lobby_id, "pj_team_1_name", "Команда 2")
+		steam_api.call(&"setLobbyData", _lobby_id, "pj_kicked_ids", "")
+		steam_api.call(&"setLobbyMemberData", _lobby_id, "pj_team", "0" if _pending_match_mode == MATCH_MODE_TEAMS_2V2 else "-1")
+		steam_api.call(&"setLobbyMemberData", _lobby_id, "pj_team_name", "")
 		steam_api.call(&"setLobbyMemberLimit", _lobby_id, LOBBY_MEMBER_LIMIT)
 		steam_api.call(&"setLobbyJoinable", _lobby_id, true)
 	lobby_status_changed.emit()
@@ -684,8 +820,20 @@ func _on_lobby_joined(lobby_id: int, _permissions: int, _locked: bool, response:
 	_lobby_id = lobby_id
 	_local_lobby_ready = false
 	var steam_api := _get_steam_api()
+	if steam_api != null and steam_api.has_method(&"getLobbyData"):
+		var kicked_ids := _parse_steam_id_list(str(steam_api.call(&"getLobbyData", _lobby_id, "pj_kicked_ids")))
+		if kicked_ids.has(get_local_steam_id()):
+			steam_api.call(&"leaveLobby", _lobby_id)
+			_lobby_id = 0
+			_lobby_status = "Хост исключил тебя из этой комнаты."
+			lobby_status_changed.emit()
+			return
 	if steam_api != null and steam_api.has_method(&"setLobbyMemberData"):
 		steam_api.call(&"setLobbyMemberData", _lobby_id, "pj_ready", "0")
+		var lobby_owner := int(steam_api.call(&"getLobbyOwner", _lobby_id)) if steam_api.has_method(&"getLobbyOwner") else 0
+		var match_mode := str(steam_api.call(&"getLobbyData", _lobby_id, "mode")) if steam_api.has_method(&"getLobbyData") else MATCH_MODE_CLASSIC
+		steam_api.call(&"setLobbyMemberData", _lobby_id, "pj_team", "0" if match_mode == MATCH_MODE_TEAMS_2V2 and get_local_steam_id() == lobby_owner else "-1")
+		steam_api.call(&"setLobbyMemberData", _lobby_id, "pj_team_name", "")
 	var joined_from := _pending_join_source
 	_pending_join_source = ""
 	_lobby_status = "Ты вошёл в Steam-комнату. Отметь готовность, когда все соберутся." if not joined_from.is_empty() else "Ты находишься в Steam-комнате. Ожидаем игроков."
@@ -701,6 +849,16 @@ func _on_lobby_chat_update(lobby_id: int, _changed_id: int, _making_change_id: i
 
 func _on_lobby_data_update(success: int, lobby_id: int, _member_id: int) -> void:
 	if success == STEAM_RESULT_OK and lobby_id == _lobby_id:
+		var steam_api := _get_steam_api()
+		if steam_api != null and steam_api.has_method(&"getLobbyData"):
+			var kicked_ids := _parse_steam_id_list(str(steam_api.call(&"getLobbyData", _lobby_id, "pj_kicked_ids")))
+			if kicked_ids.has(get_local_steam_id()):
+				steam_api.call(&"leaveLobby", _lobby_id)
+				_lobby_id = 0
+				_local_lobby_ready = false
+				_lobby_status = "Хост исключил тебя из комнаты."
+				lobby_status_changed.emit()
+				return
 		lobby_status_changed.emit()
 	if _requested_summary_lobby_ids.has(lobby_id) and success != STEAM_RESULT_OK:
 		_requested_summary_lobby_ids.erase(lobby_id)
@@ -763,13 +921,19 @@ func _get_lobby_members(steam_api: Object, member_count: int, lobby_owner: int) 
 	for member_index in range(member_count):
 		var member_id := int(steam_api.call(&"getLobbyMemberByIndex", _lobby_id, member_index))
 		var is_ready := false
+		var team_id := -1
+		var team_name_request := ""
 		if steam_api.has_method(&"getLobbyMemberData"):
 			is_ready = str(steam_api.call(&"getLobbyMemberData", _lobby_id, member_id, "pj_ready")) == "1"
+			team_id = int(str(steam_api.call(&"getLobbyMemberData", _lobby_id, member_id, "pj_team")))
+			team_name_request = str(steam_api.call(&"getLobbyMemberData", _lobby_id, member_id, "pj_team_name"))
 		members.append({
 			"steam_id": member_id,
 			"name": _get_persona_name(member_id),
 			"ready": is_ready,
 			"is_owner": member_id == lobby_owner,
+			"team_id": team_id,
+			"team_name_request": team_name_request,
 		})
 
 	return members
@@ -857,7 +1021,7 @@ func _create_lobby_summary(lobby_id: int) -> Dictionary:
 		return {}
 	var project_name := str(steam_api.call(&"getLobbyData", lobby_id, "project"))
 	var protocol := int(steam_api.call(&"getLobbyData", lobby_id, "protocol"))
-	if project_name != "project_joker" or protocol != 5:
+	if project_name != "project_joker" or protocol != LOBBY_PROTOCOL_VERSION:
 		return {}
 
 	var member_count := int(steam_api.call(&"getNumLobbyMembers", lobby_id)) if steam_api.has_method(&"getNumLobbyMembers") else 0
@@ -881,8 +1045,23 @@ func _create_lobby_summary(lobby_id: int) -> Dictionary:
 		"fill_empty_seats_with_bots": str(steam_api.call(&"getLobbyData", lobby_id, "pj_fill_bots")) == "1",
 		"bot_difficulty": clampi(int(steam_api.call(&"getLobbyData", lobby_id, "pj_bot_difficulty")), 0, 2),
 		"history_mode": clampi(int(steam_api.call(&"getLobbyData", lobby_id, "pj_history_mode")), 0, 1),
+		"match_mode": str(steam_api.call(&"getLobbyData", lobby_id, "mode")),
 		"protocol": protocol,
 	}
+
+
+func _sanitize_team_name(team_name: String, fallback: String) -> String:
+	var safe_name := team_name.replace("\n", " ").replace("\r", " ").strip_edges().left(24)
+	return fallback if safe_name.is_empty() else safe_name
+
+
+func _parse_steam_id_list(serialized_ids: String) -> Dictionary:
+	var result := {}
+	for id_text in serialized_ids.split(",", false):
+		var steam_id := int(id_text)
+		if steam_id > 0:
+			result[steam_id] = true
+	return result
 
 
 func _get_steam_lobby_type(visibility: int) -> int:

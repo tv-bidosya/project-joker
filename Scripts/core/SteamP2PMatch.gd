@@ -53,6 +53,9 @@ var _local_auto_turn_enabled := false
 var _local_avatar_index := 0
 var _local_avatar_data := ""
 var _history_mode := MatchHost.HistoryMode.FULL
+var _match_mode := SteamBridge.MATCH_MODE_CLASSIC
+var _team_names := ["Команда 1", "Команда 2"]
+var _preferred_player_index_by_steam_id: Dictionary = {}
 
 
 func _init() -> void:
@@ -118,14 +121,30 @@ func start_from_current_lobby(
 		_set_status("Для Steam P2P нужны %s с отметкой «готов»." % requirement_text)
 		return false
 
+	_match_mode = str(lobby_state.get("match_mode", SteamBridge.MATCH_MODE_CLASSIC))
+	if _match_mode != SteamBridge.MATCH_MODE_TEAMS_2V2:
+		_match_mode = SteamBridge.MATCH_MODE_CLASSIC
+	_team_names = (lobby_state.get("team_names", ["Команда 1", "Команда 2"]) as Array).duplicate()
+	while _team_names.size() < 2:
+		_team_names.append("Команда %d" % (_team_names.size() + 1))
+	_preferred_player_index_by_steam_id.clear()
+	if _match_mode == SteamBridge.MATCH_MODE_TEAMS_2V2 and not _build_team_seat_preferences(members):
+		_set_status("Для режима 2×2 каждый участник должен выбрать команду; в каждой команде не больше двух игроков.")
+		return false
+
 	_fill_empty_seats_with_bots = fill_empty_seats_with_bots
 	_bot_difficulty = clampi(bot_difficulty, BOT_DIFFICULTY_EASY, BOT_DIFFICULTY_HARD)
 	_expected_remote_player_count = members.size() - 1
 	_local_bot_player_indices.clear()
 	_temporary_bot_player_indices.clear()
 	if _fill_empty_seats_with_bots:
-		for player_index in range(members.size(), PLAYER_COUNT):
-			_local_bot_player_indices.append(player_index)
+		if _match_mode == SteamBridge.MATCH_MODE_TEAMS_2V2:
+			for player_index in PLAYER_COUNT:
+				if not _preferred_player_index_by_steam_id.values().has(player_index):
+					_local_bot_player_indices.append(player_index)
+		else:
+			for player_index in range(members.size(), PLAYER_COUNT):
+				_local_bot_player_indices.append(player_index)
 	_transport_active = true
 	if local_steam_id == host_steam_id:
 		_start_as_host()
@@ -134,8 +153,42 @@ func start_from_current_lobby(
 		_rebuild_host_lobby_seats()
 		_set_player_auto_turn_enabled(HOST_PLAYER_INDEX, _local_auto_turn_enabled, false)
 	else:
+		client_requested_player_index = int(_preferred_player_index_by_steam_id.get(local_steam_id, FIRST_CLIENT_PLAYER_INDEX))
 		_start_as_client()
 	return _transport_active
+
+
+func _build_team_seat_preferences(members: Array) -> bool:
+	var available_seats := {
+		0: [HOST_PLAYER_INDEX, 2],
+		1: [1, 3],
+	}
+	var host_member_found := false
+	for member_variant in members:
+		if not (member_variant is Dictionary):
+			return false
+		var member: Dictionary = member_variant
+		var steam_id := int(member.get("steam_id", 0))
+		var team_id := int(member.get("team_id", -1))
+		if steam_id <= 0 or team_id < 0 or team_id > 1:
+			return false
+		if steam_id == host_steam_id:
+			if team_id != 0:
+				return false
+			_preferred_player_index_by_steam_id[steam_id] = HOST_PLAYER_INDEX
+			(available_seats[0] as Array).erase(HOST_PLAYER_INDEX)
+			host_member_found = true
+	for member_variant in members:
+		var member: Dictionary = member_variant
+		var steam_id := int(member.get("steam_id", 0))
+		if steam_id == host_steam_id:
+			continue
+		var team_id := int(member.get("team_id", -1))
+		var team_seats: Array = available_seats[team_id]
+		if team_seats.is_empty():
+			return false
+		_preferred_player_index_by_steam_id[steam_id] = int(team_seats.pop_front())
+	return host_member_found
 
 
 func stop() -> void:
@@ -170,6 +223,9 @@ func stop() -> void:
 	_local_auto_turn_enabled = false
 	_local_avatar_index = 0
 	_local_avatar_data = ""
+	_match_mode = SteamBridge.MATCH_MODE_CLASSIC
+	_team_names = ["Команда 1", "Команда 2"]
+	_preferred_player_index_by_steam_id.clear()
 	steam_bridge = null
 	super.stop()
 
@@ -392,6 +448,10 @@ func _assign_client_player_index(sender_peer_id: int, requested_player_index: in
 		_reconnecting_player_indices.erase(assigned_player_index)
 		return assigned_player_index
 
+	if _match_mode == SteamBridge.MATCH_MODE_TEAMS_2V2:
+		requested_player_index = int(_preferred_player_index_by_steam_id.get(sender_steam_id, -1))
+		if requested_player_index < FIRST_CLIENT_PLAYER_INDEX or _connected_client_peers_by_player.has(requested_player_index):
+			return -1
 	var assigned_player_index := super._assign_client_player_index(sender_peer_id, requested_player_index)
 	if assigned_player_index >= FIRST_CLIENT_PLAYER_INDEX:
 		_player_index_by_steam_id[sender_steam_id] = assigned_player_index
@@ -414,6 +474,9 @@ func _append_reconnect_state(snapshot: Dictionary) -> Dictionary:
 		return snapshot
 	snapshot["reconnecting_player_indices"] = _get_reconnecting_player_indices()
 	snapshot["temporary_bot_player_indices"] = _get_temporary_bot_player_indices()
+	snapshot["match_mode"] = _match_mode
+	snapshot["team_names"] = _team_names.duplicate()
+	snapshot["team_by_player"] = [0, 1, 0, 1] if _match_mode == SteamBridge.MATCH_MODE_TEAMS_2V2 else []
 	var recipient_player_index := int(snapshot.get("recipient_player_index", -1))
 	if is_host():
 		snapshot["recipient_auto_turn_enabled"] = _human_auto_turn_enabled_by_player.has(recipient_player_index)
@@ -601,7 +664,8 @@ func _start_as_client() -> void:
 		return
 
 	mode = Mode.CLIENT
-	client_requested_player_index = FIRST_CLIENT_PLAYER_INDEX
+	if client_requested_player_index < FIRST_CLIENT_PLAYER_INDEX or client_requested_player_index >= PLAYER_COUNT:
+		client_requested_player_index = FIRST_CLIENT_PLAYER_INDEX
 	_join_request_sent = false
 	_join_request_retry_seconds = 1.0
 	_set_status("Подключаемся к Steam P2P-хосту комнаты через SteamMultiplayerPeer…")
@@ -818,6 +882,8 @@ func _rebuild_host_lobby_seats() -> void:
 			"assigned": is_assigned,
 			"confirmed": is_confirmed,
 			"reconnecting": is_reconnecting,
+			"team_id": player_index % 2 if _match_mode == SteamBridge.MATCH_MODE_TEAMS_2V2 else -1,
+			"team_name": str(_team_names[player_index % 2]) if _match_mode == SteamBridge.MATCH_MODE_TEAMS_2V2 else "",
 			"avatar_index": int(_avatar_index_by_player.get(player_index, default_bot_avatar_index)),
 			"avatar_data": str(_avatar_data_by_player.get(player_index, ""))
 		})

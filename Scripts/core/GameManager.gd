@@ -70,7 +70,7 @@ const CHAT_VISIBLE_MESSAGE_LIMIT := 40
 const BUILT_IN_AVATAR_COUNT := 4
 const CUSTOM_AVATAR_INDEX := BUILT_IN_AVATAR_COUNT
 const HUMAN_AVATAR_COUNT := BUILT_IN_AVATAR_COUNT + 1
-const GAME_VERSION := "0.4.1"
+const GAME_VERSION := "0.4.2"
 # Внутренний просмотр отчётов доступен только при запуске из редактора и может
 # быть дополнительно отключён этим переключателем. Создание отчёта игроком не зависит от него.
 const PERSISTENT_SETTINGS_PATH := "user://project_joker_settings.cfg"
@@ -334,6 +334,10 @@ var steam_lobby_details_label: Label
 var steam_lobby_members_label: Label
 var steam_lobby_bot_difficulty_selector: OptionButton
 var steam_lobby_history_mode_selector: OptionButton
+var steam_lobby_team_selector: OptionButton
+var steam_lobby_team_name_edit: LineEdit
+var steam_lobby_team_name_button: Button
+var steam_lobby_kick_controls: VBoxContainer
 var steam_p2p_status_label: Label
 var steam_reconnect_controls: VBoxContainer
 var steam_lobby_create_button: Button
@@ -347,6 +351,8 @@ var steam_lobby_leave_button: Button
 var online_hub_tab: OnlineHubTab = OnlineHubTab.OPEN_TABLES
 var online_hub_is_open := false
 var online_lobby_visibility_selector: OptionButton
+var online_match_mode_selector: OptionButton
+var online_team_one_name_edit: LineEdit
 var active_online_lobby_id := 0
 var active_online_host_steam_id := 0
 var active_online_match_started := false
@@ -1257,9 +1263,11 @@ func _add_online_lobby_button(summary: Dictionary, is_friend_lobby: bool) -> voi
 		host_name = "Steam-игрок"
 	var friend_prefix := "%s · " % str(summary.get("friend_name", "Друг")) if is_friend_lobby else ""
 	var state_text := "идёт партия" if match_state == SteamBridge.LOBBY_STATE_PLAYING else "ожидает игроков"
-	var label_text := "%s%s · %d/%d · %s · %s" % [
+	var mode_text := "2×2" if str(summary.get("match_mode", SteamBridge.MATCH_MODE_CLASSIC)) == SteamBridge.MATCH_MODE_TEAMS_2V2 else "классика"
+	var label_text := "%s%s · %s · %d/%d · %s · %s" % [
 		friend_prefix,
 		host_name,
+		mode_text,
 		int(summary.get("member_count", 0)),
 		int(summary.get("member_limit", 4)),
 		state_text,
@@ -1298,6 +1306,30 @@ func _build_online_create_room_tab() -> void:
 	_add_menu_label(
 		"Открытая комната появится в общем списке. Комнату для друзей можно найти через друга или Steam. "
 		+ "Комната по приглашению нигде не показывается. Пароль добавим позже, если после тестов он действительно понадобится.",
+		14,
+		Color(0.72, 0.85, 0.76, 1.0)
+	)
+	_add_menu_spacer(10.0)
+	_add_menu_label("Режим партии", 17)
+	online_match_mode_selector = OptionButton.new()
+	online_match_mode_selector.name = "OnlineMatchModeSelector"
+	online_match_mode_selector.add_item("Классическая · каждый за себя", 0)
+	online_match_mode_selector.add_item("Командная 2×2 · партнёры напротив", 1)
+	online_match_mode_selector.select(0)
+	online_match_mode_selector.custom_minimum_size = Vector2(0.0, 44.0)
+	online_match_mode_selector.add_theme_font_size_override("font_size", 17)
+	menu_content.add_child(online_match_mode_selector)
+
+	online_team_one_name_edit = LineEdit.new()
+	online_team_one_name_edit.name = "OnlineTeamOneNameEdit"
+	online_team_one_name_edit.placeholder_text = "Название команды хоста"
+	online_team_one_name_edit.text = "Команда 1"
+	online_team_one_name_edit.max_length = 24
+	online_team_one_name_edit.custom_minimum_size = Vector2(0.0, 42.0)
+	online_team_one_name_edit.add_theme_font_size_override("font_size", 16)
+	menu_content.add_child(online_team_one_name_edit)
+	_add_menu_label(
+		"В режиме 2×2 места 1 и 3 играют вместе против мест 2 и 4. Название второй команды задаст первый игрок, который её выберет.",
 		14,
 		Color(0.72, 0.85, 0.76, 1.0)
 	)
@@ -1358,8 +1390,10 @@ func _get_online_lobby_summary_text(summary: Dictionary) -> String:
 	var host_name := str(summary.get("host_name", "")).strip_edges()
 	if host_name.is_empty():
 		host_name = "неизвестен"
-	return "Комната %d · хост: %s · %s · участников %d/%d" % [
+	var mode_text := "2×2" if str(summary.get("match_mode", SteamBridge.MATCH_MODE_CLASSIC)) == SteamBridge.MATCH_MODE_TEAMS_2V2 else "классика"
+	return "Комната %d · %s · хост: %s · %s · участников %d/%d" % [
 		lobby_id,
+		mode_text,
 		host_name,
 		state_text,
 		int(summary.get("member_count", 0)),
@@ -1384,7 +1418,11 @@ func _on_create_online_lobby_pressed() -> void:
 	var lobby_state: Dictionary = steam_bridge.get_lobby_state()
 	if not bool(lobby_state.get("initialized", false)):
 		steam_bridge.initialize_for_diagnostics()
-	steam_bridge.create_lobby(selected_visibility)
+	var match_mode := SteamBridge.MATCH_MODE_CLASSIC
+	if is_instance_valid(online_match_mode_selector) and online_match_mode_selector.get_selected_id() == 1:
+		match_mode = SteamBridge.MATCH_MODE_TEAMS_2V2
+	var team_one_name := online_team_one_name_edit.text if is_instance_valid(online_team_one_name_edit) else "Команда 1"
+	steam_bridge.create_lobby(selected_visibility, match_mode, team_one_name)
 	_show_steam_lobby_menu()
 
 
@@ -1498,7 +1536,9 @@ func _show_steam_lobby_menu() -> void:
 	_clear_children(menu_content)
 	var initial_lobby_state: Dictionary = steam_bridge.get_lobby_state()
 	var initial_visibility := str(initial_lobby_state.get("visibility_label", "только для друзей"))
-	_add_menu_title("Steam-комната", "Четыре места · %s · свободные места можно заполнить ботами" % initial_visibility)
+	var initial_match_mode := str(initial_lobby_state.get("match_mode", SteamBridge.MATCH_MODE_CLASSIC))
+	var initial_mode_label := "Командная 2×2" if initial_match_mode == SteamBridge.MATCH_MODE_TEAMS_2V2 else "Классическая"
+	_add_menu_title("Steam-комната", "%s · четыре места · %s · свободные места можно заполнить ботами" % [initial_mode_label, initial_visibility])
 	_add_menu_spacer(12.0)
 
 	steam_lobby_status_label = Label.new()
@@ -1521,6 +1561,39 @@ func _show_steam_lobby_menu() -> void:
 	steam_lobby_members_label.add_theme_font_size_override("font_size", 15)
 	steam_lobby_members_label.add_theme_color_override("font_color", Color(0.86, 0.9, 0.82, 1.0))
 	menu_content.add_child(steam_lobby_members_label)
+
+	if initial_match_mode == SteamBridge.MATCH_MODE_TEAMS_2V2:
+		var initial_team_names: Array = initial_lobby_state.get("team_names", ["Команда 1", "Команда 2"])
+		_add_menu_label("Выбери команду", 16)
+		steam_lobby_team_selector = OptionButton.new()
+		steam_lobby_team_selector.name = "SteamLobbyTeamSelector"
+		steam_lobby_team_selector.add_item(str(initial_team_names[0]), 0)
+		steam_lobby_team_selector.add_item(str(initial_team_names[1]), 1)
+		var initial_team_id := int(initial_lobby_state.get("local_team_id", -1))
+		if initial_team_id >= 0:
+			steam_lobby_team_selector.select(initial_team_id)
+		steam_lobby_team_selector.custom_minimum_size = Vector2(0.0, 42.0)
+		steam_lobby_team_selector.add_theme_font_size_override("font_size", 16)
+		steam_lobby_team_selector.item_selected.connect(_on_steam_lobby_team_selected)
+		menu_content.add_child(steam_lobby_team_selector)
+
+		var team_name_row := HBoxContainer.new()
+		team_name_row.add_theme_constant_override("separation", 8)
+		menu_content.add_child(team_name_row)
+		steam_lobby_team_name_edit = LineEdit.new()
+		steam_lobby_team_name_edit.placeholder_text = "Название вашей команды"
+		steam_lobby_team_name_edit.max_length = 24
+		steam_lobby_team_name_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		steam_lobby_team_name_edit.custom_minimum_size = Vector2(0.0, 42.0)
+		team_name_row.add_child(steam_lobby_team_name_edit)
+		steam_lobby_team_name_button = _create_menu_button("Сохранить название", _on_save_steam_lobby_team_name_pressed, true)
+		steam_lobby_team_name_button.custom_minimum_size = Vector2(190.0, 42.0)
+		team_name_row.add_child(steam_lobby_team_name_button)
+		_add_menu_label("Хост называет команду мест 1+3. Первый игрок команды мест 2+4 становится её капитаном и задаёт второе название.", 13, Color(0.72, 0.85, 0.76, 1.0))
+
+	steam_lobby_kick_controls = VBoxContainer.new()
+	steam_lobby_kick_controls.add_theme_constant_override("separation", 6)
+	menu_content.add_child(steam_lobby_kick_controls)
 
 	steam_p2p_status_label = Label.new()
 	steam_p2p_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -1633,6 +1706,23 @@ func _on_toggle_steam_lobby_ready_pressed() -> void:
 	_refresh_steam_lobby_status()
 
 
+func _on_steam_lobby_team_selected(selected_index: int) -> void:
+	steam_bridge.set_local_lobby_team(selected_index)
+	_refresh_steam_lobby_status()
+
+
+func _on_save_steam_lobby_team_name_pressed() -> void:
+	if not is_instance_valid(steam_lobby_team_name_edit):
+		return
+	steam_bridge.set_local_lobby_team_name(steam_lobby_team_name_edit.text)
+	_refresh_steam_lobby_status()
+
+
+func _on_kick_steam_lobby_member_pressed(member_steam_id: int) -> void:
+	steam_bridge.kick_lobby_member(member_steam_id)
+	_refresh_steam_lobby_status()
+
+
 func _on_prepare_steam_p2p_pressed() -> void:
 	_reset_loopback_network_joker_selection()
 	_stop_all_soundpad_playback()
@@ -1714,6 +1804,10 @@ func _refresh_steam_lobby_status() -> void:
 	var lobby_state: Dictionary = steam_bridge.get_lobby_state()
 	var initialized := bool(lobby_state.get("initialized", false))
 	var lobby_id := int(lobby_state.get("lobby_id", 0))
+	if lobby_id <= 0 and steam_p2p_match != null and steam_p2p_match.is_running():
+		steam_p2p_match.stop()
+		steam_p2p_table_presentation = false
+		steam_p2p_main_table_presentation = false
 	var member_count := int(lobby_state.get("member_count", 0))
 	var member_limit := int(lobby_state.get("member_limit", 4))
 	var lobby_status := str(lobby_state.get("status", "Статус Steam-комнаты не получен."))
@@ -1730,14 +1824,23 @@ func _refresh_steam_lobby_status() -> void:
 	var members: Array = lobby_state.get("members", [])
 	var visibility_label := str(lobby_state.get("visibility_label", "только для друзей"))
 	var lobby_match_state := str(lobby_state.get("match_state", SteamBridge.LOBBY_STATE_WAITING))
+	var lobby_match_mode := str(lobby_state.get("match_mode", SteamBridge.MATCH_MODE_CLASSIC))
+	var is_team_match := lobby_match_mode == SteamBridge.MATCH_MODE_TEAMS_2V2
+	var team_names: Array = lobby_state.get("team_names", ["Команда 1", "Команда 2"])
+	var team_counts: Array = lobby_state.get("team_counts", [0, 0])
+	var local_team_id := int(lobby_state.get("local_team_id", -1))
+	if is_team_match and not is_instance_valid(steam_lobby_team_selector):
+		call_deferred("_show_steam_lobby_menu")
+		return
 	bot_difficulty = lobby_bot_difficulty
 	match_history_mode = lobby_history_mode
 	var network_bot_difficulty_name: String = ["лёгкий", "обычный", "сложный"][lobby_bot_difficulty]
 
 	steam_lobby_status_label.text = lobby_status
 	if lobby_id > 0:
-		steam_lobby_details_label.text = "Комната: %d\nУчастники: %d из %d\nИстория: %s\nДоступ: %s · состояние: %s · протокол %d" % [
+		steam_lobby_details_label.text = "Комната: %d\nРежим: %s\nУчастники: %d из %d\nИстория: %s\nДоступ: %s · состояние: %s · протокол %d" % [
 			lobby_id,
+			"2×2 · %s против %s" % [team_names[0], team_names[1]] if is_team_match else "классическая игра",
 			member_count,
 			member_limit,
 			_get_history_mode_label(lobby_history_mode),
@@ -1754,9 +1857,19 @@ func _refresh_steam_lobby_status() -> void:
 		var member_name := str(member.get("name", "Игрок"))
 		var member_role := " · хост" if bool(member.get("is_owner", false)) else ""
 		var member_ready := "✓ готов" if bool(member.get("ready", false)) else "… ждём"
-		member_lines.append("%s%s — %s" % [member_name, member_role, member_ready])
-	for bot_index in bot_count:
-		member_lines.append("Бот %d — ✓ готов · %s" % [bot_index + 1, network_bot_difficulty_name])
+		var member_team_id := int(member.get("team_id", -1))
+		var member_team := " · %s" % team_names[member_team_id] if is_team_match and member_team_id >= 0 and member_team_id < 2 else " · команда не выбрана" if is_team_match else ""
+		member_lines.append("%s%s%s — %s" % [member_name, member_role, member_team, member_ready])
+	if is_team_match:
+		var bot_number := 1
+		for team_id in 2:
+			var missing_team_seats := maxi(0, 2 - int(team_counts[team_id])) if fill_empty_seats_with_bots else 0
+			for _missing_seat in missing_team_seats:
+				member_lines.append("Бот %d · %s — ✓ готов · %s" % [bot_number, team_names[team_id], network_bot_difficulty_name])
+				bot_number += 1
+	else:
+		for bot_index in bot_count:
+			member_lines.append("Бот %d — ✓ готов · %s" % [bot_index + 1, network_bot_difficulty_name])
 	for empty_index in maxi(0, member_limit - member_count - bot_count):
 		member_lines.append("Свободное место %d" % (member_count + bot_count + empty_index + 1))
 	steam_lobby_members_label.text = "Участники комнаты\n%s" % "\n".join(member_lines) if not member_lines.is_empty() else ""
@@ -1766,8 +1879,21 @@ func _refresh_steam_lobby_status() -> void:
 	if is_instance_valid(steam_lobby_invite_button):
 		steam_lobby_invite_button.disabled = lobby_id <= 0
 	if is_instance_valid(steam_lobby_ready_button):
-		steam_lobby_ready_button.disabled = lobby_id <= 0
+		steam_lobby_ready_button.disabled = lobby_id <= 0 or (is_team_match and local_team_id < 0)
 		steam_lobby_ready_button.text = "Готов ✓ (отменить)" if local_ready else "Отметиться готовым"
+	if is_instance_valid(steam_lobby_team_selector) and is_team_match:
+		steam_lobby_team_selector.set_item_text(0, "%s · мест %d/2" % [team_names[0], int(team_counts[0])])
+		steam_lobby_team_selector.set_item_text(1, "%s · мест %d/2" % [team_names[1], int(team_counts[1])])
+		if local_team_id >= 0:
+			steam_lobby_team_selector.select(local_team_id)
+		steam_lobby_team_selector.disabled = local_is_host or lobby_match_state != SteamBridge.LOBBY_STATE_WAITING or (steam_p2p_match != null and steam_p2p_match.is_running())
+	if is_instance_valid(steam_lobby_team_name_edit) and is_team_match:
+		var can_name_team := bool(lobby_state.get("local_is_team_captain", false)) and local_team_id >= 0
+		if can_name_team and not steam_lobby_team_name_edit.has_focus():
+			steam_lobby_team_name_edit.text = str(team_names[local_team_id])
+		steam_lobby_team_name_edit.editable = can_name_team and lobby_match_state == SteamBridge.LOBBY_STATE_WAITING
+	if is_instance_valid(steam_lobby_team_name_button):
+		steam_lobby_team_name_button.disabled = not bool(lobby_state.get("local_is_team_captain", false)) or lobby_match_state != SteamBridge.LOBBY_STATE_WAITING
 	if is_instance_valid(steam_lobby_bot_difficulty_selector):
 		steam_lobby_bot_difficulty_selector.selected = lobby_bot_difficulty
 		steam_lobby_bot_difficulty_selector.disabled = lobby_id <= 0 or not local_is_host
@@ -1776,11 +1902,12 @@ func _refresh_steam_lobby_status() -> void:
 		steam_lobby_history_mode_selector.disabled = lobby_id <= 0 or not local_is_host or (steam_p2p_match != null and steam_p2p_match.is_running())
 	var all_members_ready := member_count > 0
 	for member_variant in members:
-		if not (member_variant is Dictionary) or not bool(member_variant.get("ready", false)):
+		if not (member_variant is Dictionary) or not bool(member_variant.get("ready", false)) or (is_team_match and int(member_variant.get("team_id", -1)) < 0):
 			all_members_ready = false
 			break
 	var seats_are_filled := member_count == member_limit or fill_empty_seats_with_bots
-	var can_prepare_p2p: bool = lobby_id > 0 and local_ready and all_members_ready and seats_are_filled and steam_bridge.is_multiplayer_peer_transport_available()
+	var team_layout_valid := not is_team_match or (int(team_counts[0]) <= 2 and int(team_counts[1]) <= 2 and (fill_empty_seats_with_bots or (int(team_counts[0]) == 2 and int(team_counts[1]) == 2)))
+	var can_prepare_p2p: bool = lobby_id > 0 and local_ready and all_members_ready and seats_are_filled and team_layout_valid and steam_bridge.is_multiplayer_peer_transport_available()
 	if is_instance_valid(steam_p2p_prepare_button):
 		steam_p2p_prepare_button.disabled = not can_prepare_p2p or (steam_p2p_match != null and steam_p2p_match.is_running())
 	if is_instance_valid(steam_p2p_prepare_with_bots_button):
@@ -1792,6 +1919,18 @@ func _refresh_steam_lobby_status() -> void:
 		steam_p2p_open_table_button.disabled = steam_p2p_match == null or not steam_p2p_match.is_running()
 	if is_instance_valid(steam_lobby_leave_button):
 		steam_lobby_leave_button.disabled = lobby_id <= 0
+	if is_instance_valid(steam_lobby_kick_controls):
+		_clear_children(steam_lobby_kick_controls)
+		if local_is_host and lobby_match_state == SteamBridge.LOBBY_STATE_WAITING:
+			for member_variant in members:
+				var member: Dictionary = member_variant
+				var member_steam_id := int(member.get("steam_id", 0))
+				if member_steam_id <= 0 or member_steam_id == steam_bridge.get_local_steam_id():
+					continue
+				steam_lobby_kick_controls.add_child(_create_menu_button(
+					"Исключить %s из комнаты" % str(member.get("name", "Игрок")),
+					_on_kick_steam_lobby_member_pressed.bind(member_steam_id)
+				))
 	_refresh_steam_p2p_status()
 
 
@@ -2338,6 +2477,36 @@ func _get_network_players_by_index(snapshot: Dictionary) -> Dictionary:
 	return players_by_index
 
 
+func _is_network_team_match(snapshot: Dictionary) -> bool:
+	return str(snapshot.get("match_mode", SteamBridge.MATCH_MODE_CLASSIC)) == SteamBridge.MATCH_MODE_TEAMS_2V2
+
+
+func _get_network_player_team_id(snapshot: Dictionary, player_index: int) -> int:
+	var team_by_player: Array = snapshot.get("team_by_player", [])
+	if player_index >= 0 and player_index < team_by_player.size():
+		return clampi(int(team_by_player[player_index]), 0, 1)
+	return posmod(player_index, 2)
+
+
+func _get_network_team_name(snapshot: Dictionary, team_id: int) -> String:
+	var team_names: Array = snapshot.get("team_names", ["Команда 1", "Команда 2"])
+	if team_id >= 0 and team_id < team_names.size():
+		return str(team_names[team_id])
+	return "Команда %d" % (team_id + 1)
+
+
+func _get_network_team_score(snapshot: Dictionary, team_id: int) -> int:
+	var team_score := 0
+	for player_data_variant in snapshot.get("players", []):
+		if not (player_data_variant is Dictionary):
+			continue
+		var player_data: Dictionary = player_data_variant
+		var player_index := int(player_data.get("player_index", -1))
+		if _get_network_player_team_id(snapshot, player_index) == team_id:
+			team_score += int(player_data.get("total_score", 0))
+	return team_score
+
+
 func _is_network_player_reconnecting(snapshot: Dictionary, player_index: int) -> bool:
 	var reconnecting_data: Variant = snapshot.get("reconnecting_player_indices", [])
 	if not (reconnecting_data is Array):
@@ -2468,10 +2637,16 @@ func _refresh_network_main_players(snapshot: Dictionary, viewer_index: int, acti
 				uses_bids
 			)
 		var total_score: int = int(player_data.get("total_score", 0))
+		var score_prefix := ""
+		if _is_network_team_match(snapshot):
+			var team_id := _get_network_player_team_id(snapshot, player_index)
+			total_score = _get_network_team_score(snapshot, team_id)
+			score_prefix = _get_network_team_name(snapshot, team_id)
+		player_score_labels[relative_slot].tooltip_text = "%s: %d" % [tr("TEAM_TOTAL_SCORE"), total_score] if not score_prefix.is_empty() else ""
 		if round_finished and not result_is_presented:
-			_hold_player_score_until_round_result(relative_slot, total_score)
+			_hold_player_score_until_round_result(relative_slot, total_score, score_prefix)
 		else:
-			_set_player_score_display(relative_slot, total_score, result_is_presented)
+			_set_player_score_display(relative_slot, total_score, result_is_presented, score_prefix)
 
 		var avatar_badge: PanelContainer = avatar_badges[relative_slot]
 		_place_player_avatar_badge(avatar_badge, relative_slot)
@@ -3385,6 +3560,24 @@ func _refresh_network_main_score_sheet(snapshot: Dictionary, round_data: Diction
 		)
 	score_sheet_grid.add_child(total_row)
 
+	if _is_network_team_match(snapshot):
+		var team_row := _create_score_sheet_row()
+		_add_score_sheet_cell(team_row, tr("TEAM_SCORE_SHEET_ROW"), false, false, false, SCORE_SHEET_NUMBER_COLUMN_WIDTH, true)
+		_add_score_sheet_cell(team_row, "", false, false, false, SCORE_SHEET_MODE_COLUMN_WIDTH, true)
+		_add_score_sheet_cell(team_row, "", false, false, false, SCORE_SHEET_CARDS_COLUMN_WIDTH, true)
+		_add_score_sheet_cell(team_row, "", false, false, false, SCORE_SHEET_TRUMP_COLUMN_WIDTH, true)
+		for player_index in range(PLAYER_NAMES.size()):
+			var team_id := _get_network_player_team_id(snapshot, player_index)
+			_add_score_sheet_player_group(
+				team_row,
+				player_index,
+				PackedStringArray([_get_network_team_name(snapshot, team_id), "", tr("SCORE_SHEET_SCORE_TOTAL") % _get_network_team_score(snapshot, team_id)]),
+				false,
+				false,
+				true
+			)
+		score_sheet_grid.add_child(team_row)
+
 
 func _on_close_loopback_network_test_pressed() -> void:
 	_reset_loopback_network_joker_selection()
@@ -3636,6 +3829,7 @@ func _create_network_table_player_widgets() -> void:
 
 		var score_label := Label.new()
 		score_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		score_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 		score_label.add_theme_font_size_override("font_size", 18)
 		content.add_child(score_label)
 		network_table_player_score_labels.append(score_label)
@@ -4380,6 +4574,13 @@ func _get_network_table_result_text(snapshot: Dictionary, include_completion_hea
 			total_score,
 			uses_bids
 		))
+	if _is_network_team_match(snapshot):
+		for team_id in 2:
+			result_lines.append("%s — %s: %d" % [
+				_get_network_team_name(snapshot, team_id),
+				tr("TEAM_TOTAL_SCORE"),
+				_get_network_team_score(snapshot, team_id),
+			])
 	return "\n".join(result_lines)
 
 
@@ -4409,6 +4610,13 @@ func _get_network_table_result_bbcode(snapshot: Dictionary) -> String:
 			total_score,
 			uses_bids
 		))
+	if _is_network_team_match(snapshot):
+		for team_id in 2:
+			result_lines.append("[center][font_size=19][b][color=#ffd86a]%s[/color][/b] · %s: [b][color=#ffffff]%d[/color][/b][/font_size][/center]" % [
+				_get_network_team_name(snapshot, team_id).replace("[", "(").replace("]", ")"),
+				tr("TEAM_TOTAL_SCORE"),
+				_get_network_team_score(snapshot, team_id),
+			])
 	return "\n".join(result_lines)
 
 
@@ -4499,6 +4707,30 @@ func _get_network_final_standings(snapshot: Dictionary) -> Array[Dictionary]:
 			"place": 0,
 			"shares_place": false
 		})
+
+	if _is_network_team_match(snapshot):
+		var team_standings: Array[Dictionary] = []
+		for team_id in 2:
+			var team_standing := {
+				"player_id": team_id,
+				"name": _get_network_team_name(snapshot, team_id),
+				"score": 0,
+				"tricks_taken": 0,
+				"exact_orders": 0,
+				"jokers_dealt": 0,
+				"place": 0,
+				"shares_place": false,
+			}
+			for player_standing in standings:
+				var player_index := int(player_standing.get("player_id", -1))
+				if _get_network_player_team_id(snapshot, player_index) != team_id:
+					continue
+				team_standing["score"] += int(player_standing.get("score", 0))
+				team_standing["tricks_taken"] += int(player_standing.get("tricks_taken", 0))
+				team_standing["exact_orders"] += int(player_standing.get("exact_orders", 0))
+				team_standing["jokers_dealt"] += int(player_standing.get("jokers_dealt", 0))
+			team_standings.append(team_standing)
+		standings = team_standings
 
 	standings.sort_custom(func(left: Dictionary, right: Dictionary) -> bool:
 		if int(left.get("score", 0)) != int(right.get("score", 0)):
@@ -9198,7 +9430,7 @@ func _get_player_stats_bbcode(
 	) % [label_font_size, tr("PLAYER_TAKEN"), value_font_size, tricks_taken]
 
 
-func _set_player_score_display(player_slot: int, target_score: int, animate_change: bool) -> void:
+func _set_player_score_display(player_slot: int, target_score: int, animate_change: bool, score_prefix: String = "") -> void:
 	if player_slot < 0 or player_slot >= player_score_labels.size():
 		return
 	while displayed_player_scores.size() <= player_slot:
@@ -9209,12 +9441,12 @@ func _set_player_score_display(player_slot: int, target_score: int, animate_chan
 	var active_tween: Tween = player_score_tweens.get(player_slot) as Tween
 	if previous_score == UNSET_SCORE_DISPLAY:
 		displayed_player_scores[player_slot] = target_score
-		_apply_static_player_score_style(score_label, target_score)
+		_apply_static_player_score_style(score_label, target_score, score_prefix)
 		return
 	if previous_score == target_score:
 		if is_instance_valid(active_tween) and active_tween.is_running():
 			return
-		_apply_static_player_score_style(score_label, target_score)
+		_apply_static_player_score_style(score_label, target_score, score_prefix)
 		return
 
 	if is_instance_valid(active_tween):
@@ -9222,7 +9454,7 @@ func _set_player_score_display(player_slot: int, target_score: int, animate_chan
 	player_score_tweens.erase(player_slot)
 	if not animate_change:
 		displayed_player_scores[player_slot] = target_score
-		_apply_static_player_score_style(score_label, target_score)
+		_apply_static_player_score_style(score_label, target_score, score_prefix)
 		return
 
 	var score_delta := target_score - previous_score
@@ -9231,15 +9463,15 @@ func _set_player_score_display(player_slot: int, target_score: int, animate_chan
 	var tween := create_tween()
 	player_score_tweens[player_slot] = tween
 	tween.tween_method(
-		_apply_player_score_tween_value.bind(player_slot, score_delta),
+		_apply_player_score_tween_value.bind(player_slot, score_delta, score_prefix),
 		float(previous_score),
 		float(target_score),
 		duration
 	).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
-	tween.tween_callback(_finish_player_score_tween.bind(player_slot, target_score))
+	tween.tween_callback(_finish_player_score_tween.bind(player_slot, target_score, score_prefix))
 
 
-func _hold_player_score_until_round_result(player_slot: int, fallback_score: int) -> void:
+func _hold_player_score_until_round_result(player_slot: int, fallback_score: int, score_prefix: String = "") -> void:
 	if player_slot < 0 or player_slot >= player_score_labels.size():
 		return
 	while displayed_player_scores.size() <= player_slot:
@@ -9248,31 +9480,35 @@ func _hold_player_score_until_round_result(player_slot: int, fallback_score: int
 		# При подключении уже после завершения раздачи старое значение неизвестно:
 		# показываем актуальный счёт без искусственного отсчёта от нуля.
 		displayed_player_scores[player_slot] = fallback_score
-		_apply_static_player_score_style(player_score_labels[player_slot], fallback_score)
+		_apply_static_player_score_style(player_score_labels[player_slot], fallback_score, score_prefix)
 
 
-func _apply_player_score_tween_value(value: float, player_slot: int, score_delta: int) -> void:
+func _apply_player_score_tween_value(value: float, player_slot: int, score_delta: int, score_prefix: String = "") -> void:
 	if player_slot < 0 or player_slot >= player_score_labels.size():
 		return
 	var score_label: Label = player_score_labels[player_slot]
-	score_label.text = tr("PLAYER_SCORE_CHANGE") % [roundi(value), _format_score(score_delta)]
-	score_label.add_theme_font_size_override("font_size", 21)
+	score_label.text = (
+		"%s · %d (%s)" % [score_prefix, roundi(value), _format_score(score_delta)]
+		if not score_prefix.is_empty()
+		else tr("PLAYER_SCORE_CHANGE") % [roundi(value), _format_score(score_delta)]
+	)
+	score_label.add_theme_font_size_override("font_size", 16 if not score_prefix.is_empty() else 21)
 	score_label.add_theme_color_override(
 		"font_color",
 		Color(0.38, 0.94, 0.55, 1.0) if score_delta > 0 else Color(1.0, 0.36, 0.31, 1.0)
 	)
 
 
-func _finish_player_score_tween(player_slot: int, target_score: int) -> void:
+func _finish_player_score_tween(player_slot: int, target_score: int, score_prefix: String = "") -> void:
 	player_score_tweens.erase(player_slot)
 	if player_slot < 0 or player_slot >= player_score_labels.size():
 		return
-	_apply_static_player_score_style(player_score_labels[player_slot], target_score)
+	_apply_static_player_score_style(player_score_labels[player_slot], target_score, score_prefix)
 
 
-func _apply_static_player_score_style(score_label: Label, score: int) -> void:
-	score_label.text = tr("PLAYER_SCORE") % score
-	score_label.add_theme_font_size_override("font_size", 19)
+func _apply_static_player_score_style(score_label: Label, score: int, score_prefix: String = "") -> void:
+	score_label.text = "%s · %d" % [score_prefix, score] if not score_prefix.is_empty() else tr("PLAYER_SCORE") % score
+	score_label.add_theme_font_size_override("font_size", 16 if not score_prefix.is_empty() else 19)
 	score_label.add_theme_color_override(
 		"font_color",
 		Color(0.97, 0.84, 0.38, 1.0) if score >= 0 else Color(0.96, 0.42, 0.34, 1.0)
@@ -10998,6 +11234,7 @@ func _create_player_panels() -> void:
 		var score_label := Label.new()
 		score_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		score_label.add_theme_font_size_override("font_size", 19)
+		score_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 		score_label.add_theme_color_override("font_color", Color(0.97, 0.84, 0.38, 1.0))
 		content.add_child(score_label)
 		players_container.add_child(panel)

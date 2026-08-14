@@ -40,6 +40,8 @@ PLAYER_ORDER,"Bid","Замовлено","Zamówiono","Заказ","Тапсыр�
 PLAYER_TAKEN,"Taken","Взято","Wzięto","Узята","Алынды","Взято"
 PLAYER_SCORE,"Score: %d","Рахунок: %d","Wynik: %d","Рахунак: %d","Ұпай: %d","Счёт: %d"
 PLAYER_SCORE_CHANGE,"Score: %d   %s","Рахунок: %d   %s","Wynik: %d   %s","Рахунак: %d   %s","Ұпай: %d   %s","Счёт: %d   %s"
+TEAM_TOTAL_SCORE,"Team score","Командний рахунок","Wynik drużyny","Камандны рахунак","Команда ұпайы","Командный счёт"
+TEAM_SCORE_SHEET_ROW,"Teams","Команди","Drużyny","Каманды","Командалар","Команды"
 PLAYER_AVATAR_TOOLTIP,"Player avatar","Аватар гравця","Awatar gracza","Аватар гульца","Ойыншы аватары","Аватар игрока"
 PLAYER_IS_PLAYING_SOUND,"This player is playing a sound","Цей гравець зараз відтворює звук","Ten gracz odtwarza dźwięk","Гэты гулец зараз прайгравае гук","Бұл ойыншы қазір дыбыс ойнатып жатыр","Этот игрок сейчас воспроизводит звук"
 PLAYER_RECONNECTING_PREFIX,"Reconnecting · ","Перепідключення · ","Ponowne łączenie · ","Перападключэнне · ","Қайта қосылу · ","Переподключается · "
