@@ -58,6 +58,21 @@ func _run() -> void:
 	standings = main_scene._get_network_final_standings(snapshot)
 	assert(bool(standings[0].get("shares_place", false)) and bool(standings[1].get("shares_place", false)), "Equal team scores and exact bids must share first place.")
 
+	main_scene.local_match_mode = SteamBridge.MATCH_MODE_TEAMS_2V2
+	main_scene.game.players[0].total_score = 12
+	main_scene.game.players[1].total_score = 20
+	main_scene.game.players[2].total_score = -5
+	main_scene.game.players[3].total_score = 3
+	main_scene.game.players[0].exact_orders_completed = 4
+	main_scene.game.players[1].exact_orders_completed = 2
+	main_scene.game.players[2].exact_orders_completed = 3
+	main_scene.game.players[3].exact_orders_completed = 1
+	assert(main_scene._get_local_team_score(0) == 7, "Local seats 1 and 3 must share their summed score.")
+	assert(main_scene._get_local_team_score(1) == 23, "Local seats 2 and 4 must share their summed score.")
+	standings = main_scene._get_final_standings()
+	assert(standings.size() == 2, "A local 2v2 bot match must produce two team standings.")
+	assert(int(standings[0].get("player_id", -1)) == 1 and int(standings[0].get("score", 0)) == 23, "The higher-scoring local bot team must win.")
+
 	main_scene.queue_free()
 	team_match.free()
 	await process_frame
