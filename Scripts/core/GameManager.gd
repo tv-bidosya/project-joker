@@ -37,10 +37,13 @@ const SteamP2PMatch = preload("res://Scripts/core/SteamP2PMatch.gd")
 const CardArtworkResource = preload("res://Scripts/ui/CardArtwork.gd")
 const Dice3DViewResource = preload("res://Scripts/ui/Dice3DView.gd")
 const RoundResultsCountdownBorderResource = preload("res://Scripts/ui/RoundResultsCountdownBorder.gd")
+const MenuBackgroundEffectsResource = preload("res://Scripts/ui/MenuBackgroundEffects.gd")
+const MenuUiThemeResource = preload("res://Scripts/ui/MenuUiTheme.gd")
 const FLUENT_EMOJI_LICENSE = preload("res://Assets/Social/FluentEmoji3D/license_notice.gd")
 const JOKER_CELEBRATION_TEXTURE = preload("res://Assets/Effects/Joker/laughing_jester_middle_fingers.png")
-const MENU_BACKGROUND_DAY_TEXTURE_PATH := "res://Assets/UI/menu_card_salon_day_v3.png"
+const MENU_BACKGROUND_DAY_TEXTURE_PATH := "res://Assets/UI/menu_card_salon_day_v4.png"
 const MENU_BACKGROUND_NIGHT_TEXTURE_PATH := "res://Assets/UI/menu_card_salon_night_v2.png"
+const MENU_BACKGROUND_NIGHT_CITY_TEXTURE_PATH := "res://Assets/UI/menu_night_city_v3.png"
 const MENU_DAY_START_HOUR := 6
 const MENU_NIGHT_START_HOUR := 18
 const SCORE_SHEET_NUMBER_COLUMN_WIDTH := 46.0
@@ -103,6 +106,8 @@ const INTERFACE_LOCALE_NAMES := {
 }
 const TABLE_FELT_NAMES := ["Классическое зелёное", "Синее", "Бордовое"]
 const TABLE_SURROUND_NAMES := ["Тёмно-зелёный", "Тёмный орех", "Светлый дуб", "Тёмный клуб", "Тёплая ткань"]
+const MENU_BACKGROUND_THEME_NAMES := ["Автоматически по времени", "Постоянный день", "Постоянный вечер", "Ночной город"]
+const MENU_UI_THEME_NAMES := ["Классический изумруд", "Ночной город · синий"]
 const TABLE_SURROUND_SHADER_CODE := """
 shader_type canvas_item;
 render_mode unshaded;
@@ -276,6 +281,20 @@ enum TableSurroundTheme {
 	LIGHT_OAK,
 	DARK_CLUB,
 	WARM_FABRIC
+}
+
+
+enum MenuBackgroundTheme {
+	AUTO,
+	DAY,
+	EVENING,
+	NIGHT_CITY,
+}
+
+
+enum MenuUiThemeStyle {
+	CLASSIC_EMERALD,
+	NIGHT_CITY_BLUE,
 }
 
 
@@ -493,11 +512,16 @@ var undo_vote_approved_style: StyleBoxFlat
 var undo_vote_rejected_style: StyleBoxFlat
 var menu_overlay: Control
 var menu_background_art: TextureRect
+var menu_background_effects: Control
 var menu_backdrop: ColorRect
 var menu_panel: PanelContainer
+var menu_margin: MarginContainer
 var menu_scroll: ScrollContainer
+var menu_scroll_content_margin: MarginContainer
 var menu_content: VBoxContainer
-var menu_display_font: SystemFont
+var menu_heading_font: Font
+var menu_button_font: Font
+var menu_body_font: Font
 var card_deck_preview_container: HBoxContainer
 var table_theme_preview_surround: PanelContainer
 var table_theme_preview_felt: Panel
@@ -511,6 +535,11 @@ var bot_speed_index := 1
 var card_deck_style := CardArtworkResource.DEFAULT_DECK_STYLE
 var table_felt_theme: TableFeltTheme = TableFeltTheme.GREEN
 var table_surround_theme: TableSurroundTheme = TableSurroundTheme.DARK_GREEN
+var menu_background_theme: MenuBackgroundTheme = MenuBackgroundTheme.AUTO
+var menu_ui_theme: MenuUiThemeStyle = MenuUiThemeStyle.CLASSIC_EMERALD
+var menu_panel_half_width := 370.0
+var menu_panel_last_content_height := -1.0
+var menu_panel_last_viewport_height := -1.0
 var match_history_mode := NetworkHost.HistoryMode.FULL
 var local_match_mode := SteamBridge.MATCH_MODE_CLASSIC
 var bot_difficulty: BotDifficulty = BotDifficulty.NORMAL
@@ -1014,14 +1043,23 @@ func _create_flat_style(
 	return style
 
 
-func _apply_minimal_scrollbar_style(scroll_container: ScrollContainer) -> void:
+func _apply_minimal_scrollbar_style(scroll_container: ScrollContainer, use_menu_palette := false) -> void:
 	if not is_instance_valid(scroll_container):
 		return
-	var track := _create_flat_style(Color(0.003, 0.026, 0.019, 0.52), Color(0.18, 0.13, 0.055, 0.32), 1, 4, 0)
-	var track_focus := _create_flat_style(Color(0.004, 0.035, 0.025, 0.68), Color(0.34, 0.24, 0.08, 0.5), 1, 4, 0)
-	var grabber := _create_flat_style(Color(0.48, 0.34, 0.12, 0.82), Color(0.72, 0.52, 0.19, 0.92), 1, 4, 0)
-	var grabber_hover := _create_flat_style(Color(0.68, 0.49, 0.16, 0.96), Color(0.94, 0.72, 0.28, 1.0), 1, 4, 2)
-	var grabber_pressed := _create_flat_style(Color(0.84, 0.62, 0.21, 1.0), Color(1.0, 0.84, 0.42, 1.0), 1, 4, 1)
+	var palette := (
+		_get_menu_palette()
+		if use_menu_palette
+		else MenuUiThemeResource.palette(MenuUiThemeStyle.CLASSIC_EMERALD)
+	)
+	var transparent_track: Color = palette.panel_deep
+	transparent_track.a = 0.46
+	var focused_track: Color = palette.panel
+	focused_track.a = 0.68
+	var track := _create_flat_style(transparent_track, Color(palette.border, 0.24), 1, 4, 0)
+	var track_focus := _create_flat_style(focused_track, Color(palette.border, 0.46), 1, 4, 0)
+	var grabber := _create_flat_style(Color(palette.border, 0.78), Color(palette.border_bright, 0.84), 1, 4, 0)
+	var grabber_hover := _create_flat_style(Color(palette.hover, 0.92), palette.border_bright, 1, 4, 2)
+	var grabber_pressed := _create_flat_style(palette.border_bright, palette.glow, 1, 4, 1)
 	for scroll_bar in [scroll_container.get_v_scroll_bar(), scroll_container.get_h_scroll_bar()]:
 		if not is_instance_valid(scroll_bar):
 			continue
@@ -1083,15 +1121,32 @@ func _apply_table_text_button_style(button: Button) -> void:
 	button.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
 
 
+func _get_menu_palette() -> Dictionary:
+	return MenuUiThemeResource.palette(menu_ui_theme)
+
+
+func _refresh_menu_ui_theme() -> void:
+	menu_heading_font = MenuUiThemeResource.heading_font()
+	menu_body_font = MenuUiThemeResource.body_font()
+	menu_button_font = MenuUiThemeResource.button_font(menu_ui_theme)
+	if is_instance_valid(menu_overlay):
+		menu_overlay.theme = _create_luxury_menu_theme()
+	if is_instance_valid(menu_panel):
+		menu_panel.add_theme_stylebox_override("panel", _create_luxury_menu_panel_style())
+	if is_instance_valid(menu_scroll):
+		_apply_minimal_scrollbar_style(menu_scroll, true)
+	_refresh_menu_presentation()
+
+
 func _create_main_menu() -> void:
 	menu_overlay = Control.new()
 	menu_overlay.name = "MainMenuOverlay"
 	_set_control_layout(menu_overlay, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0)
 	menu_overlay.mouse_filter = Control.MOUSE_FILTER_STOP
 	menu_overlay.z_index = 100
-	menu_display_font = SystemFont.new()
-	menu_display_font.font_names = PackedStringArray(["Georgia", "Times New Roman", "Noto Serif"])
-	menu_display_font.allow_system_fallback = true
+	menu_heading_font = MenuUiThemeResource.heading_font()
+	menu_body_font = MenuUiThemeResource.body_font()
+	menu_button_font = MenuUiThemeResource.button_font(menu_ui_theme)
 	menu_overlay.theme = _create_luxury_menu_theme()
 	add_child(menu_overlay)
 
@@ -1104,8 +1159,14 @@ func _create_main_menu() -> void:
 	menu_background_art.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	menu_overlay.add_child(menu_background_art)
 
+	menu_background_effects = MenuBackgroundEffectsResource.new()
+	menu_background_effects.name = "MenuBackgroundEffects"
+	menu_background_effects.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	menu_overlay.add_child(menu_background_effects)
+	_refresh_menu_background()
+
 	menu_backdrop = ColorRect.new()
-	menu_backdrop.color = Color(0.002, 0.018, 0.012, 0.28)
+	menu_backdrop.color = Color(_get_menu_palette().backdrop, 0.28)
 	menu_backdrop.mouse_filter = Control.MOUSE_FILTER_STOP
 	menu_backdrop.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	menu_backdrop.gui_input.connect(_on_menu_backdrop_gui_input)
@@ -1117,7 +1178,7 @@ func _create_main_menu() -> void:
 	menu_panel.add_theme_stylebox_override("panel", _create_luxury_menu_panel_style())
 	menu_overlay.add_child(menu_panel)
 
-	var menu_margin := MarginContainer.new()
+	menu_margin = MarginContainer.new()
 	menu_margin.add_theme_constant_override("margin_left", 34)
 	menu_margin.add_theme_constant_override("margin_top", 28)
 	menu_margin.add_theme_constant_override("margin_right", 34)
@@ -1132,41 +1193,66 @@ func _create_main_menu() -> void:
 	menu_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
 	menu_margin.add_child(menu_scroll)
 
+	menu_scroll_content_margin = MarginContainer.new()
+	menu_scroll_content_margin.name = "MenuScrollContentMargin"
+	menu_scroll_content_margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	menu_scroll_content_margin.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	menu_scroll_content_margin.add_theme_constant_override("margin_left", 18)
+	menu_scroll_content_margin.add_theme_constant_override("margin_right", 18)
+	menu_scroll.add_child(menu_scroll_content_margin)
+
 	menu_content = VBoxContainer.new()
 	menu_content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	menu_content.add_theme_constant_override("separation", 8)
-	menu_scroll.add_child(menu_content)
-	_apply_minimal_scrollbar_style(menu_scroll)
+	menu_scroll_content_margin.add_child(menu_content)
+	_apply_minimal_scrollbar_style(menu_scroll, true)
 	_refresh_menu_presentation()
 
 
 func _create_luxury_menu_theme() -> Theme:
+	var palette := _get_menu_palette()
 	var theme := Theme.new()
-	theme.default_font = menu_display_font
+	theme.default_font = menu_body_font
 	theme.default_font_size = 16
+	for button_type in ["Button", "OptionButton", "CheckButton", "MenuButton"]:
+		theme.set_font("font", button_type, menu_button_font)
+		theme.set_color("font_color", button_type, palette.button_text)
+		theme.set_color("font_hover_color", button_type, palette.glow)
+		theme.set_color("font_pressed_color", button_type, palette.border_bright)
+		theme.set_color("font_disabled_color", button_type, palette.disabled)
+	for text_type in ["Label", "RichTextLabel", "LineEdit", "TextEdit"]:
+		theme.set_font("font", text_type, menu_body_font)
+	theme.set_font("normal_font", "RichTextLabel", menu_body_font)
+	theme.set_font("bold_font", "RichTextLabel", menu_button_font)
+	theme.set_color("font_color", "Label", palette.text)
+	theme.set_color("default_color", "RichTextLabel", palette.text)
+	theme.set_font("font", "PopupMenu", menu_body_font)
+	theme.set_color("font_color", "PopupMenu", palette.text)
+	theme.set_color("font_hover_color", "PopupMenu", palette.glow)
 
-	var input_normal := _create_flat_style(Color(0.008, 0.055, 0.041, 0.96), Color(0.47, 0.32, 0.12, 0.95), 2, 5, 2)
+	var input_normal := _create_flat_style(Color(palette.field, 0.97), Color(palette.border, 0.86), 2, 6, 2)
 	input_normal.content_margin_left = 14.0
 	input_normal.content_margin_right = 14.0
-	var input_focus := _create_flat_style(Color(0.012, 0.09, 0.064, 0.98), Color(0.93, 0.7, 0.27, 1.0), 2, 5, 5)
+	var input_focus := _create_flat_style(Color(palette.button_hover, 0.98), palette.border_bright, 2, 6, 5)
 	input_focus.content_margin_left = 14.0
 	input_focus.content_margin_right = 14.0
 	for type_name in ["LineEdit", "TextEdit"]:
 		theme.set_stylebox("normal", type_name, input_normal)
 		theme.set_stylebox("focus", type_name, input_focus)
-		theme.set_color("font_color", type_name, Color(0.93, 0.9, 0.76, 1.0))
-		theme.set_color("font_placeholder_color", type_name, Color(0.58, 0.65, 0.58, 0.82))
+		theme.set_color("font_color", type_name, palette.text)
+		theme.set_color("font_placeholder_color", type_name, Color(palette.secondary, 0.78))
 
 	theme.set_stylebox("normal", "OptionButton", input_normal)
 	theme.set_stylebox("hover", "OptionButton", input_focus)
 	theme.set_stylebox("pressed", "OptionButton", input_focus)
-	theme.set_color("font_color", "OptionButton", Color(0.93, 0.9, 0.76, 1.0))
-	theme.set_color("font_hover_color", "OptionButton", Color(1.0, 0.88, 0.55, 1.0))
+	theme.set_color("font_color", "OptionButton", palette.text)
+	theme.set_color("font_hover_color", "OptionButton", palette.glow)
 	return theme
 
 
 func _create_luxury_menu_panel_style() -> StyleBoxFlat:
-	var style := _create_flat_style(Color(0.003, 0.04, 0.029, 0.93), Color(0.66, 0.43, 0.14, 0.98), 3, 10, 22)
+	var palette := _get_menu_palette()
+	var style := _create_flat_style(Color(palette.panel_deep, 0.94), Color(palette.border, 0.96), 3, 10, 22)
 	style.border_width_top = 4
 	style.border_width_bottom = 4
 	style.shadow_color = Color(0.0, 0.0, 0.0, 0.78)
@@ -1181,27 +1267,112 @@ func _create_luxury_menu_panel_style() -> StyleBoxFlat:
 func _refresh_menu_presentation(wide := false, compact_main := false) -> void:
 	if not is_instance_valid(menu_panel):
 		return
-	var half_width := 610.0 if wide else 370.0
-	var half_height := 420.0 if wide else 340.0 if compact_main else 390.0
-	_set_control_layout(menu_panel, 0.5, 0.5, 0.5, 0.5, -half_width, -half_height, half_width, half_height)
+	menu_panel_half_width = 610.0 if wide else 370.0
+	var half_height := 420.0 if wide else 305.0 if compact_main else 390.0
+	_set_control_layout(menu_panel, 0.5, 0.5, 0.5, 0.5, -menu_panel_half_width, -half_height, menu_panel_half_width, half_height)
 	menu_panel.add_theme_stylebox_override("panel", _create_luxury_menu_panel_style())
+	_queue_menu_panel_fit()
 	if is_instance_valid(menu_background_art):
 		menu_background_art.visible = not is_pause_menu_open
 		if menu_background_art.visible:
-			menu_background_art.texture = load(_get_menu_background_texture_path())
+			_refresh_menu_background()
+	if is_instance_valid(menu_background_effects):
+		menu_background_effects.visible = not is_pause_menu_open
 	if is_instance_valid(menu_backdrop):
+		var palette := _get_menu_palette()
 		menu_backdrop.material = _create_menu_backdrop_material() if is_pause_menu_open else null
-		menu_backdrop.color = Color(0.002, 0.018, 0.012, 0.28) if not is_pause_menu_open else Color(0.006, 0.055, 0.034, 0.98)
+		var background_dim_alpha := 0.18 if _get_effective_menu_background_theme() == MenuBackgroundTheme.NIGHT_CITY else 0.28
+		menu_backdrop.color = Color(palette.backdrop, background_dim_alpha) if not is_pause_menu_open else Color(palette.panel_deep, 0.98)
+
+
+func _queue_menu_panel_fit() -> void:
+	menu_panel_last_content_height = -1.0
+	menu_panel_last_viewport_height = -1.0
+
+
+func _fit_menu_panel_to_content() -> void:
+	if not is_instance_valid(menu_panel) or not is_instance_valid(menu_content):
+		return
+	var viewport_height := get_viewport_rect().size.y
+	var maximum_height := minf(980.0, viewport_height - 64.0)
+	var vertical_margins := 62.0
+	if is_instance_valid(menu_margin):
+		vertical_margins = float(
+			menu_margin.get_theme_constant("margin_top")
+			+ menu_margin.get_theme_constant("margin_bottom")
+			+ 10
+		)
+	var content_height := menu_content.get_combined_minimum_size().y
+	menu_panel_last_content_height = content_height
+	menu_panel_last_viewport_height = viewport_height
+	var desired_height := clampf(content_height + vertical_margins, 250.0, maximum_height)
+	var half_height := desired_height * 0.5
+	_set_control_layout(
+		menu_panel,
+		0.5,
+		0.5,
+		0.5,
+		0.5,
+		-menu_panel_half_width,
+		-half_height,
+		menu_panel_half_width,
+		half_height
+	)
+
+
+func _update_menu_panel_fit_if_needed() -> void:
+	if (
+		not is_instance_valid(menu_overlay)
+		or not menu_overlay.visible
+		or not is_instance_valid(menu_content)
+	):
+		return
+	var content_height := menu_content.get_combined_minimum_size().y
+	var viewport_height := get_viewport_rect().size.y
+	if (
+		not is_equal_approx(content_height, menu_panel_last_content_height)
+		or not is_equal_approx(viewport_height, menu_panel_last_viewport_height)
+	):
+		_fit_menu_panel_to_content()
 
 
 func _get_menu_background_texture_path() -> String:
+	match _get_effective_menu_background_theme():
+		MenuBackgroundTheme.DAY:
+			return MENU_BACKGROUND_DAY_TEXTURE_PATH
+		MenuBackgroundTheme.NIGHT_CITY:
+			return MENU_BACKGROUND_NIGHT_CITY_TEXTURE_PATH
+		_:
+			return MENU_BACKGROUND_NIGHT_TEXTURE_PATH
+
+
+func _get_effective_menu_background_theme() -> MenuBackgroundTheme:
+	if menu_background_theme != MenuBackgroundTheme.AUTO:
+		return menu_background_theme
 	var date_time := Time.get_datetime_dict_from_system()
 	var hour := int(date_time.get("hour", 12))
 	return (
-		MENU_BACKGROUND_DAY_TEXTURE_PATH
+		MenuBackgroundTheme.DAY
 		if hour >= MENU_DAY_START_HOUR and hour < MENU_NIGHT_START_HOUR
-		else MENU_BACKGROUND_NIGHT_TEXTURE_PATH
+		else MenuBackgroundTheme.EVENING
 	)
+
+
+func _refresh_menu_background() -> void:
+	var effective_theme := _get_effective_menu_background_theme()
+	if is_instance_valid(menu_background_art):
+		menu_background_art.texture = load(_get_menu_background_texture_path())
+	if is_instance_valid(menu_background_effects):
+		var effect_kind: int = MenuBackgroundEffectsResource.BackgroundKind.EVENING
+		if effective_theme == MenuBackgroundTheme.DAY:
+			effect_kind = MenuBackgroundEffectsResource.BackgroundKind.DAY
+		elif effective_theme == MenuBackgroundTheme.NIGHT_CITY:
+			effect_kind = MenuBackgroundEffectsResource.BackgroundKind.NIGHT_CITY
+		menu_background_effects.set_background_kind(effect_kind)
+	if is_instance_valid(menu_backdrop) and not is_pause_menu_open:
+		var palette := _get_menu_palette()
+		var dim_alpha := 0.18 if effective_theme == MenuBackgroundTheme.NIGHT_CITY else 0.28
+		menu_backdrop.color = Color(palette.backdrop, dim_alpha)
 
 
 func _show_main_menu() -> void:
@@ -1333,7 +1504,7 @@ func _build_online_open_tables_tab() -> void:
 	var browser_state: Dictionary = steam_bridge.get_lobby_browser_state()
 	var initialized := bool(browser_state.get("initialized", false))
 	_add_menu_label(
-		str(browser_state.get("status", "Список комнат ещё не обновлялся.")),
+		_get_online_browser_status_text(browser_state),
 		15,
 		Color(0.72, 0.9, 0.62, 1.0) if initialized else Color(0.95, 0.68, 0.48, 1.0)
 	)
@@ -1362,6 +1533,16 @@ func _build_online_open_tables_tab() -> void:
 				_add_online_lobby_card(lobby_variant as Dictionary, false, public_grid)
 
 
+func _get_online_browser_status_text(browser_state: Dictionary) -> String:
+	var status := str(browser_state.get("status", "Список комнат ещё не обновлялся."))
+	if status.begins_with("Открытых комнат найдено:"):
+		return tr("Открытых комнат найдено: %d. Комнат друзей: %d.") % [
+			(browser_state.get("public_lobbies", []) as Array).size(),
+			(browser_state.get("friend_lobbies", []) as Array).size(),
+		]
+	return tr(status)
+
+
 func _create_online_lobby_cards_grid() -> GridContainer:
 	var grid := GridContainer.new()
 	grid.columns = 3
@@ -1379,9 +1560,9 @@ func _add_online_lobby_card(summary: Dictionary, is_friend_lobby: bool, parent: 
 	var match_state := str(summary.get("match_state", SteamBridge.LOBBY_STATE_WAITING))
 	var host_name := str(summary.get("host_name", "")).strip_edges()
 	if host_name.is_empty():
-		host_name = "Steam-игрок"
-	var state_text := "идёт партия" if match_state == SteamBridge.LOBBY_STATE_PLAYING else "ожидает игроков"
-	var mode_text := "2×2" if str(summary.get("match_mode", SteamBridge.MATCH_MODE_CLASSIC)) == SteamBridge.MATCH_MODE_TEAMS_2V2 else "классика"
+		host_name = tr("Steam-игрок")
+	var state_text := tr("идёт партия") if match_state == SteamBridge.LOBBY_STATE_PLAYING else tr("ожидает игроков")
+	var mode_text := "2×2" if str(summary.get("match_mode", SteamBridge.MATCH_MODE_CLASSIC)) == SteamBridge.MATCH_MODE_TEAMS_2V2 else tr("классика")
 	var is_saved_match := lobby_id == active_online_lobby_id
 	var card := PanelContainer.new()
 	card.custom_minimum_size = Vector2(340.0, 166.0)
@@ -1412,12 +1593,12 @@ func _add_online_lobby_card(summary: Dictionary, is_friend_lobby: bool, parent: 
 	title.text = "%s%s" % ["★ " if is_saved_match else "", host_name]
 	title.clip_text = true
 	title.tooltip_text = host_name
-	title.add_theme_font_override("font", menu_display_font)
+	title.add_theme_font_override("font", menu_heading_font)
 	title.add_theme_font_size_override("font_size", 20)
 	title.add_theme_color_override("font_color", Color(0.98, 0.84, 0.52, 1.0))
 	content.add_child(title)
 
-	var source_text := "Друг: %s" % str(summary.get("friend_name", "—")) if is_friend_lobby else "Открытая комната"
+	var source_text := tr("Друг: %s") % str(summary.get("friend_name", "—")) if is_friend_lobby else tr("Открытая комната")
 	var source := Label.new()
 	source.text = source_text
 	source.add_theme_font_size_override("font_size", 13)
@@ -1437,14 +1618,14 @@ func _add_online_lobby_card(summary: Dictionary, is_friend_lobby: bool, parent: 
 	content.add_child(details)
 
 	var button := _create_menu_button(
-		"Переподключиться" if match_state == SteamBridge.LOBBY_STATE_PLAYING and is_saved_match else "Войти",
+		tr("Переподключиться") if match_state == SteamBridge.LOBBY_STATE_PLAYING and is_saved_match else tr("Войти"),
 		_on_join_online_lobby_pressed.bind(lobby_id, match_state == SteamBridge.LOBBY_STATE_PLAYING),
 		is_saved_match
 	)
 	button.custom_minimum_size = Vector2(0.0, 38.0)
 	button.add_theme_font_size_override("font_size", 16)
 	button.disabled = match_state == SteamBridge.LOBBY_STATE_PLAYING and not is_saved_match
-	button.tooltip_text = "Активная партия доступна только её первоначальным участникам." if button.disabled else "Войти в Steam-комнату"
+	button.tooltip_text = tr("Активная партия доступна только её первоначальным участникам.") if button.disabled else tr("Войти в Steam-комнату")
 	content.add_child(button)
 
 
@@ -1487,7 +1668,7 @@ func _build_online_create_room_tab() -> void:
 	online_team_one_name_edit.name = "OnlineTeamOneNameEdit"
 	online_team_one_name_edit.placeholder_text = "Название команды хоста"
 	online_team_one_name_edit.text = "Команда 1"
-	online_team_one_name_edit.max_length = 24
+	online_team_one_name_edit.max_length = SteamBridge.TEAM_NAME_MAX_LENGTH
 	online_team_one_name_edit.custom_minimum_size = Vector2(0.0, 42.0)
 	online_team_one_name_edit.add_theme_font_size_override("font_size", 16)
 	menu_content.add_child(online_team_one_name_edit)
@@ -1496,6 +1677,7 @@ func _build_online_create_room_tab() -> void:
 		14,
 		Color(0.72, 0.85, 0.76, 1.0)
 	)
+	_add_menu_label("До 14 символов. Слово «команда» добавлять не нужно.", 13, Color(0.72, 0.85, 0.76, 1.0))
 	_add_menu_spacer(10.0)
 	_add_menu_button("Создать комнату", _on_create_online_lobby_pressed, true)
 
@@ -1700,8 +1882,8 @@ func _show_steam_lobby_menu() -> void:
 	var initial_lobby_state: Dictionary = steam_bridge.get_lobby_state()
 	var initial_visibility := str(initial_lobby_state.get("visibility_label", "только для друзей"))
 	var initial_match_mode := str(initial_lobby_state.get("match_mode", SteamBridge.MATCH_MODE_CLASSIC))
-	var initial_mode_label := "Командная 2×2" if initial_match_mode == SteamBridge.MATCH_MODE_TEAMS_2V2 else "Классическая"
-	_add_menu_title("Steam-комната", "%s · четыре места · %s · свободные места можно заполнить ботами" % [initial_mode_label, initial_visibility])
+	var initial_mode_label := tr("Командная 2×2") if initial_match_mode == SteamBridge.MATCH_MODE_TEAMS_2V2 else tr("Классическая")
+	_add_menu_title("Steam-комната", tr("%s · четыре места · %s · свободные места можно заполнить ботами") % [initial_mode_label, tr(initial_visibility)])
 	_add_menu_spacer(12.0)
 
 	steam_lobby_status_label = Label.new()
@@ -1730,8 +1912,8 @@ func _show_steam_lobby_menu() -> void:
 		_add_menu_label("Выбери команду", 16)
 		steam_lobby_team_selector = OptionButton.new()
 		steam_lobby_team_selector.name = "SteamLobbyTeamSelector"
-		steam_lobby_team_selector.add_item(str(initial_team_names[0]), 0)
-		steam_lobby_team_selector.add_item(str(initial_team_names[1]), 1)
+		steam_lobby_team_selector.add_item(tr(str(initial_team_names[0])), 0)
+		steam_lobby_team_selector.add_item(tr(str(initial_team_names[1])), 1)
 		var initial_team_id := int(initial_lobby_state.get("local_team_id", -1))
 		if initial_team_id >= 0:
 			steam_lobby_team_selector.select(initial_team_id)
@@ -1744,14 +1926,15 @@ func _show_steam_lobby_menu() -> void:
 		team_name_row.add_theme_constant_override("separation", 8)
 		menu_content.add_child(team_name_row)
 		steam_lobby_team_name_edit = LineEdit.new()
-		steam_lobby_team_name_edit.placeholder_text = "Название вашей команды"
-		steam_lobby_team_name_edit.max_length = 24
+		steam_lobby_team_name_edit.placeholder_text = tr("Название вашей команды")
+		steam_lobby_team_name_edit.max_length = SteamBridge.TEAM_NAME_MAX_LENGTH
 		steam_lobby_team_name_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		steam_lobby_team_name_edit.custom_minimum_size = Vector2(0.0, 42.0)
 		team_name_row.add_child(steam_lobby_team_name_edit)
 		steam_lobby_team_name_button = _create_menu_button("Сохранить название", _on_save_steam_lobby_team_name_pressed, true)
 		steam_lobby_team_name_button.custom_minimum_size = Vector2(190.0, 42.0)
 		team_name_row.add_child(steam_lobby_team_name_button)
+		_add_menu_label("До 14 символов. Слово «команда» добавлять не нужно.", 13, Color(0.72, 0.85, 0.76, 1.0))
 		_add_menu_label("Хост называет команду мест 1+3. Первый игрок команды мест 2+4 становится её капитаном и задаёт второе название.", 13, Color(0.72, 0.85, 0.76, 1.0))
 
 	steam_lobby_kick_controls = VBoxContainer.new()
@@ -1770,7 +1953,7 @@ func _show_steam_lobby_menu() -> void:
 	menu_content.add_child(steam_reconnect_controls)
 
 	var bot_difficulty_label := Label.new()
-	bot_difficulty_label.text = "Сложность ботов за сетевым столом"
+	bot_difficulty_label.text = tr("Сложность ботов за сетевым столом")
 	bot_difficulty_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	bot_difficulty_label.add_theme_font_size_override("font_size", 16)
 	bot_difficulty_label.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
@@ -1786,7 +1969,7 @@ func _show_steam_lobby_menu() -> void:
 	menu_content.add_child(steam_lobby_bot_difficulty_selector)
 
 	var history_mode_label := Label.new()
-	history_mode_label.text = "История раздачи"
+	history_mode_label.text = tr("История раздачи")
 	history_mode_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	history_mode_label.add_theme_font_size_override("font_size", 16)
 	history_mode_label.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
@@ -1990,6 +2173,7 @@ func _refresh_steam_lobby_status() -> void:
 	var lobby_match_mode := str(lobby_state.get("match_mode", SteamBridge.MATCH_MODE_CLASSIC))
 	var is_team_match := lobby_match_mode == SteamBridge.MATCH_MODE_TEAMS_2V2
 	var team_names: Array = lobby_state.get("team_names", ["Команда 1", "Команда 2"])
+	var display_team_names := [tr(str(team_names[0])), tr(str(team_names[1]))]
 	var team_counts: Array = lobby_state.get("team_counts", [0, 0])
 	var local_team_id := int(lobby_state.get("local_team_id", -1))
 	if is_team_match and not is_instance_valid(steam_lobby_team_selector):
@@ -2003,7 +2187,7 @@ func _refresh_steam_lobby_status() -> void:
 	if lobby_id > 0:
 		steam_lobby_details_label.text = "Комната: %d\nРежим: %s\nУчастники: %d из %d\nИстория: %s\nДоступ: %s · состояние: %s · протокол %d" % [
 			lobby_id,
-			"2×2 · %s против %s" % [team_names[0], team_names[1]] if is_team_match else "классическая игра",
+			"2×2 · %s против %s" % [display_team_names[0], display_team_names[1]] if is_team_match else "классическая игра",
 			member_count,
 			member_limit,
 			_get_history_mode_label(lobby_history_mode),
@@ -2021,14 +2205,14 @@ func _refresh_steam_lobby_status() -> void:
 		var member_role := " · хост" if bool(member.get("is_owner", false)) else ""
 		var member_ready := "✓ готов" if bool(member.get("ready", false)) else "… ждём"
 		var member_team_id := int(member.get("team_id", -1))
-		var member_team := " · %s" % team_names[member_team_id] if is_team_match and member_team_id >= 0 and member_team_id < 2 else " · команда не выбрана" if is_team_match else ""
+		var member_team := " · %s" % display_team_names[member_team_id] if is_team_match and member_team_id >= 0 and member_team_id < 2 else " · команда не выбрана" if is_team_match else ""
 		member_lines.append("%s%s%s — %s" % [member_name, member_role, member_team, member_ready])
 	if is_team_match:
 		var bot_number := 1
 		for team_id in 2:
 			var missing_team_seats := maxi(0, 2 - int(team_counts[team_id])) if fill_empty_seats_with_bots else 0
 			for _missing_seat in missing_team_seats:
-				member_lines.append("Бот %d · %s — ✓ готов · %s" % [bot_number, team_names[team_id], network_bot_difficulty_name])
+				member_lines.append("Бот %d · %s — ✓ готов · %s" % [bot_number, display_team_names[team_id], network_bot_difficulty_name])
 				bot_number += 1
 	else:
 		for bot_index in bot_count:
@@ -2045,15 +2229,15 @@ func _refresh_steam_lobby_status() -> void:
 		steam_lobby_ready_button.disabled = lobby_id <= 0 or (is_team_match and local_team_id < 0)
 		steam_lobby_ready_button.text = "Готов ✓ (отменить)" if local_ready else "Отметиться готовым"
 	if is_instance_valid(steam_lobby_team_selector) and is_team_match:
-		steam_lobby_team_selector.set_item_text(0, "%s · мест %d/2" % [team_names[0], int(team_counts[0])])
-		steam_lobby_team_selector.set_item_text(1, "%s · мест %d/2" % [team_names[1], int(team_counts[1])])
+		steam_lobby_team_selector.set_item_text(0, "%s · мест %d/2" % [display_team_names[0], int(team_counts[0])])
+		steam_lobby_team_selector.set_item_text(1, "%s · мест %d/2" % [display_team_names[1], int(team_counts[1])])
 		if local_team_id >= 0:
 			steam_lobby_team_selector.select(local_team_id)
 		steam_lobby_team_selector.disabled = local_is_host or lobby_match_state != SteamBridge.LOBBY_STATE_WAITING or (steam_p2p_match != null and steam_p2p_match.is_running())
 	if is_instance_valid(steam_lobby_team_name_edit) and is_team_match:
 		var can_name_team := bool(lobby_state.get("local_is_team_captain", false)) and local_team_id >= 0
 		if can_name_team and not steam_lobby_team_name_edit.has_focus():
-			steam_lobby_team_name_edit.text = str(team_names[local_team_id])
+			steam_lobby_team_name_edit.text = str(display_team_names[local_team_id])
 		steam_lobby_team_name_edit.editable = can_name_team and lobby_match_state == SteamBridge.LOBBY_STATE_WAITING
 	if is_instance_valid(steam_lobby_team_name_button):
 		steam_lobby_team_name_button.disabled = not bool(lobby_state.get("local_is_team_captain", false)) or lobby_match_state != SteamBridge.LOBBY_STATE_WAITING
@@ -2131,19 +2315,19 @@ func _refresh_steam_first_turn_roll_button() -> void:
 		return
 	var host_can_act: bool = steam_p2p_match != null and steam_p2p_match.is_host()
 	if steam_p2p_match == null or not steam_p2p_match.is_running():
-		steam_p2p_start_round_button.text = "Разыграть первый ход"
+		steam_p2p_start_round_button.text = tr("Разыграть первый ход")
 		steam_p2p_start_round_button.disabled = true
 	elif steam_p2p_match.lobby_round_started:
-		steam_p2p_start_round_button.text = "Партия начата"
+		steam_p2p_start_round_button.text = tr("Партия начата")
 		steam_p2p_start_round_button.disabled = true
 	elif steam_p2p_match.can_start_first_real_round():
-		steam_p2p_start_round_button.text = "Начать первую раздачу"
+		steam_p2p_start_round_button.text = tr("Начать первую раздачу")
 		steam_p2p_start_round_button.disabled = not host_can_act
 	elif steam_p2p_match.is_first_turn_roll_active():
-		steam_p2p_start_round_button.text = "Розыгрыш первого хода идёт"
+		steam_p2p_start_round_button.text = tr("Розыгрыш первого хода идёт")
 		steam_p2p_start_round_button.disabled = true
 	else:
-		steam_p2p_start_round_button.text = "Разыграть первый ход"
+		steam_p2p_start_round_button.text = tr("Разыграть первый ход")
 		steam_p2p_start_round_button.disabled = not host_can_act or not steam_p2p_match.can_begin_first_turn_roll()
 
 
@@ -2654,8 +2838,8 @@ func _get_network_player_team_id(snapshot: Dictionary, player_index: int) -> int
 func _get_network_team_name(snapshot: Dictionary, team_id: int) -> String:
 	var team_names: Array = snapshot.get("team_names", ["Команда 1", "Команда 2"])
 	if team_id >= 0 and team_id < team_names.size():
-		return str(team_names[team_id])
-	return "Команда %d" % (team_id + 1)
+		return tr(str(team_names[team_id]))
+	return tr("Команда %d") % (team_id + 1)
 
 
 func _get_network_team_score(snapshot: Dictionary, team_id: int) -> int:
@@ -5806,7 +5990,7 @@ func _show_music_profile_menu() -> void:
 	playlist_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	playlist_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
 	menu_content.add_child(playlist_scroll)
-	_apply_minimal_scrollbar_style(playlist_scroll)
+	_apply_minimal_scrollbar_style(playlist_scroll, true)
 
 	profile_music_playlist_container = VBoxContainer.new()
 	profile_music_playlist_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -6363,8 +6547,54 @@ func _show_game_settings_menu() -> void:
 func _show_display_settings_menu() -> void:
 	menu_overlay.visible = true
 	_clear_children(menu_content)
+	var palette := _get_menu_palette()
 	_add_menu_title("Экран", "Параметры отображения игры")
 	_add_menu_spacer(12.0)
+	var ui_theme_label := Label.new()
+	ui_theme_label.text = tr("Оформление интерфейса")
+	ui_theme_label.add_theme_font_override("font", menu_button_font)
+	ui_theme_label.add_theme_font_size_override("font_size", 18)
+	ui_theme_label.add_theme_color_override("font_color", palette.text)
+	menu_content.add_child(ui_theme_label)
+
+	var ui_theme_selector := OptionButton.new()
+	ui_theme_selector.name = "MenuUiThemeSelector"
+	for ui_theme_name in MENU_UI_THEME_NAMES:
+		ui_theme_selector.add_item(tr(ui_theme_name))
+	ui_theme_selector.custom_minimum_size = Vector2(0.0, 44.0)
+	ui_theme_selector.add_theme_font_size_override("font_size", 17)
+	menu_content.add_child(ui_theme_selector)
+	ui_theme_selector.selected = int(menu_ui_theme)
+	ui_theme_selector.item_selected.connect(_on_menu_ui_theme_selected)
+	_add_menu_label(
+		"Меняет шрифты и палитру меню. Игровой стол и карты не затрагиваются.",
+		14,
+		palette.secondary
+	)
+	_add_menu_spacer(16.0)
+
+	var background_label := Label.new()
+	background_label.text = tr("Фон главного меню")
+	background_label.add_theme_font_override("font", menu_button_font)
+	background_label.add_theme_font_size_override("font_size", 18)
+	background_label.add_theme_color_override("font_color", palette.text)
+	menu_content.add_child(background_label)
+
+	var background_selector := OptionButton.new()
+	background_selector.name = "MenuBackgroundThemeSelector"
+	for background_name in MENU_BACKGROUND_THEME_NAMES:
+		background_selector.add_item(tr(background_name))
+	background_selector.selected = menu_background_theme
+	background_selector.custom_minimum_size = Vector2(0.0, 42.0)
+	background_selector.add_theme_font_size_override("font_size", 17)
+	background_selector.item_selected.connect(_on_menu_background_theme_selected)
+	menu_content.add_child(background_selector)
+	_add_menu_label(
+		"Автоматический режим использует системное время: день с 06:00 до 17:59, вечер — с 18:00 до 05:59.",
+		14,
+		palette.secondary
+	)
+	_add_menu_spacer(14.0)
 	_add_settings_toggle(
 		"FullscreenToggle",
 		"Полноэкранный режим",
@@ -6373,7 +6603,7 @@ func _show_display_settings_menu() -> void:
 		_on_fullscreen_toggled
 	)
 	_add_menu_spacer(14.0)
-	_add_menu_button("Назад к настройкам", _show_settings_menu)
+	_add_menu_button("Назад к настройкам", _show_settings_menu, true)
 
 
 func _show_final_session_menu() -> void:
@@ -6439,6 +6669,7 @@ func _add_settings_volume_slider(
 	current_percent: int,
 	callback: Callable
 ) -> Label:
+	var palette := _get_menu_palette()
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 12)
 	menu_content.add_child(row)
@@ -6447,8 +6678,9 @@ func _add_settings_volume_slider(
 	label.text = tr(label_text)
 	label.custom_minimum_size = Vector2(155.0, 40.0)
 	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	label.add_theme_font_override("font", menu_button_font)
 	label.add_theme_font_size_override("font_size", 18)
-	label.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
+	label.add_theme_color_override("font_color", palette.text)
 	row.add_child(label)
 
 	var slider := HSlider.new()
@@ -6468,8 +6700,9 @@ func _add_settings_volume_slider(
 	value_label.custom_minimum_size = Vector2(58.0, 40.0)
 	value_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	value_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	value_label.add_theme_font_override("font", menu_body_font)
 	value_label.add_theme_font_size_override("font_size", 17)
-	value_label.add_theme_color_override("font_color", Color(0.97, 0.86, 0.55, 1.0))
+	value_label.add_theme_color_override("font_color", palette.heading)
 	row.add_child(value_label)
 	return value_label
 
@@ -6481,31 +6714,35 @@ func _add_settings_toggle(
 	is_enabled: bool,
 	callback: Callable
 ) -> CheckButton:
+	var palette := _get_menu_palette()
 	var toggle := CheckButton.new()
 	toggle.name = toggle_name
 	toggle.text = tr(label_text)
 	toggle.button_pressed = is_enabled
 	toggle.custom_minimum_size = Vector2(0.0, 38.0)
+	toggle.add_theme_font_override("font", menu_button_font)
 	toggle.add_theme_font_size_override("font_size", 18)
-	toggle.add_theme_color_override("font_color", Color(0.91, 0.96, 0.91, 1.0))
+	toggle.add_theme_color_override("font_color", palette.text)
 	toggle.toggled.connect(callback)
 	menu_content.add_child(toggle)
 
-	_add_menu_label(description_text, 14, Color(0.72, 0.85, 0.76, 1.0))
+	_add_menu_label(description_text, 14, palette.secondary)
 	return toggle
 
 
 func _add_menu_title(title_text: String, subtitle_text: String) -> void:
+	var palette := _get_menu_palette()
 	var title_label := Label.new()
 	title_label.text = tr(title_text)
 	title_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title_label.add_theme_font_override("font", menu_display_font)
-	title_label.add_theme_font_size_override("font_size", 40)
-	title_label.add_theme_color_override("font_color", Color(0.98, 0.86, 0.55, 1.0))
+	title_label.add_theme_font_override("font", menu_heading_font)
+	title_label.add_theme_font_size_override("font_size", 46)
+	title_label.add_theme_color_override("font_color", palette.heading)
 	title_label.add_theme_color_override("font_shadow_color", Color(0.0, 0.0, 0.0, 0.92))
 	title_label.add_theme_constant_override("shadow_offset_x", 2)
 	title_label.add_theme_constant_override("shadow_offset_y", 3)
 	menu_content.add_child(title_label)
+	_queue_menu_panel_fit()
 
 	if subtitle_text.is_empty():
 		return
@@ -6513,61 +6750,79 @@ func _add_menu_title(title_text: String, subtitle_text: String) -> void:
 	subtitle_label.text = tr(subtitle_text)
 	subtitle_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	subtitle_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	subtitle_label.add_theme_font_override("font", menu_body_font)
 	subtitle_label.add_theme_font_size_override("font_size", 16)
-	subtitle_label.add_theme_color_override("font_color", Color(0.72, 0.85, 0.76, 1.0))
+	subtitle_label.add_theme_color_override("font_color", palette.secondary)
 	menu_content.add_child(subtitle_label)
+	_queue_menu_panel_fit()
 
 
-func _add_menu_label(label_text: String, font_size: int, font_color: Color = Color(0.91, 0.96, 0.91, 1.0)) -> void:
+func _add_menu_label(label_text: String, font_size: int, font_color: Color = Color(0.0, 0.0, 0.0, 0.0)) -> void:
+	var palette := _get_menu_palette()
 	var label := Label.new()
 	label.text = tr(label_text)
 	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	label.add_theme_font_override("font", menu_body_font)
 	label.add_theme_font_size_override("font_size", font_size)
-	label.add_theme_color_override("font_color", font_color)
+	label.add_theme_color_override("font_color", _resolve_menu_text_color(font_color, palette))
 	menu_content.add_child(label)
+	_queue_menu_panel_fit()
+
+
+func _resolve_menu_text_color(requested_color: Color, palette: Dictionary) -> Color:
+	if requested_color.a <= 0.0 or requested_color.is_equal_approx(Color(0.91, 0.96, 0.91, 1.0)):
+		return palette.text
+	if requested_color.is_equal_approx(Color(0.72, 0.85, 0.76, 1.0)):
+		return palette.secondary
+	if requested_color.is_equal_approx(Color(0.97, 0.86, 0.55, 1.0)):
+		return palette.heading
+	return requested_color
 
 
 func _add_menu_spacer(height: float) -> void:
 	var spacer := Control.new()
 	spacer.custom_minimum_size = Vector2(0.0, height)
 	menu_content.add_child(spacer)
+	_queue_menu_panel_fit()
 
 
 func _add_menu_button(label_text: String, callback: Callable, is_primary: bool = false) -> Button:
 	var button := _create_menu_button(label_text, callback, is_primary)
 	menu_content.add_child(button)
+	_queue_menu_panel_fit()
 	return button
 
 
 func _create_menu_button(label_text: String, callback: Callable, is_primary: bool = false) -> Button:
+	var palette := _get_menu_palette()
 	var button := Button.new()
 	button.text = tr(label_text)
-	button.custom_minimum_size = Vector2(0.0, 52.0)
-	button.add_theme_font_override("font", menu_display_font)
+	button.custom_minimum_size = Vector2(0.0, 56.0 if is_primary else 52.0)
+	button.add_theme_font_override("font", menu_button_font)
 	button.add_theme_font_size_override("font_size", 20)
-	button.add_theme_color_override("font_color", Color(0.98, 0.9, 0.67, 1.0))
-	button.add_theme_color_override("font_hover_color", Color(1.0, 0.96, 0.8, 1.0))
-	button.add_theme_color_override("font_pressed_color", Color(1.0, 0.82, 0.38, 1.0))
-	button.add_theme_color_override("font_disabled_color", Color(0.48, 0.5, 0.43, 0.82))
+	button.add_theme_color_override("font_color", palette.button_text)
+	button.add_theme_color_override("font_hover_color", palette.glow)
+	button.add_theme_color_override("font_pressed_color", palette.border_bright)
+	button.add_theme_color_override("font_disabled_color", Color(palette.disabled, 0.82))
 	var normal_style := _create_flat_style(
-		Color(0.018, 0.125, 0.088, 0.98) if is_primary else Color(0.005, 0.055, 0.042, 0.97),
-		Color(0.91, 0.67, 0.23, 1.0) if is_primary else Color(0.48, 0.32, 0.12, 0.96),
+		Color(palette.button_primary, 0.99) if is_primary else Color(palette.button, 0.98),
+		palette.border_bright if is_primary else Color(palette.border, 0.92),
 		2,
-		5,
-		5 if is_primary else 2
+		7,
+		7 if is_primary else 3
 	)
-	normal_style.border_width_left = 3
-	normal_style.border_width_right = 3
+	normal_style.border_width_left = 3 if is_primary else 2
+	normal_style.border_width_right = 3 if is_primary else 2
 	normal_style.content_margin_left = 18.0
 	normal_style.content_margin_right = 18.0
 	button.add_theme_stylebox_override("normal", normal_style)
-	var hover_style := _create_flat_style(Color(0.025, 0.21, 0.14, 1.0), Color(1.0, 0.81, 0.33, 1.0), 3, 5, 9)
+	var hover_style := _create_flat_style(palette.button_hover, palette.border_bright, 3, 7, 9)
 	hover_style.content_margin_left = 18.0
 	hover_style.content_margin_right = 18.0
 	button.add_theme_stylebox_override("hover", hover_style)
-	button.add_theme_stylebox_override("pressed", _create_flat_style(Color(0.09, 0.15, 0.07, 1.0), Color(1.0, 0.73, 0.2, 1.0), 3, 5, 2))
-	button.add_theme_stylebox_override("focus", _create_flat_style(Color(0.0, 0.0, 0.0, 0.0), Color(0.98, 0.74, 0.25, 0.9), 2, 5, 0))
-	button.add_theme_stylebox_override("disabled", _create_flat_style(Color(0.01, 0.035, 0.028, 0.84), Color(0.22, 0.18, 0.09, 0.72), 1, 5, 0))
+	button.add_theme_stylebox_override("pressed", _create_flat_style(palette.button_pressed, palette.glow, 3, 7, 2))
+	button.add_theme_stylebox_override("focus", _create_flat_style(Color(0.0, 0.0, 0.0, 0.0), Color(palette.glow, 0.84), 2, 7, 0))
+	button.add_theme_stylebox_override("disabled", _create_flat_style(Color(palette.panel_deep, 0.84), Color(palette.disabled, 0.56), 1, 7, 0))
 	button.pressed.connect(callback)
 	return button
 
@@ -6942,6 +7197,27 @@ func _on_fullscreen_toggled(enabled: bool) -> void:
 	_save_persistent_settings()
 
 
+func _on_menu_background_theme_selected(selected_index: int) -> void:
+	menu_background_theme = clampi(
+		selected_index,
+		MenuBackgroundTheme.AUTO,
+		MenuBackgroundTheme.NIGHT_CITY
+	)
+	_refresh_menu_background()
+	_save_persistent_settings()
+
+
+func _on_menu_ui_theme_selected(selected_index: int) -> void:
+	menu_ui_theme = clampi(
+		selected_index,
+		MenuUiThemeStyle.CLASSIC_EMERALD,
+		MenuUiThemeStyle.NIGHT_CITY_BLUE
+	)
+	_refresh_menu_ui_theme()
+	_save_persistent_settings()
+	_show_display_settings_menu.call_deferred()
+
+
 func _on_tutorial_toggled(enabled: bool) -> void:
 	tutorial_enabled = enabled
 	_save_persistent_settings()
@@ -7247,6 +7523,16 @@ func _load_persistent_settings() -> void:
 		TableSurroundTheme.DARK_GREEN,
 		TableSurroundTheme.WARM_FABRIC
 	)
+	menu_background_theme = clampi(
+		int(config.get_value("display", "menu_background_theme", MenuBackgroundTheme.AUTO)),
+		MenuBackgroundTheme.AUTO,
+		MenuBackgroundTheme.NIGHT_CITY
+	)
+	menu_ui_theme = clampi(
+		int(config.get_value("display", "menu_ui_theme", MenuUiThemeStyle.CLASSIC_EMERALD)),
+		MenuUiThemeStyle.CLASSIC_EMERALD,
+		MenuUiThemeStyle.NIGHT_CITY_BLUE
+	)
 	match_history_mode = clampi(
 		int(config.get_value("game", "history_mode", match_history_mode)),
 		NetworkHost.HistoryMode.FULL,
@@ -7335,6 +7621,8 @@ func _save_persistent_settings() -> void:
 	config.set_value("display", "card_deck_style", card_deck_style)
 	config.set_value("display", "table_felt_theme", table_felt_theme)
 	config.set_value("display", "table_surround_theme", table_surround_theme)
+	config.set_value("display", "menu_background_theme", menu_background_theme)
+	config.set_value("display", "menu_ui_theme", menu_ui_theme)
 	config.set_value("audio", "sound_volume", sound_volume_index)
 	config.set_value("audio", "sound_volume_percent", sound_volume_percent)
 	config.set_value("audio", "music_volume", music_volume_index)
@@ -10858,7 +11146,13 @@ func _add_score_sheet_cell(
 	if is_header:
 		cell.add_theme_color_override("font_color", Color(0.97, 0.86, 0.55))
 	elif is_total_row:
-		cell.add_theme_font_size_override("font_size", 15)
+		var is_compact_team_name := minimum_width <= SCORE_SHEET_BID_COLUMN_WIDTH and not text.is_empty()
+		cell.add_theme_font_size_override("font_size", 11 if is_compact_team_name and text.length() > 10 else 12 if is_compact_team_name else 15)
+		if is_compact_team_name:
+			cell.autowrap_mode = TextServer.AUTOWRAP_OFF
+			cell.clip_text = true
+			cell.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+			cell.tooltip_text = text
 		cell.add_theme_color_override("font_color", Color(0.96, 0.42, 0.34) if text.contains("-") else Color(0.97, 0.84, 0.38))
 	elif is_current_round:
 		cell.add_theme_color_override("font_color", Color(1.0, 0.83, 0.34))
@@ -13477,6 +13771,7 @@ func _is_human_turn() -> bool:
 
 func _process(delta: float) -> void:
 	steam_bridge.process_callbacks()
+	_update_menu_panel_fit_if_needed()
 	_refresh_social_action_buttons()
 	_process_turn_reminder(delta)
 	_process_network_round_countdown(delta)
@@ -15461,4 +15756,5 @@ func _clear_children(container: Container) -> void:
 	if container == menu_content:
 		_refresh_menu_presentation()
 	for child in container.get_children():
+		container.remove_child(child)
 		child.queue_free()

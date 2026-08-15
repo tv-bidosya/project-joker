@@ -13,6 +13,9 @@ func _run() -> void:
 	main_scene.interface_locale = "ru"
 	TranslationServer.set_locale("ru")
 	main_scene._build_main_menu_content()
+	await process_frame
+	await process_frame
+	assert(main_scene.menu_panel.size.y < 700.0, "The main menu panel must fit its actual content instead of leaving a large empty footer.")
 	var main_menu_buttons := _get_button_texts(main_scene.menu_content)
 	assert("Новая игра с ботами" in main_menu_buttons)
 	assert("Играть по сети" in main_menu_buttons)
@@ -40,12 +43,7 @@ func _run() -> void:
 	main_scene._show_new_game_setup()
 	await process_frame
 	assert(main_scene.new_game_name_inputs.size() == 4)
-	var expected_avatar_indices := [
-		main_scene.configured_avatar_indices[0],
-		1,
-		2,
-		0,
-	]
+	var expected_avatar_indices: Array[int] = main_scene.configured_avatar_indices.duplicate()
 	for player_index in expected_avatar_indices.size():
 		var preview: Node = main_scene.menu_content.find_child(
 			"NewGameAvatarPreview%d" % player_index,
@@ -63,6 +61,9 @@ func _run() -> void:
 	assert(main_scene.menu_content.find_child("TutorialHintsToggle", true, false) is CheckButton)
 
 	main_scene._show_settings_menu()
+	await process_frame
+	await process_frame
+	assert(main_scene.menu_panel.size.y < 650.0, "The settings section must shrink to its last button.")
 	var settings_buttons := _get_button_texts(main_scene.menu_content)
 	for expected_section in ["Звук", "Оформление", "Игра", "Экран", "Язык"]:
 		assert(expected_section in settings_buttons)
@@ -83,7 +84,38 @@ func _run() -> void:
 	assert(main_scene.menu_content.find_child("SettingsAutoTurnToggle", true, false) is CheckButton)
 
 	main_scene._show_display_settings_menu()
+	await process_frame
+	await process_frame
+	assert(main_scene.menu_panel.size.y < 760.0, "The display page must not keep the old fixed-height empty footer.")
+	var scroll_content_left_margin: int = main_scene.menu_scroll_content_margin.get_theme_constant("margin_left")
+	var scroll_content_right_margin: int = main_scene.menu_scroll_content_margin.get_theme_constant("margin_right")
+	assert(scroll_content_left_margin >= 18)
+	assert(scroll_content_left_margin == scroll_content_right_margin, "Menu controls must keep equal left and right spacing.")
 	assert(main_scene.menu_content.find_child("FullscreenToggle", true, false) is CheckButton)
+	var ui_theme_selector := main_scene.menu_content.find_child("MenuUiThemeSelector", true, false) as OptionButton
+	assert(ui_theme_selector != null and ui_theme_selector.item_count == 2)
+	assert(ui_theme_selector.get_item_text(0) == "Классический изумруд")
+	assert(ui_theme_selector.get_item_text(1) == "Ночной город · синий")
+	var classic_panel_style := main_scene.menu_panel.get_theme_stylebox("panel") as StyleBoxFlat
+	var classic_panel_color := classic_panel_style.bg_color
+	main_scene._on_menu_ui_theme_selected(1)
+	await process_frame
+	await process_frame
+	ui_theme_selector = main_scene.menu_content.find_child("MenuUiThemeSelector", true, false) as OptionButton
+	assert(ui_theme_selector != null and ui_theme_selector.selected == 1)
+	var night_panel_style := main_scene.menu_panel.get_theme_stylebox("panel") as StyleBoxFlat
+	assert(not night_panel_style.bg_color.is_equal_approx(classic_panel_color))
+	assert(main_scene.menu_heading_font.resource_path.ends_with("Forum-Regular.ttf"))
+	main_scene.menu_ui_theme = 0
+	main_scene._refresh_menu_ui_theme()
+	var background_selector := main_scene.menu_content.find_child("MenuBackgroundThemeSelector", true, false) as OptionButton
+	assert(background_selector != null and background_selector.item_count == 4)
+	assert(background_selector.get_item_text(0) == "Автоматически по времени")
+	assert(background_selector.get_item_text(3) == "Ночной город")
+	main_scene.menu_background_theme = 3
+	main_scene._refresh_menu_background()
+	assert(main_scene.menu_background_art.texture.resource_path == main_scene.MENU_BACKGROUND_NIGHT_CITY_TEXTURE_PATH)
+	assert(main_scene.menu_background_effects.background_kind == 2)
 	assert("Начать обучение заново" not in _get_button_texts(main_scene.menu_content))
 
 	var settings_back_button := _find_button(main_scene.menu_content, "Назад к настройкам")

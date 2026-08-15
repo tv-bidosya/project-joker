@@ -27,10 +27,14 @@ func _run() -> void:
 		{"steam_id": 300, "team_id": 0},
 	]
 	assert(not team_match._build_team_seat_preferences(unbalanced_members), "A team may not contain a third human player.")
+	var steam_bridge := SteamBridge.new()
+	assert(steam_bridge._sanitize_team_name("Команда Андрюшенька", "Команда 1") == "Андрюшенька", "The redundant team prefix must not consume compact UI space.")
+	assert(steam_bridge._sanitize_team_name("ОченьДлинноеНазваниеКоманды", "Команда 1").length() == SteamBridge.TEAM_NAME_MAX_LENGTH, "Team names must be capped at the shared UI-safe length.")
 
 	var main_scene: Variant = load("res://Scenes/main.tscn").instantiate()
 	root.add_child(main_scene)
 	await process_frame
+	assert(main_scene.hand_container.mouse_filter == Control.MOUSE_FILTER_IGNORE, "Empty hand-container space must not block the left side of the chat input.")
 	var snapshot := {
 		"match_mode": SteamBridge.MATCH_MODE_TEAMS_2V2,
 		"team_names": ["Север", "Юг"],

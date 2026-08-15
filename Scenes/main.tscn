@@ -445,6 +445,7 @@ offset_top = -184.0
 offset_right = -420.0
 offset_bottom = -146.0
 grow_vertical = 0
+mouse_filter = 2
 alignment = 1
 theme_override_constants/separation = 10
 
@@ -471,6 +472,7 @@ offset_top = -140.0
 offset_right = -260.0
 offset_bottom = -8.0
 grow_vertical = 0
+mouse_filter = 2
 alignment = 1
 theme_override_constants/separation = 10
 

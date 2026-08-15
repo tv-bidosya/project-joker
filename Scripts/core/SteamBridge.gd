@@ -31,6 +31,7 @@ const LOBBY_STATE_WAITING := "waiting"
 const LOBBY_STATE_PLAYING := "playing"
 const MATCH_MODE_CLASSIC := "classic"
 const MATCH_MODE_TEAMS_2V2 := "teams_2v2"
+const TEAM_NAME_MAX_LENGTH := 14
 const P2P_MATCH_CHANNEL := 42
 const P2P_SEND_RELIABLE := 2
 const MAX_P2P_PACKET_BYTES := 32 * 1024
@@ -1051,7 +1052,18 @@ func _create_lobby_summary(lobby_id: int) -> Dictionary:
 
 
 func _sanitize_team_name(team_name: String, fallback: String) -> String:
-	var safe_name := team_name.replace("\n", " ").replace("\r", " ").strip_edges().left(24)
+	var safe_name := team_name.replace("\n", " ").replace("\r", " ").strip_edges()
+	# A player often types "Команда <name>" even though the surrounding UI
+	# already establishes that this is a team. Remove that redundant prefix so
+	# the useful part survives in the compact table and score-sheet panels.
+	var prefixes := ["Команда ", "команда ", "Team ", "team ", "Drużyna ", "drużyna ", "Каманда ", "каманда "]
+	for prefix in prefixes:
+		if safe_name.begins_with(prefix):
+			var without_prefix := safe_name.substr(prefix.length()).strip_edges()
+			if not without_prefix.is_empty() and not without_prefix.is_valid_int():
+				safe_name = without_prefix
+			break
+	safe_name = safe_name.left(TEAM_NAME_MAX_LENGTH)
 	return fallback if safe_name.is_empty() else safe_name
 
 

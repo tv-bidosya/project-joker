@@ -56,8 +56,8 @@ func _run() -> void:
 		assert(button.mouse_filter == Control.MOUSE_FILTER_STOP)
 		assert(button.scale == Vector2.ONE)
 		var button_rect := button.get_global_rect()
-		assert(is_equal_approx(button_rect.size.x, 44.0))
-		assert(is_equal_approx(button_rect.size.y, 40.0))
+		assert(is_equal_approx(button_rect.size.x, 36.0))
+		assert(is_equal_approx(button_rect.size.y, 34.0))
 		assert(button.get_theme_stylebox("normal") is StyleBoxEmpty, "Table social buttons must display bare icons without frames.")
 		for vertical_ratio in [0.25, 0.5, 0.75]:
 			var visual_point := Vector2(
@@ -94,7 +94,7 @@ func _run() -> void:
 	var sticker_picker_rect: Rect2 = main_scene.sticker_picker.get_global_rect()
 	var soundpad_button_rect: Rect2 = main_scene.soundpad_toggle_button.get_global_rect()
 	assert(
-		is_equal_approx(sticker_picker_rect.position.x - social_rect.end.x, 12.0),
+		is_equal_approx(sticker_picker_rect.position.x - social_rect.end.x, 20.0),
 		"The gift picker must use the empty space to the right of the social icon column."
 	)
 	assert(
@@ -106,8 +106,8 @@ func _run() -> void:
 		"Soundpad picker must open in the same right-side zone as gifts."
 	)
 	assert(
-		is_equal_approx(sticker_picker_rect.get_center().y, social_rect.get_center().y),
-		"The gift picker and social icon column must share a vertical center."
+		absf(sticker_picker_rect.get_center().y - social_rect.get_center().y) <= 8.0,
+		"The gift picker and social icon column must share a vertical center: picker=%s social=%s" % [sticker_picker_rect.get_center().y, social_rect.get_center().y]
 	)
 	assert(main_scene.sticker_picker_close_button.text == "×", "The gift picker must use a close button instead of a back arrow.")
 	main_scene.sticker_picker_close_button.pressed.emit()

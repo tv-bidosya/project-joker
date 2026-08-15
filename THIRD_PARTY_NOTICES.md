@@ -55,6 +55,22 @@ The bundled license text is stored in
 
 Source: https://kenney.nl/assets/casino-audio
 
+## Forum, Vollkorn and Manrope fonts
+
+The menu interface embeds Forum, Vollkorn and Manrope from the official Google
+Fonts repository. Each family is distributed under the SIL Open Font License
+1.1. The unmodified license texts are bundled as
+`Assets/Fonts/Forum-OFL.txt`, `Assets/Fonts/Vollkorn-OFL.txt`, and
+`Assets/Fonts/Manrope-OFL.txt`.
+
+Forum: Copyright (c) 2011, Denis Masharov, with Reserved Font Name "Forum".
+
+Vollkorn: Copyright 2017 The Vollkorn Project Authors.
+
+Manrope: Copyright 2018 The Manrope Project Authors.
+
+Source: https://github.com/google/fonts
+
 ## GodotSteam
 
 The Steam-enabled test build uses GodotSteam. The project is distributed under
