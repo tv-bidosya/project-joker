@@ -40,11 +40,19 @@ func _run() -> void:
 		"team_names": ["Север", "Юг"],
 		"team_by_player": [0, 1, 0, 1],
 		"players": [
-			{"player_index": 0, "total_score": 12, "exact_orders_completed": 4},
-			{"player_index": 1, "total_score": 20, "exact_orders_completed": 2},
-			{"player_index": 2, "total_score": -5, "exact_orders_completed": 3},
-			{"player_index": 3, "total_score": 3, "exact_orders_completed": 1},
+			{"player_index": 0, "display_name": "Андрей", "total_score": 12, "exact_orders_completed": 4},
+			{"player_index": 1, "display_name": "Олег", "total_score": 20, "exact_orders_completed": 2},
+			{"player_index": 2, "display_name": "Маша", "total_score": -5, "exact_orders_completed": 3},
+			{"player_index": 3, "display_name": "Лена", "total_score": 3, "exact_orders_completed": 1},
 		],
+		"completed_rounds": [{
+			"players": [
+				{"tricks_taken": 1, "jokers_dealt": 2},
+				{"tricks_taken": 1, "jokers_dealt": 0},
+				{"tricks_taken": 1, "jokers_dealt": 1},
+				{"tricks_taken": 1, "jokers_dealt": 3},
+			],
+		}],
 	}
 	assert(main_scene._get_network_team_score(snapshot, 0) == 7, "Seats 1 and 3 must share their summed score.")
 	assert(main_scene._get_network_team_score(snapshot, 1) == 23, "Seats 2 and 4 must share their summed score.")
@@ -52,6 +60,11 @@ func _run() -> void:
 	var standings: Array[Dictionary] = main_scene._get_network_final_standings(snapshot)
 	assert(standings.size() == 2, "A 2v2 match must produce two final team standings.")
 	assert(str(standings[0].get("name", "")) == "Юг" and int(standings[0].get("score", 0)) == 23, "The higher combined team score must win.")
+	var north_standing: Dictionary = standings[1]
+	assert(
+		main_scene._format_standing_joker_statistics(north_standing) == "Андрей — 2, Маша — 1",
+		"A network team result must list each member's Joker count instead of one team total."
+	)
 
 	(snapshot["players"][0] as Dictionary)["total_score"] = 28
 	standings = main_scene._get_network_final_standings(snapshot)
@@ -71,11 +84,21 @@ func _run() -> void:
 	main_scene.game.players[1].exact_orders_completed = 2
 	main_scene.game.players[2].exact_orders_completed = 3
 	main_scene.game.players[3].exact_orders_completed = 1
+	main_scene.game.players[0].display_name = "Андрей"
+	main_scene.game.players[1].display_name = "Олег"
+	main_scene.game.players[2].display_name = "Маша"
+	main_scene.game.players[3].display_name = "Лена"
+	main_scene.round_history.assign((snapshot["completed_rounds"] as Array).duplicate(true))
 	assert(main_scene._get_local_team_score(0) == 7, "Local seats 1 and 3 must share their summed score.")
 	assert(main_scene._get_local_team_score(1) == 23, "Local seats 2 and 4 must share their summed score.")
 	standings = main_scene._get_final_standings()
 	assert(standings.size() == 2, "A local 2v2 bot match must produce two team standings.")
 	assert(int(standings[0].get("player_id", -1)) == 1 and int(standings[0].get("score", 0)) == 23, "The higher-scoring local bot team must win.")
+	north_standing = standings[1]
+	assert(
+		main_scene._format_standing_joker_statistics(north_standing) == "Андрей — 2, Маша — 1",
+		"A local team result must preserve individual Joker statistics for both partners."
+	)
 
 	main_scene.queue_free()
 	team_match.free()

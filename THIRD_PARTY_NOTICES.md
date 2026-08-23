@@ -55,21 +55,22 @@ The bundled license text is stored in
 
 Source: https://kenney.nl/assets/casino-audio
 
-## Forum, Vollkorn and Manrope fonts
+## Arsenal, Fixel and Vollkorn fonts
 
-The menu interface embeds Forum, Vollkorn and Manrope from the official Google
-Fonts repository. Each family is distributed under the SIL Open Font License
-1.1. The unmodified license texts are bundled as
-`Assets/Fonts/Forum-OFL.txt`, `Assets/Fonts/Vollkorn-OFL.txt`, and
-`Assets/Fonts/Manrope-OFL.txt`.
+The menu interface embeds Arsenal, Fixel, and Vollkorn. Each family is
+distributed under the SIL Open Font License 1.1. The unmodified license texts
+are bundled as `Assets/Fonts/Arsenal-OFL.txt`, `Assets/Fonts/Fixel-OFL.txt`, and
+`Assets/Fonts/Vollkorn-OFL.txt`.
 
-Forum: Copyright (c) 2011, Denis Masharov, with Reserved Font Name "Forum".
+Arsenal: Copyright 2012 The Arsenal Project Authors. Designed by Ukrainian type
+designer Andrij Shevchenko.
 
-Vollkorn: Copyright 2017 The Vollkorn Project Authors.
+Fixel: Copyright 2023 MacPaw Inc. Designed by MacPaw and AlphaBravo.
 
-Manrope: Copyright 2018 The Manrope Project Authors.
+Vollkorn: Copyright 2017 The Vollkorn Project Authors. Used only as a fallback
+for Kazakh Cyrillic and rare glyphs.
 
-Source: https://github.com/google/fonts
+Sources: https://github.com/google/fonts and https://github.com/MacPaw/Fixel
 
 ## GodotSteam
 

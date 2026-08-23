@@ -8,11 +8,13 @@ extends LoopbackNetworkTest
 # остаются в LoopbackNetworkTest / LocalMatchHost: здесь меняется только доставка.
 const MatchHost = preload("res://Scripts/core/LocalMatchHost.gd")
 const MatchCommand = preload("res://Scripts/core/MatchCommand.gd")
+const BotMonteCarloStrategy = preload("res://Scripts/core/BotMonteCarloStrategy.gd")
 
 
 const BOT_ACTION_DELAY_SECONDS := 0.65
 const HUMAN_AUTO_TURN_INACTIVITY_SECONDS := 90.0
 const HUMAN_AUTO_TURN_COUNTDOWN_SECONDS := 45.0
+const LAST_CARD_AUTO_PLAY_DELAY_SECONDS := 5.0
 const HUMAN_AUTO_TURN_SYNC_INTERVAL_SECONDS := 1.0
 const NEXT_ROUND_AUTO_START_SECONDS := 30.0
 const NEXT_ROUND_COUNTDOWN_SYNC_INTERVAL_SECONDS := 1.0
@@ -481,14 +483,23 @@ func _append_reconnect_state(snapshot: Dictionary) -> Dictionary:
 	if is_host():
 		snapshot["recipient_auto_turn_enabled"] = _human_auto_turn_enabled_by_player.has(recipient_player_index)
 		var active_auto_turn_player_index := _get_active_human_player_index()
+		var last_card_auto_play_active := _is_last_card_auto_play_pending(active_auto_turn_player_index)
 		var active_auto_turn_enabled := (
 			active_auto_turn_player_index >= 0
-			and _human_auto_turn_enabled_by_player.has(active_auto_turn_player_index)
+			and (
+				_human_auto_turn_enabled_by_player.has(active_auto_turn_player_index)
+				or last_card_auto_play_active
+			)
 		)
 		snapshot["active_auto_turn_player_index"] = active_auto_turn_player_index if active_auto_turn_enabled else -1
-		snapshot["active_auto_turn_total_seconds"] = HUMAN_AUTO_TURN_COUNTDOWN_SECONDS
+		var active_timer_seconds := (
+			LAST_CARD_AUTO_PLAY_DELAY_SECONDS
+			if last_card_auto_play_active
+			else HUMAN_AUTO_TURN_COUNTDOWN_SECONDS
+		)
+		snapshot["active_auto_turn_total_seconds"] = active_timer_seconds
 		snapshot["active_auto_turn_remaining_seconds"] = (
-			maxf(0.0, HUMAN_AUTO_TURN_COUNTDOWN_SECONDS - _human_auto_turn_elapsed_seconds)
+			maxf(0.0, active_timer_seconds - _human_auto_turn_elapsed_seconds)
 			if active_auto_turn_enabled
 			else 0.0
 		)
@@ -943,7 +954,8 @@ func _process_human_auto_turn(delta: float) -> void:
 
 	_human_auto_turn_elapsed_seconds += delta
 	var auto_turn_is_enabled := _human_auto_turn_enabled_by_player.has(player_index)
-	if auto_turn_is_enabled:
+	var last_card_auto_play_active := _is_last_card_auto_play_pending(player_index)
+	if auto_turn_is_enabled or last_card_auto_play_active:
 		_human_auto_turn_sync_elapsed_seconds += maxf(0.0, delta)
 		if _human_auto_turn_sync_elapsed_seconds >= HUMAN_AUTO_TURN_SYNC_INTERVAL_SECONDS:
 			_human_auto_turn_sync_elapsed_seconds = fmod(
@@ -951,8 +963,16 @@ func _process_human_auto_turn(delta: float) -> void:
 				HUMAN_AUTO_TURN_SYNC_INTERVAL_SECONDS
 			)
 			_queue_player_snapshots_for_delivery()
-	var timeout_seconds := HUMAN_AUTO_TURN_COUNTDOWN_SECONDS if auto_turn_is_enabled else HUMAN_AUTO_TURN_INACTIVITY_SECONDS
+	var timeout_seconds := (
+		LAST_CARD_AUTO_PLAY_DELAY_SECONDS
+		if last_card_auto_play_active
+		else (HUMAN_AUTO_TURN_COUNTDOWN_SECONDS if auto_turn_is_enabled else HUMAN_AUTO_TURN_INACTIVITY_SECONDS)
+	)
 	if _human_auto_turn_elapsed_seconds < timeout_seconds:
+		return
+	if last_card_auto_play_active:
+		if _submit_local_bot_action(player_index, true, true):
+			_reset_human_auto_turn()
 		return
 
 	if not auto_turn_is_enabled:
@@ -1001,6 +1021,29 @@ func _get_human_auto_turn_decision_key(player_index: int) -> String:
 	]
 
 
+func _is_last_card_auto_play_pending(player_index: int) -> bool:
+	if (
+		match_host == null
+		or match_host.game.current_round == null
+		or match_host.game.current_round.state != Round.State.PLAYING
+		or player_index < 0
+		or player_index >= match_host.game.players.size()
+	):
+		return false
+	var player: Player = match_host.game.players[player_index]
+	if player.hand.size() != 1:
+		return false
+	# A Joker is never a mechanical last-card play: even as the only card it
+	# still requires the player to choose whether it takes the trick (or to
+	# declare its lead condition). Leave that decision to the normal turn flow.
+	if player.hand[0].is_joker:
+		return false
+	return (
+		match_host.game.active_trick == null
+		or match_host.game.active_trick.can_play_card(player, player.hand[0])
+	)
+
+
 func _reset_human_auto_turn() -> void:
 	_human_auto_turn_decision_key = ""
 	_human_auto_turn_elapsed_seconds = 0.0
@@ -1025,7 +1068,11 @@ func _set_player_auto_turn_enabled(player_index: int, enabled: bool, announce: b
 			_set_status("Игрок %s отключил автоход. Следующая AFK-проверка начнётся с 1 минуты 30 секунд." % player_name)
 
 
-func _submit_local_bot_action(player_index: int, is_human_timeout: bool = false) -> bool:
+func _submit_local_bot_action(
+	player_index: int,
+	is_human_timeout: bool = false,
+	is_last_card_auto_play: bool = false
+) -> bool:
 	if match_host == null or match_host.game.current_round == null:
 		return false
 
@@ -1063,7 +1110,10 @@ func _submit_local_bot_action(player_index: int, is_human_timeout: bool = false)
 	var action_text := "заказал %d" % int(command.payload.get("bid", 0)) if command.type == MatchCommand.Type.BID else "сыграл карту"
 	if is_human_timeout:
 		var player_name: String = str(match_host.game.players[player_index].display_name)
-		_set_status("У игрока %s закончился 45-секундный таймер — выполнен автоход: %s." % [player_name, action_text])
+		if is_last_card_auto_play:
+			_set_status("Последняя карта игрока %s автоматически сыграна через 5 секунд." % player_name)
+		else:
+			_set_status("У игрока %s закончился 45-секундный таймер — выполнен автоход: %s." % [player_name, action_text])
 	else:
 		_set_status("Бот %d %s. Ревизия %d отправляется подключённому игроку." % [player_index - 1, action_text, match_host.revision])
 	return true
@@ -1215,7 +1265,30 @@ func _choose_local_bot_card(player: Player, legal_cards: Array[Card], difficulty
 
 
 func _choose_hard_local_bot_card(player: Player, legal_cards: Array[Card]) -> Card:
+	if _should_local_bot_shed_high_card_in_misere(legal_cards):
+		return _select_local_bot_non_joker_by_strength(legal_cards, true)
 	var wants_trick := _local_bot_wants_trick(player)
+	var planning_cards := legal_cards.duplicate()
+	var held_joker := _get_local_bot_joker(planning_cards)
+	if (
+		wants_trick
+		and held_joker != null
+		and planning_cards.size() > 1
+		and not _should_local_bot_spend_joker(player, planning_cards)
+	):
+		planning_cards.erase(held_joker)
+	var planned_card: Card = BotMonteCarloStrategy.choose_card(
+		match_host.game,
+		player.player_id,
+		planning_cards,
+		_bot_random,
+		_match_mode == SteamBridge.MATCH_MODE_TEAMS_2V2,
+		BotMonteCarloStrategy.DEFAULT_SIMULATION_COUNT
+	)
+	if planned_card != null:
+		return planned_card
+
+	# Keep the established deterministic policy as a safe fallback.
 	if match_host.game.active_trick == null:
 		if match_host.game.current_round.round_type == Round.RoundType.GOLDEN:
 			return _select_golden_local_bot_lead_card(legal_cards, match_host.game.current_round.trump)
@@ -1278,6 +1351,11 @@ func _should_local_bot_spend_joker(player: Player, legal_cards: Array[Card]) -> 
 
 
 func _select_local_bot_misere_lead_card(player: Player, cards: Array[Card]) -> Card:
+	cards = BotMonteCarloStrategy._filter_misere_lead_candidates(
+		match_host.game,
+		player.player_id,
+		cards
+	)
 	var regular_cards: Array[Card] = []
 	var safely_coverable_cards: Array[Card] = []
 	var cards_with_live_suit: Array[Card] = []

@@ -25,7 +25,6 @@ window/stretch/mode="canvas_items"
 [internationalization]
 
 locale/translations=PackedStringArray("res://Localization/menus.en.translation", "res://Localization/menus.uk.translation", "res://Localization/menus.pl.translation", "res://Localization/menus.be.translation", "res://Localization/menus.kz.translation", "res://Localization/menus.ru.translation", "res://Localization/table.en.translation", "res://Localization/table.uk.translation", "res://Localization/table.pl.translation", "res://Localization/table.be.translation", "res://Localization/table.kz.translation", "res://Localization/table.ru.translation", "res://Localization/interface.en.translation", "res://Localization/interface.uk.translation", "res://Localization/interface.pl.translation", "res://Localization/interface.be.translation", "res://Localization/interface.kz.translation", "res://Localization/interface.ru.translation")
-locale/fallback="en"
 
 [rendering]
 

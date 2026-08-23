@@ -2,13 +2,13 @@
 
 importer="font_data_dynamic"
 type="FontFile"
-uid="uid://k0eferh7iibq"
-path="res://.godot/imported/Manrope-Variable.ttf-7d4d47ecbf4c203851d70f7669d30b49.fontdata"
+uid="uid://2ei24vhrthkb"
+path="res://.godot/imported/Arsenal-Bold.ttf-9926999b24502c02419c5bec7a263938.fontdata"
 
 [deps]
 
-source_file="res://Assets/Fonts/Manrope-Variable.ttf"
-dest_files=["res://.godot/imported/Manrope-Variable.ttf-7d4d47ecbf4c203851d70f7669d30b49.fontdata"]
+source_file="res://Assets/Fonts/Arsenal-Bold.ttf"
+dest_files=["res://.godot/imported/Arsenal-Bold.ttf-9926999b24502c02419c5bec7a263938.fontdata"]
 
 [params]
 

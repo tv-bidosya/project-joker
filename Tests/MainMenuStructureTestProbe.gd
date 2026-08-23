@@ -32,13 +32,18 @@ func _run() -> void:
 	var new_game_button := _find_button(main_scene.menu_content, "Новая игра с ботами")
 	var tutorial_button := _find_button(main_scene.menu_content, "Обучение")
 	assert(new_game_button != null and tutorial_button != null)
-	var new_game_style := new_game_button.get_theme_stylebox("normal") as StyleBoxFlat
-	var tutorial_style := tutorial_button.get_theme_stylebox("normal") as StyleBoxFlat
+	var new_game_style := new_game_button.get_theme_stylebox("normal")
+	var tutorial_style := tutorial_button.get_theme_stylebox("normal")
 	assert(new_game_style != null and tutorial_style != null)
-	assert(
-		new_game_style.bg_color.is_equal_approx(tutorial_style.bg_color),
-		"Main menu entries must all use the same neutral default style"
-	)
+	if new_game_style is StyleBoxFlat and tutorial_style is StyleBoxFlat:
+		assert(
+			new_game_style.bg_color.is_equal_approx(tutorial_style.bg_color),
+			"Main menu entries must all use the same neutral default style"
+		)
+	else:
+		assert(new_game_style is StyleBoxTexture and tutorial_style is StyleBoxTexture)
+		assert(new_game_style.texture.resource_path == tutorial_style.texture.resource_path)
+		assert(new_game_style.modulate_color.is_equal_approx(tutorial_style.modulate_color))
 
 	main_scene._show_new_game_setup()
 	await process_frame
@@ -86,7 +91,7 @@ func _run() -> void:
 	main_scene._show_display_settings_menu()
 	await process_frame
 	await process_frame
-	assert(main_scene.menu_panel.size.y < 760.0, "The display page must not keep the old fixed-height empty footer.")
+	assert(main_scene.menu_panel.size.y < 900.0, "The expanded display page must remain fitted instead of using a full-screen empty footer.")
 	var scroll_content_left_margin: int = main_scene.menu_scroll_content_margin.get_theme_constant("margin_left")
 	var scroll_content_right_margin: int = main_scene.menu_scroll_content_margin.get_theme_constant("margin_right")
 	assert(scroll_content_left_margin >= 18)
@@ -96,6 +101,10 @@ func _run() -> void:
 	assert(ui_theme_selector != null and ui_theme_selector.item_count == 2)
 	assert(ui_theme_selector.get_item_text(0) == "Классический изумруд")
 	assert(ui_theme_selector.get_item_text(1) == "Ночной город · синий")
+	var button_style_selector := main_scene.menu_content.find_child("MenuButtonStyleSelector", true, false) as OptionButton
+	assert(button_style_selector != null and button_style_selector.item_count == 2)
+	assert(button_style_selector.get_item_text(0) == "Классические кнопки")
+	assert(button_style_selector.get_item_text(1) == "Объёмные кнопки")
 	var classic_panel_style := main_scene.menu_panel.get_theme_stylebox("panel") as StyleBoxFlat
 	var classic_panel_color := classic_panel_style.bg_color
 	main_scene._on_menu_ui_theme_selected(1)
@@ -105,7 +114,9 @@ func _run() -> void:
 	assert(ui_theme_selector != null and ui_theme_selector.selected == 1)
 	var night_panel_style := main_scene.menu_panel.get_theme_stylebox("panel") as StyleBoxFlat
 	assert(not night_panel_style.bg_color.is_equal_approx(classic_panel_color))
-	assert(main_scene.menu_heading_font.resource_path.ends_with("Forum-Regular.ttf"))
+	var heading_font := main_scene.menu_heading_font as FontVariation
+	assert(heading_font != null)
+	assert(heading_font.base_font.resource_path.ends_with("Arsenal-Bold.ttf"))
 	main_scene.menu_ui_theme = 0
 	main_scene._refresh_menu_ui_theme()
 	var background_selector := main_scene.menu_content.find_child("MenuBackgroundThemeSelector", true, false) as OptionButton

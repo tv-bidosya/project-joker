@@ -8,24 +8,50 @@ enum Style {
 }
 
 const STYLE_NAMES := ["Классический изумруд", "Ночной город · синий"]
-const FORUM_FONT: FontFile = preload("res://Assets/Fonts/Forum-Regular.ttf")
+const ARSENAL_BOLD_FONT: FontFile = preload("res://Assets/Fonts/Arsenal-Bold.ttf")
+const FIXEL_DISPLAY_SEMIBOLD_FONT: FontFile = preload("res://Assets/Fonts/FixelDisplay-SemiBold.ttf")
+const FIXEL_TEXT_MEDIUM_FONT: FontFile = preload("res://Assets/Fonts/FixelText-Medium.ttf")
 const VOLLKORN_FONT: FontFile = preload("res://Assets/Fonts/Vollkorn-Variable.ttf")
-const MANROPE_FONT: FontFile = preload("res://Assets/Fonts/Manrope-Variable.ttf")
+const BEVELED_EMERALD_TEXTURE: Texture2D = preload("res://Assets/UI/menu_button_beveled_emerald.svg")
+const BEVELED_EMERALD_HOVER_TEXTURE: Texture2D = preload("res://Assets/UI/menu_button_beveled_emerald_hover.svg")
+const BEVELED_BLUE_TEXTURE: Texture2D = preload("res://Assets/UI/menu_button_beveled_blue.svg")
+const BEVELED_BLUE_HOVER_TEXTURE: Texture2D = preload("res://Assets/UI/menu_button_beveled_blue_hover.svg")
 
 
 static func heading_font() -> Font:
-	return FORUM_FONT
+	return _font_with_fallback(ARSENAL_BOLD_FONT)
 
 
 static func body_font() -> Font:
-	return _weighted_font(MANROPE_FONT, 500)
+	return _font_with_fallback(FIXEL_TEXT_MEDIUM_FONT)
 
 
 static func button_font(style: int) -> Font:
-	return _weighted_font(
-		MANROPE_FONT if style == Style.NIGHT_CITY_BLUE else VOLLKORN_FONT,
-		600
-	)
+	return _font_with_fallback(FIXEL_DISPLAY_SEMIBOLD_FONT)
+
+
+static func beveled_button_style(style: int, state: StringName, is_primary := false) -> StyleBoxTexture:
+	var result := StyleBoxTexture.new()
+	var use_hover_texture := state == &"hover" or state == &"focus"
+	if style == Style.NIGHT_CITY_BLUE:
+		result.texture = BEVELED_BLUE_HOVER_TEXTURE if use_hover_texture else BEVELED_BLUE_TEXTURE
+	else:
+		result.texture = BEVELED_EMERALD_HOVER_TEXTURE if use_hover_texture else BEVELED_EMERALD_TEXTURE
+	for side in [SIDE_LEFT, SIDE_RIGHT]:
+		result.set_texture_margin(side, 30.0)
+	for side in [SIDE_TOP, SIDE_BOTTOM]:
+		result.set_texture_margin(side, 12.0)
+	result.content_margin_left = 30.0
+	result.content_margin_right = 30.0
+	result.content_margin_top = 8.0
+	result.content_margin_bottom = 10.0
+	if state == &"pressed":
+		result.modulate_color = Color(0.78, 0.8, 0.82, 1.0)
+	elif state == &"disabled":
+		result.modulate_color = Color(0.48, 0.5, 0.5, 0.7)
+	elif is_primary and state == &"normal":
+		result.modulate_color = Color(1.08, 1.06, 0.98, 1.0)
+	return result
 
 
 static func palette(style: int) -> Dictionary:
@@ -70,12 +96,10 @@ static func palette(style: int) -> Dictionary:
 	}
 
 
-static func _weighted_font(base_font: Font, weight: int) -> FontVariation:
+static func _font_with_fallback(base_font: Font) -> FontVariation:
 	var variation := FontVariation.new()
 	variation.base_font = base_font
-	variation.variation_opentype = {&"wght": weight}
-	if base_font == MANROPE_FONT:
-		# Manrope lacks several Kazakh Cyrillic glyphs. Vollkorn covers them and
-		# keeps every supported interface language readable without OS fonts.
-		variation.fallbacks = [VOLLKORN_FONT]
+	# Fixel and Arsenal cover the full Ukrainian alphabet. Vollkorn remains a
+	# bundled fallback for Kazakh Cyrillic and any rarer glyphs in translations.
+	variation.fallbacks = [VOLLKORN_FONT]
 	return variation

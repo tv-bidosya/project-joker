@@ -2,13 +2,13 @@
 
 importer="font_data_dynamic"
 type="FontFile"
-uid="uid://bk4lg7brd3cl8"
-path="res://.godot/imported/Forum-Regular.ttf-a075bfb38bc1936e5daade0bef085dc8.fontdata"
+uid="uid://j2ghs5kcvgos"
+path="res://.godot/imported/FixelText-Medium.ttf-f01f05183aae4e256ee56650c20cc2be.fontdata"
 
 [deps]
 
-source_file="res://Assets/Fonts/Forum-Regular.ttf"
-dest_files=["res://.godot/imported/Forum-Regular.ttf-a075bfb38bc1936e5daade0bef085dc8.fontdata"]
+source_file="res://Assets/Fonts/FixelText-Medium.ttf"
+dest_files=["res://.godot/imported/FixelText-Medium.ttf-f01f05183aae4e256ee56650c20cc2be.fontdata"]
 
 [params]
 

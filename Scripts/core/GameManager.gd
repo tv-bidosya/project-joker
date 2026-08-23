@@ -34,6 +34,7 @@ const NetworkHost = preload("res://Scripts/core/LocalMatchHost.gd")
 const LoopbackNetwork = preload("res://Scripts/core/LoopbackNetworkTest.gd")
 const SteamBridge = preload("res://Scripts/core/SteamBridge.gd")
 const SteamP2PMatch = preload("res://Scripts/core/SteamP2PMatch.gd")
+const BotMonteCarloStrategy = preload("res://Scripts/core/BotMonteCarloStrategy.gd")
 const CardArtworkResource = preload("res://Scripts/ui/CardArtwork.gd")
 const Dice3DViewResource = preload("res://Scripts/ui/Dice3DView.gd")
 const RoundResultsCountdownBorderResource = preload("res://Scripts/ui/RoundResultsCountdownBorder.gd")
@@ -63,6 +64,7 @@ const ROUND_RESULTS_PANEL_ROW_HEIGHT := 26.0
 const NETWORK_NEXT_ROUND_AUTO_START_SECONDS := 30.0
 const INACTIVITY_AUTO_TURN_DELAY_SECONDS := 90.0
 const AUTO_TURN_DURATION_SECONDS := 45.0
+const LAST_CARD_AUTO_PLAY_DELAY_SECONDS := 5.0
 const REACTION_DISPLAY_DURATION := 1.25
 const SOUNDPAD_BUBBLE_DISPLAY_DURATION := 1.6
 const CHAT_NOTIFICATION_DISPLAY_DURATION := 1.5
@@ -108,6 +110,7 @@ const TABLE_FELT_NAMES := ["Классическое зелёное", "Сине�
 const TABLE_SURROUND_NAMES := ["Тёмно-зелёный", "Тёмный орех", "Светлый дуб", "Тёмный клуб", "Тёплая ткань"]
 const MENU_BACKGROUND_THEME_NAMES := ["Автоматически по времени", "Постоянный день", "Постоянный вечер", "Ночной город"]
 const MENU_UI_THEME_NAMES := ["Классический изумруд", "Ночной город · синий"]
+const MENU_BUTTON_STYLE_NAMES := ["Классические кнопки", "Объёмные кнопки"]
 const TABLE_SURROUND_SHADER_CODE := """
 shader_type canvas_item;
 render_mode unshaded;
@@ -295,6 +298,12 @@ enum MenuBackgroundTheme {
 enum MenuUiThemeStyle {
 	CLASSIC_EMERALD,
 	NIGHT_CITY_BLUE,
+}
+
+
+enum MenuButtonStyle {
+	CLASSIC,
+	LUXURY_BEVELED,
 }
 
 
@@ -537,6 +546,7 @@ var table_felt_theme: TableFeltTheme = TableFeltTheme.GREEN
 var table_surround_theme: TableSurroundTheme = TableSurroundTheme.DARK_GREEN
 var menu_background_theme: MenuBackgroundTheme = MenuBackgroundTheme.AUTO
 var menu_ui_theme: MenuUiThemeStyle = MenuUiThemeStyle.CLASSIC_EMERALD
+var menu_button_style: MenuButtonStyle = MenuButtonStyle.LUXURY_BEVELED
 var menu_panel_half_width := 370.0
 var menu_panel_last_content_height := -1.0
 var menu_panel_last_viewport_height := -1.0
@@ -717,6 +727,17 @@ var turn_reminder_play_count := 0
 var turn_reminder_next_sound_seconds := TURN_REMINDER_DELAY_SECONDS
 var displayed_player_scores: Array[int] = []
 var player_score_tweens: Dictionary = {}
+var stage_announcement_overlay: Control
+var stage_announcement_backdrop: ColorRect
+var stage_announcement_panel: PanelContainer
+var stage_announcement_stage_label: Label
+var stage_announcement_title_label: Label
+var stage_announcement_subtitle_label: Label
+var stage_announcement_top_line: ColorRect
+var stage_announcement_bottom_line: ColorRect
+var stage_announcement_tween: Tween
+var last_announced_round_type := -1
+var last_announced_round_number := -1
 
 
 func _ready() -> void:
@@ -769,6 +790,7 @@ func _ready() -> void:
 	_create_profile_music_file_dialog()
 	joker_controls.reparent(self)
 	_create_main_menu()
+	_create_stage_announcement_overlay()
 	loopback_network_test = LoopbackNetwork.new()
 	loopback_network_test.status_changed.connect(_refresh_loopback_network_status)
 	loopback_network_test.public_table_event_received.connect(_on_network_public_table_event_received)
@@ -1119,6 +1141,182 @@ func _apply_table_text_button_style(button: Button) -> void:
 	button.add_theme_stylebox_override("pressed", StyleBoxEmpty.new())
 	button.add_theme_stylebox_override("disabled", StyleBoxEmpty.new())
 	button.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+
+
+func _create_stage_announcement_overlay() -> void:
+	stage_announcement_overlay = Control.new()
+	stage_announcement_overlay.name = "StageAnnouncementOverlay"
+	stage_announcement_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	stage_announcement_overlay.z_index = 95
+	stage_announcement_overlay.visible = false
+	stage_announcement_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	add_child(stage_announcement_overlay)
+
+	stage_announcement_backdrop = ColorRect.new()
+	stage_announcement_backdrop.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	stage_announcement_backdrop.color = Color(0.005, 0.012, 0.009, 0.0)
+	stage_announcement_backdrop.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	stage_announcement_overlay.add_child(stage_announcement_backdrop)
+
+	stage_announcement_panel = PanelContainer.new()
+	stage_announcement_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	stage_announcement_panel.pivot_offset = Vector2(430.0, 132.0)
+	_set_control_layout(
+		stage_announcement_panel,
+		0.5,
+		0.5,
+		0.5,
+		0.5,
+		-430.0,
+		-132.0,
+		430.0,
+		132.0
+	)
+	stage_announcement_overlay.add_child(stage_announcement_panel)
+
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_left", 46)
+	margin.add_theme_constant_override("margin_top", 24)
+	margin.add_theme_constant_override("margin_right", 46)
+	margin.add_theme_constant_override("margin_bottom", 24)
+	stage_announcement_panel.add_child(margin)
+
+	var content := VBoxContainer.new()
+	content.alignment = BoxContainer.ALIGNMENT_CENTER
+	content.add_theme_constant_override("separation", 8)
+	margin.add_child(content)
+
+	stage_announcement_top_line = ColorRect.new()
+	stage_announcement_top_line.custom_minimum_size = Vector2(0.0, 2.0)
+	stage_announcement_top_line.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	content.add_child(stage_announcement_top_line)
+
+	stage_announcement_stage_label = Label.new()
+	stage_announcement_stage_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	stage_announcement_stage_label.add_theme_font_override("font", MenuUiThemeResource.body_font())
+	stage_announcement_stage_label.add_theme_font_size_override("font_size", 18)
+	stage_announcement_stage_label.add_theme_constant_override("outline_size", 5)
+	stage_announcement_stage_label.add_theme_color_override("font_outline_color", Color(0.0, 0.0, 0.0, 0.86))
+	content.add_child(stage_announcement_stage_label)
+
+	stage_announcement_title_label = Label.new()
+	stage_announcement_title_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	stage_announcement_title_label.add_theme_font_override("font", MenuUiThemeResource.heading_font())
+	stage_announcement_title_label.add_theme_font_size_override("font_size", 52)
+	stage_announcement_title_label.add_theme_constant_override("outline_size", 10)
+	stage_announcement_title_label.add_theme_constant_override("shadow_offset_x", 0)
+	stage_announcement_title_label.add_theme_constant_override("shadow_offset_y", 5)
+	stage_announcement_title_label.add_theme_color_override("font_outline_color", Color(0.025, 0.015, 0.005, 0.96))
+	stage_announcement_title_label.add_theme_color_override("font_shadow_color", Color(0.0, 0.0, 0.0, 0.8))
+	content.add_child(stage_announcement_title_label)
+
+	stage_announcement_subtitle_label = Label.new()
+	stage_announcement_subtitle_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	stage_announcement_subtitle_label.add_theme_font_override("font", MenuUiThemeResource.body_font())
+	stage_announcement_subtitle_label.add_theme_font_size_override("font_size", 19)
+	stage_announcement_subtitle_label.add_theme_constant_override("outline_size", 5)
+	stage_announcement_subtitle_label.add_theme_color_override("font_outline_color", Color(0.0, 0.0, 0.0, 0.88))
+	content.add_child(stage_announcement_subtitle_label)
+
+	stage_announcement_bottom_line = ColorRect.new()
+	stage_announcement_bottom_line.custom_minimum_size = Vector2(0.0, 2.0)
+	stage_announcement_bottom_line.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	content.add_child(stage_announcement_bottom_line)
+
+
+func _show_stage_announcement_if_needed(round_type: int, round_number: int) -> void:
+	if round_number <= 0 or not is_instance_valid(stage_announcement_overlay):
+		return
+	if round_number < last_announced_round_number:
+		last_announced_round_type = -1
+		last_announced_round_number = -1
+	if round_type == last_announced_round_type:
+		last_announced_round_number = round_number
+		return
+	last_announced_round_type = round_type
+	last_announced_round_number = round_number
+	_show_stage_announcement(round_type)
+
+
+func _show_stage_announcement(round_type: int) -> void:
+	var stage_number := _get_stage_number(round_type)
+	var title_key := "STAGE_NORMAL_TITLE"
+	var subtitle_key := "STAGE_NORMAL_SUBTITLE"
+	var accent := Color(0.92, 0.7, 0.25, 1.0)
+	var panel_tint := Color(0.018, 0.09, 0.057, 0.97)
+	match round_type:
+		Round.RoundType.DARK:
+			title_key = "STAGE_DARK_TITLE"
+			subtitle_key = "STAGE_DARK_SUBTITLE"
+			accent = Color(0.68, 0.48, 0.96, 1.0)
+			panel_tint = Color(0.045, 0.025, 0.09, 0.98)
+		Round.RoundType.NO_TRUMP:
+			title_key = "STAGE_NO_TRUMP_TITLE"
+			subtitle_key = "STAGE_NO_TRUMP_SUBTITLE"
+			accent = Color(0.58, 0.8, 1.0, 1.0)
+			panel_tint = Color(0.018, 0.055, 0.095, 0.98)
+		Round.RoundType.GOLDEN:
+			title_key = "STAGE_GOLDEN_TITLE"
+			subtitle_key = "STAGE_GOLDEN_SUBTITLE"
+			accent = Color(1.0, 0.76, 0.18, 1.0)
+			panel_tint = Color(0.12, 0.068, 0.008, 0.98)
+		Round.RoundType.MISERE:
+			title_key = "STAGE_MISERE_TITLE"
+			subtitle_key = "STAGE_MISERE_SUBTITLE"
+			accent = Color(0.98, 0.29, 0.25, 1.0)
+			panel_tint = Color(0.11, 0.018, 0.02, 0.98)
+
+	var stage_label_template := tr("STAGE_ANNOUNCEMENT_LABEL")
+	stage_announcement_stage_label.text = (
+		stage_label_template % stage_number
+		if "%d" in stage_label_template
+		else "%s %d" % [stage_label_template, stage_number]
+	)
+	stage_announcement_title_label.text = tr(title_key)
+	stage_announcement_subtitle_label.text = tr(subtitle_key)
+	stage_announcement_stage_label.add_theme_color_override("font_color", Color(accent, 0.94))
+	stage_announcement_title_label.add_theme_color_override("font_color", Color(1.0, 0.91, 0.68, 1.0))
+	stage_announcement_subtitle_label.add_theme_color_override("font_color", Color(0.9, 0.91, 0.84, 0.96))
+	stage_announcement_top_line.color = accent
+	stage_announcement_bottom_line.color = accent
+	var panel_style := _create_flat_style(panel_tint, accent, 2, 16, 18)
+	panel_style.content_margin_left = 10.0
+	panel_style.content_margin_top = 8.0
+	panel_style.content_margin_right = 10.0
+	panel_style.content_margin_bottom = 8.0
+	stage_announcement_panel.add_theme_stylebox_override("panel", panel_style)
+
+	if is_instance_valid(stage_announcement_tween):
+		stage_announcement_tween.kill()
+	stage_announcement_overlay.visible = true
+	stage_announcement_backdrop.color = Color(0.005, 0.012, 0.009, 0.0)
+	stage_announcement_panel.modulate = Color(1.0, 1.0, 1.0, 0.0)
+	stage_announcement_panel.scale = Vector2(0.72, 0.72)
+	stage_announcement_tween = create_tween()
+	stage_announcement_tween.set_pause_mode(Tween.TWEEN_PAUSE_PROCESS)
+	stage_announcement_tween.tween_property(stage_announcement_backdrop, "color:a", 0.64, 0.24)
+	stage_announcement_tween.parallel().tween_property(stage_announcement_panel, "modulate:a", 1.0, 0.2)
+	stage_announcement_tween.parallel().tween_property(stage_announcement_panel, "scale", Vector2(1.055, 1.055), 0.34).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	stage_announcement_tween.tween_property(stage_announcement_panel, "scale", Vector2.ONE, 0.12).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	stage_announcement_tween.tween_interval(1.55)
+	stage_announcement_tween.tween_property(stage_announcement_panel, "modulate:a", 0.0, 0.34)
+	stage_announcement_tween.parallel().tween_property(stage_announcement_backdrop, "color:a", 0.0, 0.4)
+	stage_announcement_tween.tween_callback(func() -> void:
+		stage_announcement_overlay.visible = false
+	)
+
+
+func _get_stage_number(round_type: int) -> int:
+	match round_type:
+		Round.RoundType.DARK:
+			return 2
+		Round.RoundType.NO_TRUMP:
+			return 3
+		Round.RoundType.GOLDEN:
+			return 4
+		Round.RoundType.MISERE:
+			return 5
+	return 1
 
 
 func _get_menu_palette() -> Dictionary:
@@ -2136,6 +2334,9 @@ func _on_open_steam_p2p_table_pressed() -> void:
 		return
 	steam_p2p_table_presentation = true
 	steam_p2p_main_table_presentation = true
+	network_visual_round_number = -1
+	last_announced_round_type = -1
+	last_announced_round_number = -1
 	_reset_loopback_network_joker_selection()
 	menu_overlay.visible = false
 	if is_instance_valid(network_table_view):
@@ -2702,6 +2903,10 @@ func _refresh_network_main_table() -> void:
 	if round_number != network_visual_round_number:
 		if round_number > 0:
 			_play_sound(SoundEffect.DEAL)
+			_show_stage_announcement_if_needed(
+				int(round_data.get("round_type", Round.RoundType.NORMAL)),
+				round_number
+			)
 		network_visual_round_number = round_number
 		network_collected_trick_key = ""
 	var result_key := _get_network_round_result_key(snapshot, round_data)
@@ -4980,7 +5185,7 @@ func _format_final_standings_bbcode(standings: Array[Dictionary]) -> String:
 				+ "  [color=#d7e3d7]%s[/color] [font_size=21][b][color=#ffffff]%d[/color][/b][/font_size]"
 				+ "  [color=#708c77]•[/color] [color=#d7e3d7]%s[/color] [b]%d[/b]"
 				+ "  [color=#708c77]•[/color] [color=#d7e3d7]%s[/color] [b]%d[/b]"
-				+ "  [color=#708c77]•[/color] [color=#d7e3d7]%s[/color] [b]%d[/b][/center]"
+				+ "  [color=#708c77]•[/color] [color=#d7e3d7]%s[/color] [b]%s[/b][/center]"
 			) % [
 				prefix,
 				_get_place_text(place, shares_place),
@@ -4992,10 +5197,30 @@ func _format_final_standings_bbcode(standings: Array[Dictionary]) -> String:
 				tr("RESULT_EXACT_BIDS"),
 				int(standing.get("exact_orders", 0)),
 				tr("RESULT_JOKERS_DEALT"),
-				int(standing.get("jokers_dealt", 0))
+				_format_standing_joker_statistics(standing, true)
 			]
 		)
 	return "\n".join(final_lines)
+
+
+func _format_standing_joker_statistics(standing: Dictionary, bbcode_safe := false) -> String:
+	var breakdown_variant: Variant = standing.get("joker_breakdown", [])
+	if breakdown_variant is Array and (breakdown_variant as Array).size() > 1:
+		var player_parts := PackedStringArray()
+		for player_variant in breakdown_variant as Array:
+			if not (player_variant is Dictionary):
+				continue
+			var player_data: Dictionary = player_variant
+			var player_name := str(player_data.get("name", tr("PLAYER_GENERIC")))
+			if bbcode_safe:
+				player_name = player_name.replace("[", "(").replace("]", ")")
+			player_parts.append("%s — %d" % [
+				player_name,
+				int(player_data.get("jokers_dealt", 0)),
+			])
+		if not player_parts.is_empty():
+			return ", ".join(player_parts)
+	return str(int(standing.get("jokers_dealt", 0)))
 
 
 func _is_network_full_game_complete(snapshot: Dictionary) -> bool:
@@ -5016,7 +5241,7 @@ func _get_network_final_result_lines(snapshot: Dictionary) -> PackedStringArray:
 			int(standing.get("score", 0)),
 			int(standing.get("tricks_taken", 0)),
 			int(standing.get("exact_orders", 0))
-		]) + " · %s: %d" % [tr("RESULT_JOKERS_DEALT"), int(standing.get("jokers_dealt", 0))])
+		]) + " · %s: %s" % [tr("RESULT_JOKERS_DEALT"), _format_standing_joker_statistics(standing)])
 	return result_lines
 
 
@@ -5044,13 +5269,19 @@ func _get_network_final_standings(snapshot: Dictionary) -> Array[Dictionary]:
 			continue
 		var player_data: Dictionary = player_data_variant
 		var player_index := int(player_data.get("player_index", -1))
+		var player_jokers := int(total_jokers_by_player.get(player_index, 0))
 		standings.append({
 			"player_id": player_index,
 			"name": str(player_data.get("display_name", "Игрок")),
 			"score": int(player_data.get("total_score", 0)),
 			"tricks_taken": int(total_tricks_by_player.get(player_index, 0)),
 			"exact_orders": int(player_data.get("exact_orders_completed", 0)),
-			"jokers_dealt": int(total_jokers_by_player.get(player_index, 0)),
+			"jokers_dealt": player_jokers,
+			"joker_breakdown": [{
+				"player_id": player_index,
+				"name": str(player_data.get("display_name", "Игрок")),
+				"jokers_dealt": player_jokers,
+			}],
 			"place": 0,
 			"shares_place": false
 		})
@@ -5065,6 +5296,7 @@ func _get_network_final_standings(snapshot: Dictionary) -> Array[Dictionary]:
 				"tricks_taken": 0,
 				"exact_orders": 0,
 				"jokers_dealt": 0,
+				"joker_breakdown": [],
 				"place": 0,
 				"shares_place": false,
 			}
@@ -5076,6 +5308,12 @@ func _get_network_final_standings(snapshot: Dictionary) -> Array[Dictionary]:
 				team_standing["tricks_taken"] += int(player_standing.get("tricks_taken", 0))
 				team_standing["exact_orders"] += int(player_standing.get("exact_orders", 0))
 				team_standing["jokers_dealt"] += int(player_standing.get("jokers_dealt", 0))
+				var team_joker_breakdown: Array = team_standing["joker_breakdown"]
+				team_joker_breakdown.append({
+					"player_id": player_index,
+					"name": str(player_standing.get("name", "Игрок")),
+					"jokers_dealt": int(player_standing.get("jokers_dealt", 0)),
+				})
 			team_standings.append(team_standing)
 		standings = team_standings
 
@@ -6212,18 +6450,17 @@ func _refresh_profile_music_playlist() -> void:
 func _show_rules_menu(return_to_tutorial := false) -> void:
 	menu_overlay.visible = true
 	_clear_children(menu_content)
-	_add_menu_title("Правила партии", "Краткая памятка — полный документ остаётся в Game Design Document")
-	_add_menu_label("• Играют четыре игрока. Сдающий меняется по кругу; в начале выбирается случайно.", 15)
-	_add_menu_label("• В обычных, тёмных и бескозырных раздачах игроки заказывают число взяток. Последний заказ не может уравнять сумму заказов с числом карт.", 15)
+	_add_menu_title("Правила партии", "")
+	_add_menu_label("• В обычных, тёмных и бескозырных раздачах игроки заказывают число взяток. Последний заказ не может уравнять сумму заказов с числом карт.", 16)
 	_add_menu_label("Подсчёт очков", 19, Color(0.97, 0.86, 0.55, 1.0))
-	_add_menu_label("• Обычная: точный заказ больше 0 — +10 × заказ; недобор — −10 × недобор; перебор — +1 × лишняя взятка; 0/0 — +5.", 15)
-	_add_menu_label("• Тёмная: точный заказ больше 0 — +15 × заказ; недобор — −10 × недобор; перебор — +1 × лишняя взятка; 0/0 — +50.", 15)
-	_add_menu_label("• Бескозырка: точный заказ больше 0 — +15 × заказ; недобор — −10 × недобор; перебор — +1 × лишняя взятка; 0/0 — +5.", 15)
-	_add_menu_label("• Золотая: заказов нет; ноль взяток — −50, иначе +20 за каждую взятку.", 15)
-	_add_menu_label("• Мизерная: заказов нет; ноль взяток — +50, иначе −20 за каждую взятку.", 15)
-	_add_menu_label("• Важно: при недоборе или переборе очки не складываются с наградой за точный заказ. Например, заказ 2 и взято 3 — это +1, а не +21.", 15, Color(0.72, 0.85, 0.76, 1.0))
-	_add_menu_label("• Джокер можно использовать как сильнейшую карту или как сброс; при первом ходе он позволяет объявить масть и условие розыгрыша.", 15)
-	_add_menu_label("• При равенстве очков выше место у игрока, который точнее выполнил заказы за всю партию.", 15)
+	_add_menu_label("• Обычная: точный заказ больше 0 — +10 × заказ; недобор — −10 × недобор; перебор — +1 × лишняя взятка; 0/0 — +5.", 16)
+	_add_menu_label("• Тёмная: точный заказ больше 0 — +15 × заказ; недобор — −10 × недобор; перебор — +1 × лишняя взятка; 0/0 — +50.", 16)
+	_add_menu_label("• Бескозырка: точный заказ больше 0 — +15 × заказ; недобор — −10 × недобор; перебор — +1 × лишняя взятка; 0/0 — +5.", 16)
+	_add_menu_label("• Золотая: заказов нет; ноль взяток — −50, иначе +20 за каждую взятку.", 16)
+	_add_menu_label("• Мизерная: заказов нет; ноль взяток — +50, иначе −20 за каждую взятку.", 16)
+	_add_menu_label("• Важно: при недоборе или переборе очки не складываются с наградой за точный заказ. Например, заказ 2 и взято 3 — это +1, а не +21.", 16, Color(0.72, 0.85, 0.76, 1.0))
+	_add_menu_label("• Джокер можно использовать как сильнейшую карту или как сброс; при первом ходе он позволяет объявить масть и условие розыгрыша.", 16)
+	_add_menu_label("• При равенстве очков выше место у игрока, который точнее выполнил заказы за всю партию.", 16)
 	_add_menu_spacer(8.0)
 	_add_menu_button("Назад", _show_tutorial_menu if return_to_tutorial else _return_from_menu_subpage)
 
@@ -6567,7 +6804,30 @@ func _show_display_settings_menu() -> void:
 	ui_theme_selector.selected = int(menu_ui_theme)
 	ui_theme_selector.item_selected.connect(_on_menu_ui_theme_selected)
 	_add_menu_label(
-		"Меняет шрифты и палитру меню. Игровой стол и карты не затрагиваются.",
+		"Меняет палитру меню. Игровой стол и карты не затрагиваются.",
+		14,
+		palette.secondary
+	)
+	_add_menu_spacer(12.0)
+
+	var button_style_label := Label.new()
+	button_style_label.text = tr("Оформление кнопок")
+	button_style_label.add_theme_font_override("font", menu_button_font)
+	button_style_label.add_theme_font_size_override("font_size", 18)
+	button_style_label.add_theme_color_override("font_color", palette.text)
+	menu_content.add_child(button_style_label)
+
+	var button_style_selector := OptionButton.new()
+	button_style_selector.name = "MenuButtonStyleSelector"
+	for button_style_name in MENU_BUTTON_STYLE_NAMES:
+		button_style_selector.add_item(tr(button_style_name))
+	button_style_selector.custom_minimum_size = Vector2(0.0, 44.0)
+	button_style_selector.add_theme_font_size_override("font_size", 17)
+	button_style_selector.selected = int(menu_button_style)
+	button_style_selector.item_selected.connect(_on_menu_button_style_selected)
+	menu_content.add_child(button_style_selector)
+	_add_menu_label(
+		"Можно сравнить лаконичный прежний вариант и объёмные кнопки с подсветкой.",
 		14,
 		palette.secondary
 	)
@@ -6797,13 +7057,29 @@ func _create_menu_button(label_text: String, callback: Callable, is_primary: boo
 	var palette := _get_menu_palette()
 	var button := Button.new()
 	button.text = tr(label_text)
-	button.custom_minimum_size = Vector2(0.0, 56.0 if is_primary else 52.0)
+	button.custom_minimum_size = Vector2(
+		0.0,
+		58.0 if is_primary and menu_button_style == MenuButtonStyle.LUXURY_BEVELED
+		else 54.0 if menu_button_style == MenuButtonStyle.LUXURY_BEVELED
+		else 56.0 if is_primary
+		else 52.0
+	)
 	button.add_theme_font_override("font", menu_button_font)
 	button.add_theme_font_size_override("font_size", 20)
 	button.add_theme_color_override("font_color", palette.button_text)
 	button.add_theme_color_override("font_hover_color", palette.glow)
 	button.add_theme_color_override("font_pressed_color", palette.border_bright)
 	button.add_theme_color_override("font_disabled_color", Color(palette.disabled, 0.82))
+	if menu_button_style == MenuButtonStyle.LUXURY_BEVELED:
+		_apply_beveled_menu_button_style(button, is_primary)
+	else:
+		_apply_classic_menu_button_style(button, is_primary)
+	button.pressed.connect(callback)
+	return button
+
+
+func _apply_classic_menu_button_style(button: Button, is_primary: bool) -> void:
+	var palette := _get_menu_palette()
 	var normal_style := _create_flat_style(
 		Color(palette.button_primary, 0.99) if is_primary else Color(palette.button, 0.98),
 		palette.border_bright if is_primary else Color(palette.border, 0.92),
@@ -6823,8 +7099,37 @@ func _create_menu_button(label_text: String, callback: Callable, is_primary: boo
 	button.add_theme_stylebox_override("pressed", _create_flat_style(palette.button_pressed, palette.glow, 3, 7, 2))
 	button.add_theme_stylebox_override("focus", _create_flat_style(Color(0.0, 0.0, 0.0, 0.0), Color(palette.glow, 0.84), 2, 7, 0))
 	button.add_theme_stylebox_override("disabled", _create_flat_style(Color(palette.panel_deep, 0.84), Color(palette.disabled, 0.56), 1, 7, 0))
-	button.pressed.connect(callback)
-	return button
+
+
+func _apply_beveled_menu_button_style(button: Button, is_primary: bool) -> void:
+	var palette := _get_menu_palette()
+	button.add_theme_stylebox_override(
+		"normal",
+		MenuUiThemeResource.beveled_button_style(menu_ui_theme, &"normal", is_primary)
+	)
+	button.add_theme_stylebox_override(
+		"hover",
+		MenuUiThemeResource.beveled_button_style(menu_ui_theme, &"hover", is_primary)
+	)
+	button.add_theme_stylebox_override(
+		"pressed",
+		MenuUiThemeResource.beveled_button_style(menu_ui_theme, &"pressed", is_primary)
+	)
+	button.add_theme_stylebox_override(
+		"focus",
+		MenuUiThemeResource.beveled_button_style(menu_ui_theme, &"focus", is_primary)
+	)
+	button.add_theme_stylebox_override(
+		"disabled",
+		MenuUiThemeResource.beveled_button_style(menu_ui_theme, &"disabled", is_primary)
+	)
+	button.add_theme_color_override("font_outline_color", Color(0.01, 0.025, 0.018, 0.92))
+	button.add_theme_color_override("font_shadow_color", Color(0.0, 0.0, 0.0, 0.72))
+	button.add_theme_constant_override("outline_size", 1)
+	button.add_theme_constant_override("shadow_offset_x", 0)
+	button.add_theme_constant_override("shadow_offset_y", 2)
+	button.add_theme_constant_override("shadow_outline_size", 2)
+	button.add_theme_color_override("font_hover_color", palette.glow)
 
 
 func _on_new_game_pressed() -> void:
@@ -7218,6 +7523,16 @@ func _on_menu_ui_theme_selected(selected_index: int) -> void:
 	_show_display_settings_menu.call_deferred()
 
 
+func _on_menu_button_style_selected(selected_index: int) -> void:
+	menu_button_style = clampi(
+		selected_index,
+		MenuButtonStyle.CLASSIC,
+		MenuButtonStyle.LUXURY_BEVELED
+	)
+	_save_persistent_settings()
+	_show_display_settings_menu.call_deferred()
+
+
 func _on_tutorial_toggled(enabled: bool) -> void:
 	tutorial_enabled = enabled
 	_save_persistent_settings()
@@ -7533,6 +7848,11 @@ func _load_persistent_settings() -> void:
 		MenuUiThemeStyle.CLASSIC_EMERALD,
 		MenuUiThemeStyle.NIGHT_CITY_BLUE
 	)
+	menu_button_style = clampi(
+		int(config.get_value("display", "menu_button_style", MenuButtonStyle.LUXURY_BEVELED)),
+		MenuButtonStyle.CLASSIC,
+		MenuButtonStyle.LUXURY_BEVELED
+	)
 	match_history_mode = clampi(
 		int(config.get_value("game", "history_mode", match_history_mode)),
 		NetworkHost.HistoryMode.FULL,
@@ -7623,6 +7943,7 @@ func _save_persistent_settings() -> void:
 	config.set_value("display", "table_surround_theme", table_surround_theme)
 	config.set_value("display", "menu_background_theme", menu_background_theme)
 	config.set_value("display", "menu_ui_theme", menu_ui_theme)
+	config.set_value("display", "menu_button_style", menu_button_style)
 	config.set_value("audio", "sound_volume", sound_volume_index)
 	config.set_value("audio", "sound_volume_percent", sound_volume_percent)
 	config.set_value("audio", "music_volume", music_volume_index)
@@ -9062,6 +9383,8 @@ func _reset_game_session() -> void:
 	no_trump_round_index = -1
 	golden_round_index = -1
 	misere_round_index = -1
+	last_announced_round_type = -1
+	last_announced_round_number = -1
 	is_processing_automatic_actions = false
 	is_score_sheet_visible = false
 	is_round_history_visible = true
@@ -9101,6 +9424,7 @@ func _start_round() -> void:
 		return
 
 	_play_sound(SoundEffect.DEAL)
+	_show_stage_announcement_if_needed(round_type, game.current_round.number)
 
 	if _is_misere_round():
 		action_text = tr("ROUND_START_NO_BIDS") % [
@@ -11213,7 +11537,7 @@ func _get_final_results_text() -> String:
 		var place_prefix := "🏆" if place == 1 and not shares_place else "🤝" if shares_place else "•"
 		var place_text := _get_place_text(place, shares_place)
 
-		result_lines.append("%s %s: %s — %d очк. · %d вз. · точных заказов: %d · %s: %d" % [
+		result_lines.append("%s %s: %s — %d очк. · %d вз. · точных заказов: %d · %s: %s" % [
 			place_prefix,
 			place_text,
 			standing["name"],
@@ -11221,7 +11545,7 @@ func _get_final_results_text() -> String:
 			standing["tricks_taken"],
 			standing["exact_orders"],
 			tr("RESULT_JOKERS_DEALT"),
-			standing["jokers_dealt"]
+			_format_standing_joker_statistics(standing)
 		])
 
 	return "\n".join(result_lines)
@@ -11231,13 +11555,19 @@ func _get_final_standings() -> Array[Dictionary]:
 	var standings: Array[Dictionary] = []
 
 	for player in game.players:
+		var player_jokers := _get_total_jokers_for_player(player.player_id)
 		standings.append({
 			"player_id": player.player_id,
 			"name": player.display_name,
 			"score": player.total_score,
 			"tricks_taken": _get_total_tricks_for_player(player.player_id),
 			"exact_orders": player.exact_orders_completed,
-			"jokers_dealt": _get_total_jokers_for_player(player.player_id),
+			"jokers_dealt": player_jokers,
+			"joker_breakdown": [{
+				"player_id": player.player_id,
+				"name": player.display_name,
+				"jokers_dealt": player_jokers,
+			}],
 			"place": 0,
 			"shares_place": false
 		})
@@ -11252,6 +11582,7 @@ func _get_final_standings() -> Array[Dictionary]:
 				"tricks_taken": 0,
 				"exact_orders": 0,
 				"jokers_dealt": 0,
+				"joker_breakdown": [],
 				"place": 0,
 				"shares_place": false,
 			}
@@ -11263,6 +11594,12 @@ func _get_final_standings() -> Array[Dictionary]:
 				team_standing["tricks_taken"] += int(player_standing.get("tricks_taken", 0))
 				team_standing["exact_orders"] += int(player_standing.get("exact_orders", 0))
 				team_standing["jokers_dealt"] += int(player_standing.get("jokers_dealt", 0))
+				var team_joker_breakdown: Array = team_standing["joker_breakdown"]
+				team_joker_breakdown.append({
+					"player_id": player_id,
+					"name": str(player_standing.get("name", "Игрок")),
+					"jokers_dealt": int(player_standing.get("jokers_dealt", 0)),
+				})
 			team_standings.append(team_standing)
 		standings = team_standings
 
@@ -13804,6 +14141,8 @@ func _process_turn_reminder(delta: float) -> void:
 		_play_sound(SoundEffect.TURN_START)
 	turn_reminder_elapsed_seconds += delta
 	_refresh_turn_timer_indicator()
+	if not _is_steam_p2p_main_table_active() and _try_auto_play_last_human_card():
+		return
 	if (
 		not _is_steam_p2p_main_table_active()
 		and turn_reminder_elapsed_seconds >= INACTIVITY_AUTO_TURN_DELAY_SECONDS
@@ -13925,10 +14264,20 @@ func _refresh_turn_timer_indicator() -> void:
 
 	for indicator in avatar_turn_timer_indicators:
 		indicator.visible = indicator == turn_timer_indicator and indicator.visible
-	var should_show_timer := auto_turn_enabled and turn_timer_active and _is_human_decision_pending()
+	var last_card_auto_play_pending := _is_last_human_card_auto_play_pending()
+	var should_show_timer := (
+		last_card_auto_play_pending
+		or (auto_turn_enabled and turn_timer_active and _is_human_decision_pending())
+	)
 	turn_timer_indicator.visible = should_show_timer
 	if should_show_timer:
-		turn_timer_indicator.set_time_remaining(turn_timer_remaining, AUTO_TURN_DURATION_SECONDS)
+		if last_card_auto_play_pending:
+			turn_timer_indicator.set_time_remaining(
+				maxf(0.0, LAST_CARD_AUTO_PLAY_DELAY_SECONDS - turn_reminder_elapsed_seconds),
+				LAST_CARD_AUTO_PLAY_DELAY_SECONDS
+			)
+		else:
+			turn_timer_indicator.set_time_remaining(turn_timer_remaining, AUTO_TURN_DURATION_SECONDS)
 
 
 func _resolve_human_turn_timeout() -> void:
@@ -13960,14 +14309,17 @@ func _play_automatic_human_bid() -> void:
 	_advance_automatic_actions()
 
 
-func _play_automatic_human_card() -> void:
+func _play_automatic_human_card(
+	is_last_card_auto_play := false,
+	continue_automatic_actions := true
+) -> void:
 	var player := game.players[HUMAN_PLAYER_INDEX]
 	var card: Card = pending_joker_card
 	if card == null:
 		card = _choose_automatic_card(player)
 
 	if card == null:
-		action_text = "Время вышло, но автоматический ход не нашёл допустимую карту."
+		action_text = tr("ACTION_AUTO_CARD_MISSING")
 		_refresh_ui()
 		return
 
@@ -13985,19 +14337,49 @@ func _play_automatic_human_card() -> void:
 		played_successfully = game.play_card(HUMAN_PLAYER_INDEX, card)
 
 	if not played_successfully:
-		action_text = "Время вышло, но автоматический ход не удалось применить."
+		action_text = tr("ACTION_AUTO_CARD_INVALID")
 		_refresh_ui()
 		return
 
 	pending_joker_card = null
 	pending_joker_suit = -1
-	action_text = "Время вышло: за тебя сыграна %s." % card.get_card_name()
+	action_text = (
+		tr("ACTION_LAST_CARD_AUTO_PLAYED") % card.get_card_name()
+		if is_last_card_auto_play
+		else tr("ACTION_TIMEOUT_CARD_PLAYED") % card.get_card_name()
+	)
 	_add_history(action_text)
-	_record_play("Автоход", card, HUMAN_PLAYER_INDEX)
+	_record_play(tr("PLAYER_YOU"), card, HUMAN_PLAYER_INDEX)
 	if card.is_joker:
 		_add_history(_get_joker_rule_text(joker_mode, declared_suit, Trick.ForcedCardRank.NONE, is_leading_joker))
 	_save_current_session()
-	_advance_automatic_actions()
+	if continue_automatic_actions:
+		_advance_automatic_actions()
+
+
+func _try_auto_play_last_human_card(continue_automatic_actions := true) -> bool:
+	if (
+		not _is_last_human_card_auto_play_pending()
+		or turn_reminder_elapsed_seconds < LAST_CARD_AUTO_PLAY_DELAY_SECONDS
+	):
+		return false
+	_play_automatic_human_card(true, continue_automatic_actions)
+	return true
+
+
+func _is_last_human_card_auto_play_pending() -> bool:
+	if (
+		_is_steam_p2p_main_table_active()
+		or not _is_human_decision_pending()
+		or game.current_round.state != Round.State.PLAYING
+		or game.players[HUMAN_PLAYER_INDEX].hand.size() != 1
+	):
+		return false
+	# The five-second shortcut is only safe for an ordinary card. A Joker still
+	# needs an explicit mode/suit decision even when it is the player's last card.
+	if game.players[HUMAN_PLAYER_INDEX].hand[0].is_joker:
+		return false
+	return _get_legal_cards(game.players[HUMAN_PLAYER_INDEX]).size() == 1
 
 
 func _is_card_available_to_human(card: Card) -> bool:
@@ -14210,7 +14592,31 @@ func _choose_automatic_card(player: Player) -> Card:
 
 
 func _choose_hard_automatic_card(player: Player, legal_cards: Array[Card]) -> Card:
+	if _should_shed_high_card_in_misere(legal_cards):
+		return _select_non_joker_card_by_strength(legal_cards, true)
+	var planning_cards := legal_cards.duplicate()
 	var wants_trick := _bot_wants_trick(player)
+	var held_joker := _get_joker_from_cards(planning_cards)
+	if (
+		wants_trick
+		and held_joker != null
+		and planning_cards.size() > 1
+		and not _should_spend_joker_for_trick(player, planning_cards)
+	):
+		planning_cards.erase(held_joker)
+	var planned_card: Card = BotMonteCarloStrategy.choose_card(
+		game,
+		player.player_id,
+		planning_cards,
+		bot_random,
+		_is_local_team_match(),
+		BotMonteCarloStrategy.DEFAULT_SIMULATION_COUNT
+	)
+	if planned_card != null:
+		return planned_card
+
+	# The existing deterministic rules remain a safe fallback if no sampled
+	# world could be completed (for example after loading an old malformed save).
 
 	if game.active_trick == null:
 		if game.current_round.round_type == Round.RoundType.GOLDEN:
@@ -14410,6 +14816,11 @@ func _should_spend_joker_for_trick(player: Player, legal_cards: Array[Card]) -> 
 
 
 func _select_misere_lead_card(player: Player, cards: Array[Card]) -> Card:
+	cards = BotMonteCarloStrategy._filter_misere_lead_candidates(
+		game,
+		player.player_id,
+		cards
+	)
 	var regular_cards: Array[Card] = []
 	var safely_coverable_cards: Array[Card] = []
 	var cards_with_live_suit: Array[Card] = []
