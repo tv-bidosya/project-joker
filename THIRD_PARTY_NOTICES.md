@@ -1,8 +1,6 @@
-# Third-party notices
+# Повідомлення про сторонні матеріали
 
-Этот файл входит в подготовку публичной сборки Project Joker. Перед релизом он
-должен быть доступен игроку рядом с исполняемым файлом либо через отдельный
-экран лицензий.
+Цей файл входить до публічної збірки Project Joker. Він має бути доступний поруч із виконуваним файлом або через окремий екран ліцензій.
 
 ## Godot Engine
 
@@ -29,54 +27,38 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-Source and current license information: https://godotengine.org/license/
+Джерело й актуальна інформація про ліцензію: https://godotengine.org/license/
 
 ## Microsoft Fluent Emoji
 
-The social reaction and gift images in
-`Assets/Social/FluentEmoji3D` come from Microsoft Fluent Emoji and are
-distributed under the MIT License.
+Зображення соціальних реакцій і подарунків у `Assets/Social/FluentEmoji3D` походять із Microsoft Fluent Emoji та поширюються за ліцензією MIT.
 
 Copyright (c) Microsoft Corporation.
 
-The bundled license text is stored in
-`Assets/Social/FluentEmoji3D/THIRD_PARTY_LICENSE.txt`.
+Копія ліцензії зберігається в `Assets/Social/FluentEmoji3D/THIRD_PARTY_LICENSE.txt`.
 
-Source: https://github.com/microsoft/fluentui-emoji
+Джерело: https://github.com/microsoft/fluentui-emoji
 
 ## Kenney Casino Audio
 
-Selected card and casino-chip sound effects are taken from **Casino Audio 1.1**
-by Kenney Vleugels (Kenney.nl) and are distributed under Creative Commons Zero
-1.0 Universal (CC0).
+Вибрані звуки карт і фішок походять із набору **Casino Audio 1.1** Kenney Vleugels (Kenney.nl) і поширюються за Creative Commons Zero 1.0 Universal (CC0).
 
-The bundled license text is stored in
-`Assets/Audio/KenneyCasino/LICENSE.txt`.
+Копія ліцензії: `Assets/Audio/KenneyCasino/LICENSE.txt`.
 
-Source: https://kenney.nl/assets/casino-audio
+Джерело: https://kenney.nl/assets/casino-audio
 
-## Arsenal, Fixel and Vollkorn fonts
+## Шрифти Arsenal, Fixel і Vollkorn
 
-The menu interface embeds Arsenal, Fixel, and Vollkorn. Each family is
-distributed under the SIL Open Font License 1.1. The unmodified license texts
-are bundled as `Assets/Fonts/Arsenal-OFL.txt`, `Assets/Fonts/Fixel-OFL.txt`, and
-`Assets/Fonts/Vollkorn-OFL.txt`.
+Інтерфейс використовує Arsenal, Fixel і Vollkorn. Кожна родина поширюється за SIL Open Font License 1.1. Незмінені тексти ліцензій містяться у `Assets/Fonts/Arsenal-OFL.txt`, `Assets/Fonts/Fixel-OFL.txt` і `Assets/Fonts/Vollkorn-OFL.txt`.
 
-Arsenal: Copyright 2012 The Arsenal Project Authors. Designed by Ukrainian type
-designer Andrij Shevchenko.
+- Arsenal: Copyright 2012 The Arsenal Project Authors. Шрифт створив український дизайнер Андрій Шевченко.
+- Fixel: Copyright 2023 MacPaw Inc. Дизайн MacPaw та AlphaBravo.
+- Vollkorn: Copyright 2017 The Vollkorn Project Authors. Використовується як резерв для казахської кирилиці та рідкісних символів.
 
-Fixel: Copyright 2023 MacPaw Inc. Designed by MacPaw and AlphaBravo.
-
-Vollkorn: Copyright 2017 The Vollkorn Project Authors. Used only as a fallback
-for Kazakh Cyrillic and rare glyphs.
-
-Sources: https://github.com/google/fonts and https://github.com/MacPaw/Fixel
+Джерела: https://github.com/google/fonts та https://github.com/MacPaw/Fixel
 
 ## GodotSteam
 
-The Steam-enabled test build uses GodotSteam. The project is distributed under
-the MIT License, but the exact license and copyright notice shipped with the
-installed GodotSteam template must be copied here before the public Steam
-build. The currently used template version must be recorded at the same time.
+Steam-збірка використовує GodotSteam за ліцензією MIT. Перед публічним випуском сюди потрібно скопіювати точне повідомлення про авторські права з фактично встановленого шаблону GodotSteam і зафіксувати його версію.
 
-Project: https://godotsteam.com/
+Проєкт: https://godotsteam.com/
