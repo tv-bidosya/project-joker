@@ -294,40 +294,33 @@ static func _infer_public_void_suits(game: Game) -> Dictionary:
 	var player_count := game.players.size()
 	if player_count <= 0:
 		return result
-	var active_start := (
-		game.played_cards_this_round.size() - game.active_trick.played_cards.size()
-		if game.active_trick != null
-		else game.played_cards_this_round.size()
-	)
-	var lead_suit := -1
-	for card_index in game.played_cards_this_round.size():
-		var position := card_index % player_count
-		var card: Card = game.played_cards_this_round[card_index]
-		if position == 0:
-			lead_suit = (
-				game.active_trick.lead_suit
-				if game.active_trick != null and card_index >= active_start
-				else (-1 if card.is_joker else card.suit)
-			)
-			if card_index < game.played_lead_suits_this_round.size() and game.played_lead_suits_this_round[card_index] >= 0:
-				lead_suit = game.played_lead_suits_this_round[card_index]
-			continue
-		if card.is_joker or lead_suit < 0:
-			continue
-		if card_index >= game.played_cards_by_this_round.size():
-			# Older diagnostic saves and a few isolated rule probes may contain
-			# cards without their public player-index companion.
-			continue
-		var player_index := int(game.played_cards_by_this_round[card_index])
-		if card.suit == lead_suit:
-			continue
-		_mark_void_suit(result, player_index, lead_suit)
-		if (
-			game.current_round.trump != Round.TrumpSuit.NONE
-			and game.current_round.trump != Round.TrumpSuit.RANDOM
-			and card.suit != game.current_round.trump
-		):
-			_mark_void_suit(result, player_index, game.current_round.trump)
+	var played_count := mini(game.played_cards_this_round.size(), game.played_cards_by_this_round.size())
+	# A trick starts wherever the recorded player sequence starts, not at a
+	# fixed modulo position: its leader is the previous trick's winner.
+	var trick_start := 0
+	while trick_start < played_count:
+		var trick_size := mini(player_count, played_count - trick_start)
+		var lead_card: Card = game.played_cards_this_round[trick_start]
+		var lead_suit := -1
+		if trick_start < game.played_lead_suits_this_round.size() and game.played_lead_suits_this_round[trick_start] >= 0:
+			lead_suit = game.played_lead_suits_this_round[trick_start]
+		elif not lead_card.is_joker:
+			lead_suit = lead_card.suit
+		# For a currently open trick, the Trick object is authoritative (it knows
+		# a Joker's declared suit even in old saves without the history array).
+		if game.active_trick != null and trick_start >= game.played_cards_this_round.size() - game.active_trick.played_cards.size():
+			lead_suit = game.active_trick.lead_suit
+		if lead_suit >= 0:
+			for offset in range(1, trick_size):
+				var card_index := trick_start + offset
+				var card: Card = game.played_cards_this_round[card_index]
+				if card.is_joker or card.suit == lead_suit:
+					continue
+				var player_index := int(game.played_cards_by_this_round[card_index])
+				_mark_void_suit(result, player_index, lead_suit)
+				if game.current_round.trump != Round.TrumpSuit.NONE and game.current_round.trump != Round.TrumpSuit.RANDOM and card.suit != game.current_round.trump:
+					_mark_void_suit(result, player_index, game.current_round.trump)
+		trick_start += trick_size
 	return result
 
 
