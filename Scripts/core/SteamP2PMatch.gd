@@ -1142,6 +1142,9 @@ func _get_local_bot_bid(player_index: int, round: Round) -> int:
 	var player: Player = match_host.game.players[player_index]
 	var estimate := _estimate_local_bot_bid(player, round)
 	if effective_difficulty == BOT_DIFFICULTY_HARD:
+		var planned_bid := BotMonteCarloStrategy.choose_bid(match_host.game, player_index, _bot_random, _match_mode == SteamBridge.MATCH_MODE_TEAMS_2V2)
+		if planned_bid >= 0:
+			return planned_bid
 		estimate = _estimate_hard_local_bot_bid(player, round, estimate)
 	var selected_bid := valid_bids[0]
 	for valid_bid in valid_bids:
@@ -1540,9 +1543,9 @@ func _get_local_bot_card_strength(card: Card) -> int:
 
 
 func _choose_local_bot_joker_mode(player: Player) -> Trick.JokerMode:
-	if _bot_difficulty == BOT_DIFFICULTY_EASY:
+	if _get_effective_local_bot_difficulty(player.player_id) == BOT_DIFFICULTY_EASY:
 		return Trick.JokerMode.JOKER_WINS if _bot_random.randi_range(0, 1) == 0 else Trick.JokerMode.NORMAL_CARD_WINS
-	return Trick.JokerMode.JOKER_WINS if _local_bot_wants_trick(player) else Trick.JokerMode.NORMAL_CARD_WINS
+	return BotMonteCarloStrategy.choose_joker_mode(match_host.game, player.player_id, _match_mode == SteamBridge.MATCH_MODE_TEAMS_2V2)
 
 
 func _choose_local_bot_joker_suit(player: Player, prefer_rare_suit: bool) -> int:

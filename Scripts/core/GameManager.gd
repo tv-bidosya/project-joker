@@ -816,6 +816,9 @@ func _ready() -> void:
 	music_playlist_button.pressed.connect(_on_music_playlist_pressed)
 	music_add_button.pressed.connect(_on_music_add_pressed)
 	next_round_button.pressed.connect(_on_next_round_pressed)
+	round_results_panel.resized.connect(_queue_round_results_action_layout)
+	next_round_button.z_index = 11
+	round_results_panel.minimum_size_changed.connect(_queue_round_results_action_layout)
 	first_turn_roll_button.pressed.connect(_on_first_turn_roll_action_pressed)
 	pause_menu_button.pressed.connect(_on_pause_menu_pressed)
 	if _is_loopback_network_client_launch():
@@ -8083,6 +8086,7 @@ func _serialize_game_state() -> Dictionary:
 		"last_completed_trick_played_by": game.last_completed_trick_played_by.duplicate(),
 		"played_cards_this_round": _serialize_cards(game.played_cards_this_round),
 		"played_cards_by_this_round": game.played_cards_by_this_round.duplicate(),
+		"played_lead_suits_this_round": game.played_lead_suits_this_round.duplicate(),
 		"last_completed_trick_joker_mode": game.last_completed_trick_joker_mode,
 		"last_completed_trick_declared_suit": game.last_completed_trick_declared_suit,
 		"last_completed_trick_forced_card_rank": game.last_completed_trick_forced_card_rank,
@@ -8415,6 +8419,7 @@ func _deserialize_game_state(game_data: Dictionary, player_names: Array[String])
 		"last_completed_trick_played_by": played_by_data,
 		"played_cards_this_round": _deserialize_cards(round_played_cards_data),
 		"played_cards_by_this_round": round_played_by_data,
+		"played_lead_suits_this_round": game_data.get("played_lead_suits_this_round", []),
 		"last_completed_trick_joker_mode": int(game_data.get("last_completed_trick_joker_mode", Trick.JokerMode.NONE)),
 		"last_completed_trick_declared_suit": int(game_data.get("last_completed_trick_declared_suit", -1)),
 		"last_completed_trick_forced_card_rank": int(game_data.get("last_completed_trick_forced_card_rank", Trick.ForcedCardRank.NONE)),
@@ -11862,6 +11867,34 @@ func _fit_round_results_panel(plain_text: String) -> void:
 		panel_width * 0.5,
 		ROUND_RESULTS_PANEL_TOP + panel_height
 	)
+	_queue_round_results_action_layout()
+
+
+func _queue_round_results_action_layout() -> void:
+	# Rich text containers finish wrapping after the current layout pass.
+	_position_round_results_actions.call_deferred()
+
+
+func _position_round_results_actions() -> void:
+	if not is_instance_valid(round_results_panel) or not is_instance_valid(next_round_button):
+		return
+	var gap := 14.0
+	var button_height := maxf(48.0, next_round_button.get_combined_minimum_size().y)
+	# fit_content may briefly measure a hidden label at width 1. Once wrapping
+	# settles, shrink to the actual minimum too; never keep that stale height.
+	var panel_height := round_results_panel.get_combined_minimum_size().y
+	round_results_panel.size.y = panel_height
+	var button_top_limit := 522.0
+	if not player_panels.is_empty():
+		var player_top := player_panels[0].global_position.y - round_results_panel.get_parent_control().global_position.y
+		if player_top > 0.0:
+			button_top_limit = minf(button_top_limit, player_top - gap - button_height)
+	# Grow the results UPWARDS so additional team rows do not cover the next
+	# button or push it down over the local player's avatar.
+	var results_top := maxf(72.0, minf(ROUND_RESULTS_PANEL_TOP, button_top_limit - gap - panel_height))
+	round_results_panel.position.y = results_top
+	var button_top := results_top + round_results_panel.size.y + gap
+	_set_control_layout(next_round_button, 0.5, 0.0, 0.5, 0.0, -150.0, button_top, 150.0, button_top + button_height)
 
 
 func _get_local_round_result_bbcode() -> String:
@@ -14491,6 +14524,9 @@ func _choose_automatic_bid(player_index: int) -> int:
 
 	var desired_bid := bot_random.randi_range(2, 4) if is_dark_bid else _estimate_automatic_bid(player)
 	if bot_difficulty == BotDifficulty.HARD and not is_dark_bid:
+		var planned_bid := BotMonteCarloStrategy.choose_bid(game, player_index, bot_random, _is_local_team_match())
+		if planned_bid >= 0:
+			return planned_bid
 		desired_bid = _estimate_hard_automatic_bid(player)
 
 	var closest_bid := _find_closest_valid_bid(player_index, desired_bid, min_bid, max_bid)
@@ -14992,7 +15028,7 @@ func _choose_automatic_joker_mode(player: Player) -> Trick.JokerMode:
 	if bot_difficulty == BotDifficulty.EASY:
 		return Trick.JokerMode.JOKER_WINS if bot_random.randi_range(0, 1) == 0 else Trick.JokerMode.NORMAL_CARD_WINS
 
-	return Trick.JokerMode.JOKER_WINS if _bot_wants_trick(player) else Trick.JokerMode.NORMAL_CARD_WINS
+	return BotMonteCarloStrategy.choose_joker_mode(game, player.player_id, _is_local_team_match())
 
 
 func _choose_automatic_joker_suit(player: Player, prefer_rare_suit: bool) -> int:

@@ -6,8 +6,10 @@ extends RefCounted
 # The planner deliberately receives the host Game for convenient access to the
 # public table state, but never reads another player's cards. Opponent hands are
 # reconstructed from the bot's own hand, the open trump and cards already seen.
-const DEFAULT_SIMULATION_COUNT := 180
-const MIN_ROLLOUTS_PER_CARD := 18
+const DEFAULT_SIMULATION_COUNT := 480
+const MIN_ROLLOUTS_PER_CARD := 32
+const BID_SIMULATION_COUNT := 360
+const MAX_PLANNING_MSEC := 1000
 const MAX_DEAL_ATTEMPTS := 48
 const MAX_ROLLOUT_ACTIONS := 48
 
@@ -31,54 +33,139 @@ static func choose_card(
 	if legal_cards.size() == 1:
 		return legal_cards[0]
 
-	var candidate_cards := legal_cards
-	if game.current_round.round_type == Round.RoundType.MISERE and game.active_trick == null:
-		candidate_cards = _filter_misere_lead_candidates(game, player_index, legal_cards)
-
+	var candidate_cards := _filter_candidates(game, player_index, legal_cards, team_mode)
 	var rollouts_per_card := maxi(
 		MIN_ROLLOUTS_PER_CARD,
 		ceili(float(maxi(1, simulation_count)) / float(candidate_cards.size()))
 	)
-	var best_card: Card
-	var best_average := -INF
-	var best_exact_rate := -1.0
-
-	for candidate in candidate_cards:
-		var total_utility := 0.0
-		var exact_outcomes := 0
-		var completed_rollouts := 0
-		for rollout_index in rollouts_per_card:
-			var simulation := _create_determinized_game(game, player_index, random)
-			if simulation == null:
-				continue
+	var totals: Array[float] = []
+	var counts: Array[int] = []
+	totals.resize(candidate_cards.size())
+	counts.resize(candidate_cards.size())
+	var started_at := Time.get_ticks_msec()
+	# Compare ALL candidates against the SAME sampled world and rollout seed.
+	# Independent deals per candidate previously let sampling noise reward an
+	# otherwise pointless ace discard or duck in a golden round.
+	for rollout_index in rollouts_per_card:
+		var simulation := _create_determinized_game(game, player_index, random)
+		if simulation == null:
+			continue
+		var initial_state := simulation.create_snapshot()
+		var rollout_seed := random.randi()
+		for candidate_index in candidate_cards.size():
+			simulation.restore_snapshot(initial_state)
+			var candidate: Card = candidate_cards[candidate_index]
+			var rollout_random := RandomNumberGenerator.new()
+			rollout_random.seed = rollout_seed
 			var simulated_candidate := _find_card_by_key(
 				simulation.players[player_index].hand,
 				_card_key(candidate)
 			)
-			if simulated_candidate == null or not _play_card_with_policy(simulation, player_index, simulated_candidate):
+			if simulated_candidate == null or not _play_card_with_policy(simulation, player_index, simulated_candidate, team_mode):
 				continue
-			_roll_out_round(simulation, random)
+			_roll_out_round(simulation, rollout_random, team_mode)
 			if not simulation.is_round_complete():
 				continue
-			completed_rollouts += 1
-			total_utility += _evaluate_round(simulation, player_index, team_mode)
-			if _actor_hit_target(simulation, player_index):
-				exact_outcomes += 1
+			counts[candidate_index] += 1
+			totals[candidate_index] += _evaluate_round(simulation, player_index, team_mode)
+		if rollout_index >= MIN_ROLLOUTS_PER_CARD - 1 and Time.get_ticks_msec() - started_at >= MAX_PLANNING_MSEC:
+			break
 
-		if completed_rollouts == 0:
+	var best_card: Card
+	var best_average := -INF
+	for index in candidate_cards.size():
+		if counts[index] == 0:
 			continue
-		var average_utility := total_utility / float(completed_rollouts)
-		var exact_rate := float(exact_outcomes) / float(completed_rollouts)
-		if (
-			best_card == null
-			or average_utility > best_average + 0.001
-			or (is_equal_approx(average_utility, best_average) and exact_rate > best_exact_rate)
-		):
+		var candidate: Card = candidate_cards[index]
+		var average := totals[index] / float(counts[index])
+		# Only breaks practically equal outcomes; cannot outweigh a score point.
+		average += _card_tie_break(game, player_index, candidate, team_mode)
+		if best_card == null or average > best_average:
 			best_card = candidate
-			best_average = average_utility
-			best_exact_rate = exact_rate
-
+			best_average = average
 	return best_card
+
+
+static func choose_bid(game: Game, player_index: int, random: RandomNumberGenerator, team_mode := false, simulation_count := BID_SIMULATION_COUNT) -> int:
+	if game == null or game.current_round == null or player_index < 0 or player_index >= game.players.size():
+		return -1
+	if game.current_round.state != Round.State.BIDDING or game.current_round.round_type == Round.RoundType.DARK or not game.cards_are_dealt:
+		return -1
+	var valid_bids: Array[int] = []
+	for bid in range(game.current_round.cards_per_player + 1):
+		if game.current_round.can_place_bid(player_index, bid):
+			valid_bids.append(bid)
+	if valid_bids.is_empty():
+		return -1
+	var totals: Array[float] = []
+	totals.resize(valid_bids.size())
+	var samples := 0
+	var started_at := Time.get_ticks_msec()
+	var world_count := maxi(MIN_ROLLOUTS_PER_CARD, ceili(float(simulation_count) / valid_bids.size()))
+	for world_index in world_count:
+		var simulation := _create_determinized_game(game, player_index, random)
+		if simulation == null:
+			continue
+		var initial_state := simulation.create_snapshot()
+		var rollout_seed := random.randi()
+		for bid_index in valid_bids.size():
+			simulation.restore_snapshot(initial_state)
+			if not simulation.place_bid(player_index, valid_bids[bid_index]):
+				return -1
+			# Unknown future orders use only each sampled player's own hand. Orders
+			# already made are preserved, including the partner's target.
+			while simulation.current_round.state == Round.State.BIDDING:
+				var bidder := simulation.current_round.current_player_index
+				var estimate := estimate_hand_bid(simulation.players[bidder], simulation.current_round)
+				var chosen := -1
+				for bid in range(simulation.current_round.cards_per_player + 1):
+					if simulation.current_round.can_place_bid(bidder, bid) and (chosen < 0 or absi(bid - estimate) < absi(chosen - estimate)):
+						chosen = bid
+				if chosen < 0 or not simulation.place_bid(bidder, chosen):
+					return -1
+			var rollout_random := RandomNumberGenerator.new()
+			rollout_random.seed = rollout_seed
+			_roll_out_round(simulation, rollout_random, team_mode)
+			if not simulation.is_round_complete():
+				return -1
+			totals[bid_index] += _evaluate_round(simulation, player_index, team_mode)
+		samples += 1
+		if samples >= MIN_ROLLOUTS_PER_CARD and Time.get_ticks_msec() - started_at >= MAX_PLANNING_MSEC:
+			break
+	if samples == 0:
+		return -1
+	var best_index := 0
+	for index in range(1, totals.size()):
+		if totals[index] > totals[best_index]:
+			best_index = index
+	return valid_bids[best_index]
+
+
+static func estimate_hand_bid(player: Player, round: Round) -> int:
+	var estimate := 0.0
+	for card in player.hand:
+		if card.is_joker:
+			estimate += 1.0
+			continue
+		var missing_higher := int(Card.Rank.ACE) - int(card.rank)
+		if card.suit == Card.Suit.CLUBS and card.rank < Card.Rank.SEVEN:
+			missing_higher -= 1 # 7 clubs is the Joker, not a regular club.
+		var suit_length := 0
+		for held in player.hand:
+			if not held.is_joker and held.suit == card.suit:
+				suit_length += 1
+				if held.rank > card.rank:
+					missing_higher -= 1
+		var is_trump := card.suit == round.trump
+		if missing_higher == 0:
+			estimate += 0.95 if is_trump or round.trump == Round.TrumpSuit.NONE else 0.8
+		elif missing_higher == 1:
+			estimate += 0.65 if is_trump or suit_length >= 2 else 0.35
+		elif missing_higher == 2:
+			estimate += 0.4 if is_trump or suit_length >= 3 else 0.15
+		elif is_trump:
+			estimate += 0.25
+	return clampi(roundi(estimate), 0, round.cards_per_player)
 
 
 static func _create_determinized_game(
@@ -98,6 +185,7 @@ static func _create_determinized_game(
 	simulation.trump_card = source.trump_card
 	simulation.played_cards_this_round.assign(source.played_cards_this_round)
 	simulation.played_cards_by_this_round.assign(source.played_cards_by_this_round)
+	simulation.played_lead_suits_this_round.assign(source.played_lead_suits_this_round)
 	simulation.last_trick_winner_index = source.last_trick_winner_index
 
 	for player_index in simulation.players.size():
@@ -221,6 +309,8 @@ static func _infer_public_void_suits(game: Game) -> Dictionary:
 				if game.active_trick != null and card_index >= active_start
 				else (-1 if card.is_joker else card.suit)
 			)
+			if card_index < game.played_lead_suits_this_round.size() and game.played_lead_suits_this_round[card_index] >= 0:
+				lead_suit = game.played_lead_suits_this_round[card_index]
 			continue
 		if card.is_joker or lead_suit < 0:
 			continue
@@ -254,7 +344,8 @@ static func _violates_void_knowledge(card: Card, player_voids: Dictionary) -> bo
 static func _filter_misere_lead_candidates(
 	game: Game,
 	player_index: int,
-	legal_cards: Array[Card]
+	legal_cards: Array[Card],
+	team_mode := false
 ) -> Array[Card]:
 	var regular_cards := _regular_cards(legal_cards)
 	if regular_cards.is_empty():
@@ -262,7 +353,7 @@ static func _filter_misere_lead_candidates(
 	var void_suits := _infer_public_void_suits(game)
 	var safe_suits: Array[Card] = []
 	for card in regular_cards:
-		if not _another_player_is_known_void(game, player_index, card.suit, void_suits):
+		if not _another_player_is_known_void(game, player_index, card.suit, void_suits, team_mode):
 			safe_suits.append(card)
 	var candidates := safe_suits if not safe_suits.is_empty() else regular_cards
 
@@ -280,10 +371,15 @@ static func _another_player_is_known_void(
 	game: Game,
 	player_index: int,
 	suit: int,
-	void_suits: Dictionary
+	void_suits: Dictionary,
+	team_mode := false
 ) -> bool:
 	for other_index in game.players.size():
 		if other_index == player_index or game.players[other_index].hand.is_empty():
+			continue
+		# In 2v2 do not force the PARTNER to trump on misere. An opponent being
+		# void is not a reason to reject a potentially useful losing lead.
+		if team_mode and other_index != (player_index + 2) % game.players.size():
 			continue
 		var other_voids: Dictionary = void_suits.get(other_index, {})
 		if other_voids.has(suit):
@@ -317,20 +413,83 @@ static func _has_publicly_possible_higher_card(
 		known_keys[_card_key(known_card)] = true
 	if game.trump_card != null:
 		known_keys[_card_key(game.trump_card)] = true
-	var deck := Deck.new()
-	deck.create_deck()
-	for unknown_card in deck.cards:
-		if (
-			not unknown_card.is_joker
-			and unknown_card.suit == card.suit
-			and unknown_card.rank > card.rank
-			and not known_keys.has(_card_key(unknown_card))
-		):
+	for rank in range(int(card.rank) + 1, int(Card.Rank.ACE) + 1):
+		if card.suit == Card.Suit.CLUBS and rank == Card.Rank.SEVEN:
+			continue
+		if not known_keys.has("%d_%d" % [card.suit, rank]):
 			return true
 	return false
 
 
-static func _roll_out_round(game: Game, random: RandomNumberGenerator) -> void:
+static func _filter_candidates(game: Game, player_index: int, cards: Array[Card], team_mode: bool) -> Array[Card]:
+	if game.current_round.round_type == Round.RoundType.MISERE and game.active_trick == null:
+		return _filter_misere_lead_candidates(game, player_index, cards, team_mode)
+	var player := game.players[player_index]
+	if not _wants_trick(game.current_round.round_type, player) or game.active_trick == null:
+		return cards
+	# In no-trump an off-suit master cannot win this trick. Keep it for a later
+	# lead while there is a non-master discard. No hidden hand is inspected.
+	if game.current_round.trump != Round.TrumpSuit.NONE:
+		return cards
+	var void_suits := _infer_public_void_suits(game)
+	var preserved: Array[Card] = []
+	for card in cards:
+		if card.is_joker or _would_win_now(game, card) or _has_publicly_possible_higher_card(game, player_index, card, void_suits):
+			preserved.append(card)
+	return preserved if not preserved.is_empty() else cards
+
+
+static func _choose_taking_lead(game: Game, player: Player, cards: Array[Card]) -> Card:
+	var void_suits := _infer_public_void_suits(game)
+	var masters: Array[Card] = []
+	for card in cards:
+		if not _has_publicly_possible_higher_card(game, player.player_id, card, void_suits):
+			masters.append(card)
+	if not masters.is_empty():
+		return _select_by_strength(game, masters, true)
+	# No cashable high card: develop a suit without throwing away its king.
+	return _select_by_strength(game, cards, false)
+
+
+static func _current_winner(game: Game) -> int:
+	if game.active_trick == null or game.active_trick.played_cards.is_empty():
+		return -1
+	var trick := _clone_trick(game.active_trick)
+	trick.player_count = trick.played_cards.size()
+	return trick.get_winner_index()
+
+
+static func _should_leave_partner_trick(game: Game, player_index: int) -> bool:
+	if game.players.size() != 4 or _current_winner(game) != (player_index + 2) % 4:
+		return false
+	var player := game.players[player_index]
+	var partner := game.players[(player_index + 2) % 4]
+	var type := game.current_round.round_type
+	if type == Round.RoundType.MISERE:
+		return false
+	if type == Round.RoundType.GOLDEN:
+		# First trick removes the -50 zero-trick penalty. Do not deprive a
+		# zero-trick partner, but let a zero-trick actor overtake a safe partner.
+		return partner.tricks_taken == 0 or player.tricks_taken > 0
+	return partner.tricks_taken < partner.bid or (partner.tricks_taken > partner.bid and player.tricks_taken == player.bid)
+
+
+static func choose_joker_mode(game: Game, player_index: int, team_mode := false) -> Trick.JokerMode:
+	if team_mode and game.active_trick != null and game.active_trick.played_cards.size() == game.players.size() - 1:
+		if _should_leave_partner_trick(game, player_index):
+			return Trick.JokerMode.NORMAL_CARD_WINS
+	return Trick.JokerMode.JOKER_WINS if _wants_trick(game.current_round.round_type, game.players[player_index]) else Trick.JokerMode.NORMAL_CARD_WINS
+
+
+static func _card_tie_break(game: Game, player_index: int, card: Card, team_mode: bool) -> float:
+	var priority := -float(_card_strength(game, card)) * 0.0001
+	if game.active_trick != null and _would_win_now(game, card):
+		if game.current_round.round_type == Round.RoundType.GOLDEN:
+			priority += -0.05 if team_mode and _should_leave_partner_trick(game, player_index) else 0.05
+	return priority
+
+
+static func _roll_out_round(game: Game, random: RandomNumberGenerator, team_mode := false) -> void:
 	var action_count := 0
 	while not game.is_round_complete() and action_count < MAX_ROLLOUT_ACTIONS:
 		action_count += 1
@@ -341,8 +500,8 @@ static func _roll_out_round(game: Game, random: RandomNumberGenerator) -> void:
 		var legal_cards := _get_legal_cards(game, player)
 		if legal_cards.is_empty():
 			return
-		var selected := _choose_rollout_card(game, player, legal_cards, random)
-		if selected == null or not _play_card_with_policy(game, player_index, selected):
+		var selected := _choose_rollout_card(game, player, legal_cards, random, team_mode)
+		if selected == null or not _play_card_with_policy(game, player_index, selected, team_mode):
 			return
 
 
@@ -350,8 +509,10 @@ static func _choose_rollout_card(
 	game: Game,
 	player: Player,
 	legal_cards: Array[Card],
-	random: RandomNumberGenerator
+	random: RandomNumberGenerator,
+	team_mode := false
 ) -> Card:
+	legal_cards = _filter_candidates(game, player.player_id, legal_cards, team_mode)
 	if legal_cards.size() == 1:
 		return legal_cards[0]
 	var wants_trick := _wants_trick(game.current_round.round_type, player)
@@ -361,8 +522,10 @@ static func _choose_rollout_card(
 			return legal_cards[0]
 		if game.current_round.round_type == Round.RoundType.MISERE:
 			var player_index := game.players.find(player)
-			regular_leads = _filter_misere_lead_candidates(game, player_index, regular_leads)
-		return _select_by_strength(game, regular_leads, wants_trick)
+			regular_leads = _filter_misere_lead_candidates(game, player_index, regular_leads, team_mode)
+		if wants_trick:
+			return _choose_taking_lead(game, player, regular_leads)
+		return _select_by_strength(game, regular_leads, false)
 
 	var winners: Array[Card] = []
 	var losers: Array[Card] = []
@@ -374,10 +537,22 @@ static func _choose_rollout_card(
 			winners.append(card)
 		else:
 			losers.append(card)
+	if team_mode and _should_leave_partner_trick(game, player.player_id) and not losers.is_empty():
+		return _select_by_strength(game, losers, false)
 	if wants_trick:
 		if not winners.is_empty():
+			# Before the last seat, a barely winning card can still be covered.
+			# Cash a master when available instead of letting the whole suit pass.
+			if game.active_trick.played_cards.size() < game.players.size() - 1:
+				var void_suits := _infer_public_void_suits(game)
+				var masters: Array[Card] = []
+				for winner in winners:
+					if not _has_publicly_possible_higher_card(game, player.player_id, winner, void_suits):
+						masters.append(winner)
+				if not masters.is_empty():
+					return _select_by_strength(game, masters, false)
 			return _select_by_strength(game, winners, false)
-		if joker != null:
+		if joker != null and (game.current_round.round_type == Round.RoundType.GOLDEN or player.tricks_taken > player.bid or player.hand.size() <= player.bid - player.tricks_taken or losers.is_empty()):
 			return joker
 		return _select_by_strength(game, losers, false)
 	if not losers.is_empty():
@@ -390,12 +565,12 @@ static func _choose_rollout_card(
 	return weakest if weakest != null else legal_cards[random.randi_range(0, legal_cards.size() - 1)]
 
 
-static func _play_card_with_policy(game: Game, player_index: int, card: Card) -> bool:
+static func _play_card_with_policy(game: Game, player_index: int, card: Card, team_mode := false) -> bool:
 	if not card.is_joker:
 		return game.play_card(player_index, card)
 	var player := game.players[player_index]
-	var wants_trick := _wants_trick(game.current_round.round_type, player)
-	var joker_mode := Trick.JokerMode.JOKER_WINS if wants_trick else Trick.JokerMode.NORMAL_CARD_WINS
+	var joker_mode := choose_joker_mode(game, player_index, team_mode)
+	var wants_trick := joker_mode == Trick.JokerMode.JOKER_WINS
 	var declared_suit := -1
 	if game.active_trick == null:
 		declared_suit = _choose_joker_suit(player, not wants_trick)
@@ -408,14 +583,15 @@ static func _evaluate_round(game: Game, actor_index: int, team_mode: bool) -> fl
 	if team_mode and game.players.size() == 4:
 		participant_indices.append((actor_index + 2) % 4)
 	var utility := 0.0
-	for player_index in participant_indices:
+	for player_index in game.players.size():
+		if not team_mode and player_index != actor_index:
+			continue
+		var sign_value := 1.0 if player_index in participant_indices else -1.0
 		var player := game.players[player_index]
 		var round_score := ScoreCalculator.calculate_round_score(round_type, player.bid, player.tricks_taken)
-		utility += float(round_score) * 10.0
+		utility += sign_value * float(round_score) * 10.0
 		if ScoreCalculator.is_exact_order(round_type, player.bid, player.tricks_taken):
-			utility += 35.0
-		elif round_type == Round.RoundType.NORMAL or round_type == Round.RoundType.DARK or round_type == Round.RoundType.NO_TRUMP:
-			utility -= float(absi(player.tricks_taken - player.bid)) * 3.0
+			utility += sign_value * 0.25
 	return utility
 
 

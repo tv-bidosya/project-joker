@@ -12,6 +12,7 @@ var last_completed_trick_cards: Array[Card] = []
 var last_completed_trick_played_by: Array[int] = []
 var played_cards_this_round: Array[Card] = []
 var played_cards_by_this_round: Array[int] = []
+var played_lead_suits_this_round: Array[int] = []
 var last_completed_trick_joker_mode := Trick.JokerMode.NONE
 var last_completed_trick_declared_suit := -1
 var last_completed_trick_forced_card_rank := Trick.ForcedCardRank.NONE
@@ -83,6 +84,7 @@ func start_round(
 	last_completed_trick_played_by.clear()
 	played_cards_this_round.clear()
 	played_cards_by_this_round.clear()
+	played_lead_suits_this_round.clear()
 	last_completed_trick_joker_mode = Trick.JokerMode.NONE
 	last_completed_trick_declared_suit = -1
 	last_completed_trick_forced_card_rank = Trick.ForcedCardRank.NONE
@@ -119,6 +121,10 @@ func play_card(
 
 	played_cards_this_round.append(card)
 	played_cards_by_this_round.append(player_index)
+	# Preserve declared Joker suits too, after the Trick object is cleared.
+	while played_lead_suits_this_round.size() < played_cards_this_round.size() - 1:
+		played_lead_suits_this_round.append(-1)
+	played_lead_suits_this_round.append(active_trick.lead_suit)
 
 	if active_trick.is_complete():
 		last_trick_winner_index = active_trick.get_winner_index()
@@ -182,6 +188,7 @@ func create_snapshot() -> Dictionary:
 		"last_completed_trick_played_by": last_completed_trick_played_by.duplicate(),
 		"played_cards_this_round": played_cards_this_round.duplicate(),
 		"played_cards_by_this_round": played_cards_by_this_round.duplicate(),
+		"played_lead_suits_this_round": played_lead_suits_this_round.duplicate(),
 		"last_completed_trick_joker_mode": last_completed_trick_joker_mode,
 		"last_completed_trick_declared_suit": last_completed_trick_declared_suit,
 		"last_completed_trick_forced_card_rank": last_completed_trick_forced_card_rank,
@@ -217,6 +224,7 @@ func restore_snapshot(snapshot: Dictionary) -> void:
 	last_completed_trick_played_by.assign(snapshot["last_completed_trick_played_by"])
 	played_cards_this_round.assign(snapshot.get("played_cards_this_round", []))
 	played_cards_by_this_round.assign(snapshot.get("played_cards_by_this_round", []))
+	played_lead_suits_this_round.assign(snapshot.get("played_lead_suits_this_round", []))
 	last_completed_trick_joker_mode = snapshot["last_completed_trick_joker_mode"]
 	last_completed_trick_declared_suit = snapshot["last_completed_trick_declared_suit"]
 	last_completed_trick_forced_card_rank = snapshot["last_completed_trick_forced_card_rank"]
