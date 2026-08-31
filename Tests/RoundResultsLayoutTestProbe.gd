@@ -7,9 +7,11 @@ func _init() -> void:
 
 func _run() -> void:
 	var main_scene: Variant = load("res://Scenes/main.tscn").instantiate()
+	main_scene.persistent_settings_writes_enabled = false
 	root.add_child(main_scene)
 	await process_frame
 
+	main_scene._on_interface_locale_selected("ru", false, false)
 	var title: Label = main_scene.get_node("%RoundResultsTitle")
 	var title_panel: PanelContainer = main_scene.get_node("%RoundResultsTitlePanel")
 	var results_label: RichTextLabel = main_scene.get_node("%RoundResultsLabel")
@@ -49,7 +51,7 @@ func _run() -> void:
 	main_scene._fit_round_results_panel(panel_text.replace("Андрей", "ОченьДлинныйНикИгрока"))
 	assert(results_panel.size.x > short_result_width, "Round results width must follow the longest displayed row")
 	var legacy_table_text: String = main_scene._get_network_table_result_text(snapshot, true)
-	assert(legacy_table_text.begins_with("Раздача завершена\n"), "Legacy network table must retain its completion heading")
+	assert(legacy_table_text.begins_with(main_scene.tr("RESULT_ROUND_COMPLETE") + "\n"), "Legacy network table must retain its completion heading")
 	assert(main_scene.player_stats_labels[0] is RichTextLabel, "Player order and tricks must support bold rich text")
 	assert(main_scene._get_player_stats_bbcode("2", 3, true).contains("[font_size=23][b]"), "Order and trick values must be larger and bold")
 

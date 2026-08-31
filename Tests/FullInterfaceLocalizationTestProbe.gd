@@ -10,6 +10,7 @@ func _init() -> void:
 
 func _run() -> void:
 	var main_scene: Variant = load("res://Scenes/main.tscn").instantiate()
+	main_scene.persistent_settings_writes_enabled = false
 	root.add_child(main_scene)
 	await process_frame
 
@@ -62,7 +63,7 @@ func _run() -> void:
 
 	main_scene._show_rules_menu(true)
 	var english_rules := _get_visible_texts(main_scene.menu_content)
-	for expected_fragment in ["Game rules", "Four players take part", "Scoring", "The Joker may be used"]:
+	for expected_fragment in ["Game rules", "In normal, dark, and no-trump rounds", "Scoring", "The Joker may be used"]:
 		_check(_contains_fragment(english_rules, expected_fragment), "Missing English rules text: %s" % expected_fragment)
 	_check(not _contains_fragment(english_rules, "Подсчёт очков"), "Russian text remains in English rules.")
 
@@ -81,7 +82,7 @@ func _run() -> void:
 
 	main_scene._show_statistics_menu()
 	var english_statistics := _get_visible_texts(main_scene.menu_content)
-	for expected_fragment in ["Statistics", "Results from fully completed local games"]:
+	for expected_fragment in ["Statistics", "Personal results and seasonal rating"]:
 		_check(_contains_fragment(english_statistics, expected_fragment), "Missing English statistics text: %s" % expected_fragment)
 	_check(not _contains_fragment(english_statistics, "Результаты полностью"), "Russian text remains in English statistics.")
 

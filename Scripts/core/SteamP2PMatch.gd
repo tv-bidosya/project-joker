@@ -1394,7 +1394,7 @@ func _get_local_bot_unseen_regular_ranks(player: Player, suit: int) -> Array[int
 
 	var unseen_ranks: Array[int] = []
 	for rank in Card.Rank.values():
-		if suit == Card.Suit.CLUBS and rank == Card.Rank.SEVEN:
+		if suit == Card.Suit.SPADES and rank == Card.Rank.SEVEN:
 			continue
 		if not known_ranks.has(rank):
 			unseen_ranks.append(rank)

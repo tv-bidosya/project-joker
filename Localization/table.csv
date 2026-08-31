@@ -1,4 +1,8 @@
 keys,en,uk,pl,be,kz,ru
+SUIT_CLUBS,Clubs,Трефи,Trefle,Трэфы,Треф,Трефы
+SUIT_SPADES,Spades,Піки,Piki,Пікі,Пика,Пики
+SUIT_HEARTS,Hearts,Черви,Kiery,Чэрвы,Жүрек,Червы
+SUIT_DIAMONDS,Diamonds,Бубни,Karo,Бубны,Бубна,Бубны
 TABLE_PHASE_SETUP,"Stage: preparation","Етап: підготовка","Etap: przygotowanie","Этап: падрыхтоўка","Кезең: дайындық","Этап: подготовка"
 TABLE_PHASE_BIDDING,"bidding","замовлення взяток","licytacja lew","заказ узятак","алынатын ұпайға тапсырыс","заказ взяток"
 TABLE_PHASE_BLIND_BIDDING,"blind bidding","замовлення наосліп","licytacja w ciemno","заказ усляпую","жасырын тапсырыс","заказ вслепую"
@@ -77,6 +81,9 @@ ACTION_PLAYER_TURN,"%s is playing","Ходить %s","Ruch gracza %s","Ходз�
 ACTION_ROUND_FINISHED,"The round is over. Results are shown in the middle of the table.","Роздачу завершено. Підсумки — у центрі столу.","Rozdanie zakończone. Wyniki są na środku stołu.","Раздача завершана. Вынікі — у цэнтры стала.","Тарату аяқталды. Нәтижелер үстелдің ортасында.","Раздача завершена. Итоги — в центре стола."
 ACTION_ALL_BIDS_DONE,"All bids are in. Cards have been dealt — play begins.","Усі замовлення зроблено. Карти роздано — починається розіграш.","Wszystkie zakłady złożone. Karty rozdane — zaczyna się gra.","Усе заказы зроблены. Карты раздадзены — пачынаецца розыгрыш.","Барлық тапсырыс жасалды. Карталар таратылды — ойын басталады.","Все заказы сделаны. Карты сданы — начинается розыгрыш."
 BID_BUTTON,"Bid %d","Замовити %d","Zamów %d","Заказаць %d","%d тапсырыс","Заказать %d"
+MOBILE_SORT_BUTTON,"Sort cards","Сортування","Sortuj karty","Сартаванне","Карталарды сұрыптау","Сортировка"
+MOBILE_BID_BUTTON,"Place bid","Замовити","Zamów","Замовіць","Тапсырыс беру","Заказать"
+MOBILE_BID_CHOOSE,"Choose the number of tricks","Оберіть кількість взяток","Wybierz liczbę lew","Выберы колькасць узятак","Ұтыс санын таңдаңыз","Выберите число взяток"
 HAND_HIDDEN_DARK,"Cards will be dealt after every player has made a bid.","Карти буде роздано після того, як усі гравці зроблять замовлення.","Karty zostaną rozdane, gdy wszyscy gracze złożą zakłady.","Карты будуць раздадзены пасля таго, як усе гульцы зробяць заказ.","Барлық ойыншы тапсырыс бергеннен кейін карталар таратылады.","Карты будут сданы после того, как все игроки сделают заказ."
 HAND_PREMOVE_SELECTED,"AUTO-PLAY ✓","АВТОХІД ✓","AUTO-RUCH ✓","АЎТАХОД ✓","АВТОЖҮРІС ✓","АВТОХОД ✓"
 HAND_PREMOVE_CONFIRM,"CONFIRM","ПІДТВЕРДЬТЕ","POTWIERDŹ","ПАЦВЕРДЗІЦЕ","РАСТАҢЫЗ","ПОДТВЕРДИ"
@@ -226,3 +233,7 @@ MUSIC_IMPORT_SUMMARY,"Added: %d · skipped: %d.","Додано: %d · пропу
 MUSIC_CUSTOM_PLAYLIST_CLEARED,"Personal playlist cleared.","Власний плейлист очищено.","Własna playlista została wyczyszczona.","Асабісты плэйліст ачышчаны.","Жеке ойнату тізімі тазаланды.","Личный плейлист очищен."
 ACTION_LAST_CARD_AUTO_PLAYED,"Last card played automatically: %s.","Останню карту зіграно автоматично: %s.","Ostatnia karta została zagrana automatycznie: %s.","Апошняя карта згуляна аўтаматычна: %s.","Соңғы карта автоматты түрде ойналды: %s.","Последняя карта сыграна автоматически: %s."
 ACTION_TIMEOUT_CARD_PLAYED,"Time is up: %s was played for you.","Час вийшов: за вас зіграно %s.","Czas minął: automatycznie zagrano za ciebie %s.","Час скончыўся: за цябе згуляна %s.","Уақыт аяқталды: сіз үшін %s ойналды.","Время вышло: за тебя сыграна %s."
+
+MOBILE_CARD_DROP,"Release here to play","Відпусти тут, щоб зіграти","Puść tutaj, aby zagrać","Адпусці тут, каб згуляць","Ойнау үшін осында жібер","Отпусти здесь, чтобы сыграть"
+MOBILE_CARD_UNAVAILABLE,"This card cannot be played now","Цією картою зараз ходити не можна","Nie można teraz zagrać tą kartą","Гэтай картай зараз хадзіць нельга","Бұл картамен қазір жүруге болмайды","Этой картой сейчас ходить нельзя"
+MOBILE_CARD_GESTURES,"Tap a card to select it, then tap again to play. Or drag it to the highlighted area. Hold a Joker to choose its action.","Торкнися карти, щоб вибрати її, і ще раз — щоб зіграти. Або перетягни її в підсвічену область. Утримуй Джокера для вибору дії.","Dotknij karty, aby ją wybrać, i ponownie, aby zagrać. Możesz też przeciągnąć ją na podświetlony obszar. Przytrzymaj Jokera, aby wybrać jego działanie.","Дакраніся да карты, каб выбраць яе, і яшчэ раз — каб згуляць. Або перацягні яе ў падсвечаную вобласць. Утрымлівай Джокера для выбару дзеяння.","Картаны таңдау үшін түрт, ойнау үшін қайта түрт. Немесе оны белгіленген аймаққа сүйре. Джокер әрекетін таңдау үшін оны басып тұр.","Коснись карты, чтобы выбрать её, и ещё раз — чтобы сыграть. Или перетащи её в подсвеченную область. Удерживай Джокера для выбора действия."

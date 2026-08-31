@@ -7,6 +7,8 @@ func _init() -> void:
 
 func _run() -> void:
 	var main_scene: Variant = load("res://Scenes/main.tscn").instantiate()
+	main_scene.persistent_settings_writes_enabled = false
+	main_scene.session_save_path = "user://solo_auto_advance_regression.save"
 	root.add_child(main_scene)
 	await process_frame
 
@@ -26,6 +28,7 @@ func _run() -> void:
 		"A solo normal or hard bot must preserve an unsupported trump king."
 	)
 
+	main_scene.menu_overlay.visible = false
 	main_scene.local_first_turn_roll_active = false
 	main_scene.normal_round_index = 0
 	main_scene.game.current_round.state = Round.State.FINISHED
@@ -53,5 +56,6 @@ func _run() -> void:
 	assert(main_scene.normal_round_index == 1, "Solo countdown must advance to the next scheduled round.")
 	assert(main_scene.game.current_round.state != Round.State.FINISHED, "The next solo round must start without a host click.")
 
+	main_scene._delete_saved_session()
 	print("SOLO_ROUND_AUTO_ADVANCE_TEST_PASS")
 	quit()

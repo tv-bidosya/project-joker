@@ -72,7 +72,7 @@ func _run() -> void:
 	var chat_style := main_scene.chat_panel.get_theme_stylebox("panel") as StyleBoxFlat
 	assert(chat_style != null and chat_style.bg_color.r > 0.9, "The chat must use the light history-style background")
 	var chat_title := main_scene.chat_panel.find_child("ChatTitle", true, false) as Label
-	assert(chat_title != null and chat_title.text == "ЧАТ", "The compact panel title must stay concise")
+	assert(chat_title != null and chat_title.text == tr("CHAT_TITLE"), "The compact panel title must stay concise")
 	assert(main_scene.social_controls_container.size.y <= 110.0, "Three social controls must form a compact stack")
 	var player_panel_center_y: float = (
 		float(main_scene.player_panels[0].position.y)

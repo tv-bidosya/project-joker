@@ -175,7 +175,7 @@ func _test_joker_is_saved_until_it_is_needed(network_match: SteamP2PMatch) -> vo
 	var bot_index := (leader_index + 1) % game.players.size()
 	var trump_ace := _card(Card.Suit.CLUBS, Card.Rank.ACE)
 	var losing_trump := _card(Card.Suit.CLUBS, Card.Rank.KING)
-	var joker := _card(Card.Suit.CLUBS, Card.Rank.SEVEN, true)
+	var joker := _card(Card.Suit.SPADES, Card.Rank.SEVEN, true)
 	game.players[leader_index].receive_card(trump_ace)
 	game.players[bot_index].receive_card(losing_trump)
 	game.players[bot_index].receive_card(joker)
@@ -199,7 +199,7 @@ func _test_hard_bot_preserves_leading_joker(network_match: SteamP2PMatch) -> voi
 	var game := _create_playing_game(Round.RoundType.NORMAL, Round.TrumpSuit.CLUBS)
 	var bot_index := game.current_round.current_player_index
 	var trump_ace := _card(Card.Suit.CLUBS, Card.Rank.ACE)
-	var joker := _card(Card.Suit.CLUBS, Card.Rank.SEVEN, true)
+	var joker := _card(Card.Suit.SPADES, Card.Rank.SEVEN, true)
 	game.players[bot_index].receive_card(trump_ace)
 	game.players[bot_index].receive_card(joker)
 	game.players[bot_index].bid = 1

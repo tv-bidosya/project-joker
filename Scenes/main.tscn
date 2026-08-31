@@ -421,7 +421,7 @@ columns = 3
 theme_override_constants/h_separation = 8
 theme_override_constants/v_separation = 8
 
-[node name="BidControls" type="HBoxContainer" parent="Margin/TablePanel/TableContent"]
+[node name="BidControls" type="GridContainer" parent="Margin/TablePanel/TableContent"]
 unique_name_in_owner = true
 layout_mode = 1
 anchors_preset = 12
@@ -432,8 +432,9 @@ offset_top = -230.0
 offset_right = -600.0
 offset_bottom = -184.0
 grow_vertical = 0
-alignment = 1
-theme_override_constants/separation = 8
+columns = 3
+theme_override_constants/h_separation = 8
+theme_override_constants/v_separation = 8
 
 [node name="HandHeader" type="HBoxContainer" parent="Margin/TablePanel/TableContent"]
 layout_mode = 1

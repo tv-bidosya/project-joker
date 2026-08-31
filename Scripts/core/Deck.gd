@@ -17,7 +17,7 @@ func create_deck():
 			card.suit = suit
 			card.rank = rank
 
-			if suit == Card.Suit.CLUBS and rank == Card.Rank.SEVEN:
+			if suit == Card.Suit.SPADES and rank == Card.Rank.SEVEN:
 				card.is_joker = true
 
 			cards.append(card)

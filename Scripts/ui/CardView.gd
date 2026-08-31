@@ -31,6 +31,9 @@ var is_disabled := false
 var is_visually_unavailable := false
 var is_visually_available := false
 var is_hovered := false
+var mobile_input_managed := false
+var is_selected := false
+var is_drag_source := false
 var is_winner_highlighted := false
 var requested_presentation_rotation := 0.0
 var presentation_rotation := 0.0
@@ -148,13 +151,36 @@ func set_interactive(interactive: bool, disabled: bool) -> void:
 	is_disabled = disabled
 	is_visually_unavailable = disabled
 	is_visually_available = false
-	mouse_filter = Control.MOUSE_FILTER_STOP if is_interactive and not is_disabled else Control.MOUSE_FILTER_IGNORE
+	mouse_filter = Control.MOUSE_FILTER_STOP if is_interactive and not is_disabled and not mobile_input_managed else Control.MOUSE_FILTER_IGNORE
 	mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND if is_interactive and not is_disabled else Control.CURSOR_ARROW
 	_refresh_availability_visual()
 	if not is_interactive or is_disabled:
 		is_hovered = false
 		_apply_visual_pose(false)
 	_refresh_face_style()
+
+
+func set_mobile_input_managed(enabled: bool) -> void:
+	mobile_input_managed = enabled
+	is_hovered = false
+	mouse_filter = Control.MOUSE_FILTER_IGNORE if enabled else Control.MOUSE_FILTER_STOP
+	if enabled:
+		tooltip_text = ""
+	_apply_visual_pose(false)
+
+
+func set_selected(selected: bool) -> void:
+	if is_selected == selected:
+		return
+	is_selected = selected
+	_refresh_winner_glow()
+	_refresh_face_style()
+	_apply_visual_pose(true)
+
+
+func set_drag_source(enabled: bool) -> void:
+	is_drag_source = enabled
+	_refresh_availability_visual()
 
 
 func set_visually_unavailable(unavailable: bool) -> void:
@@ -171,7 +197,7 @@ func set_availability_hint(available: bool, unavailable: bool) -> void:
 
 
 func _refresh_availability_visual() -> void:
-	modulate = Color.WHITE
+	modulate = Color(1.0, 1.0, 1.0, 0.25 if is_drag_source else 1.0)
 	if not is_instance_valid(availability_overlay):
 		return
 	availability_overlay.visible = is_visually_unavailable
@@ -194,7 +220,7 @@ func set_winner_highlight(enabled: bool) -> void:
 
 
 func _gui_input(event: InputEvent) -> void:
-	if not is_interactive or is_disabled or displayed_card == null:
+	if mobile_input_managed or not is_interactive or is_disabled or displayed_card == null:
 		return
 
 	if event is InputEventMouseMotion and is_hovered:
@@ -345,7 +371,8 @@ func _refresh_winner_glow() -> void:
 	if is_instance_valid(winner_glow_tween):
 		winner_glow_tween.kill()
 	winner_glow_tween = null
-	winner_glow.visible = is_winner_highlighted
+	winner_glow.visible = is_winner_highlighted or is_selected
+	winner_glow.modulate = Color.WHITE
 	if not is_winner_highlighted:
 		return
 	winner_glow.modulate = Color(1.0, 1.0, 1.0, 0.98)
@@ -382,7 +409,7 @@ func _refresh_face_style() -> void:
 
 
 func _on_mouse_entered() -> void:
-	if is_interactive and not is_disabled:
+	if is_interactive and not is_disabled and not mobile_input_managed:
 		is_hovered = true
 		_animate_visual_pose(
 			presentation_offset + Vector2(0.0, -11.0),
@@ -415,21 +442,23 @@ func _sync_card_specific_presentation() -> void:
 
 
 func _apply_visual_pose(animated: bool) -> void:
+	var target_offset := presentation_offset + (Vector2(0.0, -24.0) if is_selected else Vector2.ZERO)
+	var target_scale := Vector2(1.04, 1.04) if is_selected else Vector2.ONE
 	if animated:
-		_animate_visual_pose(presentation_offset, presentation_rotation, Vector2.ONE, 0.16)
+		_animate_visual_pose(target_offset, presentation_rotation, target_scale, 0.16)
 		return
 	if is_instance_valid(visual_tween):
 		visual_tween.kill()
 	visual_tween = null
 	if not is_instance_valid(face_panel) or not is_instance_valid(depth_shadow) or not is_instance_valid(winner_glow):
 		return
-	face_panel.position = presentation_offset
+	face_panel.position = target_offset
 	face_panel.rotation = presentation_rotation
-	face_panel.scale = Vector2.ONE
-	winner_glow.position = presentation_offset
+	face_panel.scale = target_scale
+	winner_glow.position = target_offset
 	winner_glow.rotation = presentation_rotation
-	winner_glow.scale = Vector2.ONE
-	depth_shadow.position = presentation_offset + Vector2(2.0, 4.0)
+	winner_glow.scale = target_scale
+	depth_shadow.position = target_offset + Vector2(2.0, 4.0)
 	depth_shadow.rotation = presentation_rotation
 	depth_shadow.scale = Vector2(0.99, 0.99)
 	depth_shadow.modulate = Color(1.0, 1.0, 1.0, 0.9)

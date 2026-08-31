@@ -14,6 +14,10 @@ config/name="Project Joker"
 run/main_scene="uid://d0mtlwhob8g8x"
 config/features=PackedStringArray("4.5", "Forward Plus")
 config/icon="res://Assets/Brand/project_joker_icon.png"
+boot_splash/bg_color=Color(0.0039, 0.0118, 0.0902, 1)
+boot_splash/image="res://Assets/UI/bds_studio_splash.png"
+boot_splash/fullsize=false
+boot_splash/use_filter=true
 
 [display]
 
@@ -28,4 +32,6 @@ locale/translations=PackedStringArray("res://Localization/menus.en.translation",
 
 [rendering]
 
+textures/vram_compression/import_etc2_astc=true
+renderer/rendering_method.android_test="gl_compatibility"
 anti_aliasing/quality/msaa_2d=2

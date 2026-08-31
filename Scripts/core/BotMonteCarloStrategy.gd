@@ -148,8 +148,8 @@ static func estimate_hand_bid(player: Player, round: Round) -> int:
 			estimate += 1.0
 			continue
 		var missing_higher := int(Card.Rank.ACE) - int(card.rank)
-		if card.suit == Card.Suit.CLUBS and card.rank < Card.Rank.SEVEN:
-			missing_higher -= 1 # 7 clubs is the Joker, not a regular club.
+		if card.suit == Card.Suit.SPADES and card.rank < Card.Rank.SEVEN:
+			missing_higher -= 1 # 7 spades is the Joker, not a regular spade.
 		var suit_length := 0
 		for held in player.hand:
 			if not held.is_joker and held.suit == card.suit:
@@ -407,7 +407,7 @@ static func _has_publicly_possible_higher_card(
 	if game.trump_card != null:
 		known_keys[_card_key(game.trump_card)] = true
 	for rank in range(int(card.rank) + 1, int(Card.Rank.ACE) + 1):
-		if card.suit == Card.Suit.CLUBS and rank == Card.Rank.SEVEN:
+		if card.suit == Card.Suit.SPADES and rank == Card.Rank.SEVEN:
 			continue
 		if not known_keys.has("%d_%d" % [card.suit, rank]):
 			return true

@@ -36,6 +36,7 @@ const SteamBridge = preload("res://Scripts/core/SteamBridge.gd")
 const SteamP2PMatch = preload("res://Scripts/core/SteamP2PMatch.gd")
 const BotMonteCarloStrategy = preload("res://Scripts/core/BotMonteCarloStrategy.gd")
 const CardArtworkResource = preload("res://Scripts/ui/CardArtwork.gd")
+const MobileHandInputResource = preload("res://Scripts/ui/MobileHandInput.gd")
 const Dice3DViewResource = preload("res://Scripts/ui/Dice3DView.gd")
 const RoundResultsCountdownBorderResource = preload("res://Scripts/ui/RoundResultsCountdownBorder.gd")
 const MenuBackgroundEffectsResource = preload("res://Scripts/ui/MenuBackgroundEffects.gd")
@@ -45,6 +46,7 @@ const JOKER_CELEBRATION_TEXTURE = preload("res://Assets/Effects/Joker/laughing_j
 const MENU_BACKGROUND_DAY_TEXTURE_PATH := "res://Assets/UI/menu_card_salon_day_v4.png"
 const MENU_BACKGROUND_NIGHT_TEXTURE_PATH := "res://Assets/UI/menu_card_salon_night_v2.png"
 const MENU_BACKGROUND_NIGHT_CITY_TEXTURE_PATH := "res://Assets/UI/menu_night_city_v3.png"
+const STUDIO_SPLASH_TEXTURE_PATH := "res://Assets/UI/bds_studio_splash.png"
 const MENU_DAY_START_HOUR := 6
 const MENU_NIGHT_START_HOUR := 18
 const SCORE_SHEET_NUMBER_COLUMN_WIDTH := 46.0
@@ -345,7 +347,7 @@ enum OnlineHubTab {
 @onready var first_turn_roll_grid: GridContainer = %FirstTurnRollGrid
 @onready var first_turn_roll_status: Label = %FirstTurnRollStatus
 @onready var first_turn_roll_button: Button = %FirstTurnRollButton
-@onready var bid_controls: HBoxContainer = %BidControls
+@onready var bid_controls: GridContainer = %BidControls
 @onready var joker_controls: GridContainer = %JokerControls
 @onready var hand_container: HBoxContainer = %HandContainer
 @onready var hand_sort_by_suit_button: Button = %HandSortBySuitButton
@@ -358,6 +360,9 @@ enum OnlineHubTab {
 @onready var final_results_label: Label = %FinalResultsLabel
 @onready var next_round_button: Button = %NextRoundButton
 @onready var pause_menu_button: Button = %PauseMenuButton
+@onready var table_margin: MarginContainer = $Margin
+@onready var table_header: HBoxContainer = $Margin/TablePanel/TableContent/Header
+@onready var hand_header: HBoxContainer = $Margin/TablePanel/TableContent/HandHeader
 
 
 var game := Game.new(PLAYER_NAMES)
@@ -404,7 +409,7 @@ var avatar_action_tray_tweens: Dictionary = {}
 var avatar_action_hide_generations: Dictionary = {}
 var avatar_mute_buttons: Array[Button] = []
 var avatar_gift_buttons: Array[Button] = []
-var avatar_soundpad_indicators: Array[Label] = []
+var avatar_soundpad_indicators: Array[TextureRect] = []
 var avatar_turn_timer_indicators: Array[TurnTimerIndicator] = []
 var avatar_mute_hovered_slots: Dictionary = {}
 var muted_network_player_indices: Dictionary = {}
@@ -445,7 +450,7 @@ var soundpad_picker_content: VBoxContainer
 var soundpad_sounds: Array[Dictionary] = []
 var soundpad_selected_category_id := ""
 var soundpad_bubble: PanelContainer
-var soundpad_bubble_label: Label
+var soundpad_bubble_icon: TextureRect
 var soundpad_bubble_tween: Tween
 var chat_toggle_button: Button
 var chat_panel: PanelContainer
@@ -504,7 +509,8 @@ var undo_requests_for_current_decision := 0
 var is_undo_vote_in_progress := false
 var round_history: Array[Dictionary] = []
 var is_score_sheet_visible := false
-var is_round_history_visible := true
+var is_round_history_visible := false
+var session_save_path := SESSION_SAVE_PATH
 var bot_random := RandomNumberGenerator.new()
 var hand_sort_mode: HandSortMode = HandSortMode.BY_SUIT
 var player_panel_style: StyleBoxFlat
@@ -558,6 +564,7 @@ var auto_turn_enabled := false
 var interface_locale := "en"
 var interface_locale_was_chosen := false
 var persistent_settings_writes_enabled := true
+var persistent_settings_path := PERSISTENT_SETTINGS_PATH
 var turn_timer_active := false
 var turn_timer_remaining := AUTO_TURN_DURATION_SECONDS
 var social_action_uses: Dictionary = {
@@ -659,10 +666,18 @@ var local_statistics: Dictionary = {
 	"last_place": 0,
 	"last_score": 0,
 	"last_exact_orders": 0,
-	"last_shared_place": false
+	"last_shared_place": false,
+	"season_key": "",
+	"season_games": 0,
+	"season_wins": 0,
+	"season_losses": 0,
+	"season_mvp": 0,
+	"season_points": 0.0,
+	"season_total_games": 0
 }
 var game_statistics_recorded_for_current_session := false
 var statistics_return_to_final_menu := false
+var statistics_return_to_profile := false
 var loopback_network_test
 var steam_p2p_match
 var loopback_network_status_label: Label
@@ -738,9 +753,18 @@ var stage_announcement_bottom_line: ColorRect
 var stage_announcement_tween: Tween
 var last_announced_round_type := -1
 var last_announced_round_number := -1
+var mobile_table_layout := false
+var mobile_top_bar: PanelContainer
+var mobile_bottom_dock: PanelContainer
+var mobile_bid_popup: PanelContainer
+var mobile_bid_menu_button: Button
+var mobile_sort_button: Button
+var mobile_bid_selection_open := false
+var mobile_hand_input: Control
 
 
 func _ready() -> void:
+	mobile_table_layout = OS.has_feature("android") or OS.has_feature("ios")
 	bot_random.randomize()
 	steam_bridge.lobby_status_changed.connect(_refresh_steam_lobby_status)
 	steam_bridge.lobby_joined_successfully.connect(_on_steam_lobby_joined_successfully)
@@ -783,6 +807,7 @@ func _ready() -> void:
 	# Переносим его в свободную зону справа от истории раздачи.
 	_set_control_layout(music_player_panel, 0.0, 0.0, 0.0, 0.0, 316.0, 54.0, 592.0, 132.0)
 	music_player_panel.z_index = 90
+	_apply_mobile_table_layout()
 	_create_music_controls_popup()
 	_create_tutorial_panel()
 	_create_profile_avatar_file_dialog()
@@ -790,6 +815,9 @@ func _ready() -> void:
 	_create_profile_music_file_dialog()
 	joker_controls.reparent(self)
 	_create_main_menu()
+	menu_overlay.visibility_changed.connect(_refresh_social_overlay_visibility)
+	score_sheet_panel.visibility_changed.connect(_refresh_social_overlay_visibility)
+	first_turn_roll_panel.visibility_changed.connect(_refresh_social_overlay_visibility)
 	_create_stage_announcement_overlay()
 	loopback_network_test = LoopbackNetwork.new()
 	loopback_network_test.status_changed.connect(_refresh_loopback_network_status)
@@ -817,6 +845,7 @@ func _ready() -> void:
 	music_add_button.pressed.connect(_on_music_add_pressed)
 	next_round_button.pressed.connect(_on_next_round_pressed)
 	round_results_panel.resized.connect(_queue_round_results_action_layout)
+	round_results_label.resized.connect(_queue_round_results_action_layout)
 	next_round_button.z_index = 11
 	round_results_panel.minimum_size_changed.connect(_queue_round_results_action_layout)
 	first_turn_roll_button.pressed.connect(_on_first_turn_roll_action_pressed)
@@ -833,8 +862,412 @@ func _ready() -> void:
 		_show_steam_lobby_menu()
 	else:
 		_show_main_menu()
+	call_deferred("_show_studio_splash")
 
 
+func _show_studio_splash() -> void:
+	var overlay := Control.new()
+	overlay.name = "StudioSplash"
+	overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	overlay.z_index = 1000
+	overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	add_child(overlay)
+
+	var background := ColorRect.new()
+	background.color = Color(0.0039, 0.0118, 0.0902, 1.0)
+	background.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	background.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	overlay.add_child(background)
+
+	var logo := TextureRect.new()
+	logo.texture = load(STUDIO_SPLASH_TEXTURE_PATH)
+	logo.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	logo.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	logo.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	logo.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	overlay.add_child(logo)
+
+	var tween := create_tween()
+	tween.set_pause_mode(Tween.TWEEN_PAUSE_PROCESS)
+	tween.tween_interval(1.65)
+	tween.tween_property(overlay, "modulate:a", 0.0, 0.42).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN_OUT)
+	tween.tween_callback(overlay.queue_free)
+
+
+func _apply_mobile_table_layout() -> void:
+	if not mobile_table_layout:
+		return
+	_create_mobile_table_chrome()
+
+	# Мобильная версия собрана вертикальными слоями: статус, стол,
+	# локальный игрок, рука и постоянный нижний док.
+	table_margin.offset_left = 6.0
+	table_margin.offset_top = 6.0
+	table_margin.offset_right = -6.0
+	table_margin.offset_bottom = -6.0
+	for margin_name in [&"margin_left", &"margin_top", &"margin_right", &"margin_bottom"]:
+		table_margin.add_theme_constant_override(margin_name, 4)
+
+	table_header.add_theme_constant_override("separation", 12)
+	table_header.alignment = BoxContainer.ALIGNMENT_CENTER
+	table_header.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var title_label := table_header.get_node_or_null("Title") as Label
+	if title_label != null:
+		title_label.visible = false
+	phase_label.custom_minimum_size = Vector2(0.0, 42.0)
+	phase_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	phase_label.clip_text = true
+	phase_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	phase_label.add_theme_font_size_override("font_size", 19)
+	trump_label.custom_minimum_size = Vector2(0.0, 42.0)
+	trump_label.add_theme_font_size_override("normal_font_size", 18)
+	trump_label.add_theme_font_override("normal_font", ThemeDB.fallback_font)
+	trump_label.add_theme_font_override("bold_font", ThemeDB.fallback_font)
+	var mobile_top_text_color := Color(0.075, 0.085, 0.07, 1.0)
+	phase_label.add_theme_color_override("font_color", mobile_top_text_color)
+	trump_label.add_theme_color_override("default_color", mobile_top_text_color)
+	trump_label.add_theme_color_override("font_color", mobile_top_text_color)
+	for top_button in [music_previous_button, music_play_pause_button, music_next_button, music_playlist_button]:
+		top_button.add_theme_color_override("font_color", mobile_top_text_color)
+		top_button.add_theme_color_override("font_hover_color", Color(0.42, 0.24, 0.06, 1.0))
+		top_button.add_theme_color_override("font_pressed_color", Color(0.65, 0.32, 0.04, 1.0))
+	for header_button in [round_history_toggle_button, score_sheet_toggle_button, pause_menu_button]:
+		_apply_compact_table_action_button_style(header_button, 52.0)
+		header_button.custom_minimum_size = Vector2(0.0, 52.0)
+		header_button.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		header_button.alignment = HORIZONTAL_ALIGNMENT_CENTER
+		header_button.add_theme_font_size_override("font_size", 18)
+	score_sheet_toggle_button.text = _get_score_sheet_button_text()
+
+	_set_control_layout(round_history_panel, 0.0, 0.0, 0.0, 0.0, 12.0, 80.0, 380.0, 330.0)
+	round_history_panel.z_index = 96
+	history_label.add_theme_font_size_override("normal_font_size", 26)
+	is_round_history_visible = false
+	round_history_panel.visible = false
+
+	# На телефоне музыка продолжает автоматически крутить три встроенные темы,
+	# но отдельный плеер больше не занимает верхнюю панель.
+	music_player_panel.visible = false
+	round_history_toggle_button.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+
+	_set_control_layout(local_table_outer, 0.5, 0.0, 0.5, 0.0, -850.0, 92.0, 850.0, 754.0)
+	players_container.z_index = 0
+	trick_slots.z_index = 10
+	hand_container.z_index = 70
+	player_panels[HUMAN_PLAYER_INDEX].z_as_relative = false
+	player_panels[HUMAN_PLAYER_INDEX].z_index = 80
+	avatar_badges[HUMAN_PLAYER_INDEX].z_as_relative = false
+	avatar_badges[HUMAN_PLAYER_INDEX].z_index = 81
+	_set_control_layout(deck_visual, 1.0, 0.0, 1.0, 0.0, -430.0, 112.0, -250.0, 312.0)
+	_set_control_layout(table_label, 0.5, 0.0, 0.5, 0.0, -390.0, 220.0, 390.0, 240.0)
+	table_label.add_theme_font_size_override("font_size", 18)
+	table_label.visible = false
+	action_label.add_theme_font_size_override("font_size", 19)
+	first_turn_roll_panel.z_index = 110
+
+	hand_header.visible = false
+	for hand_button in [hand_sort_by_suit_button, hand_sort_trumps_left_button, undo_button]:
+		hand_button.custom_minimum_size = Vector2(0.0, 52.0)
+		hand_button.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		hand_button.add_theme_font_size_override("font_size", 17)
+	_set_control_layout(hand_container, 0.0, 1.0, 1.0, 1.0, 74.0, -230.0, -74.0, -10.0)
+	hand_container.add_theme_constant_override("separation", 4)
+	_set_control_layout(next_round_button, 0.5, 1.0, 0.5, 1.0, -210.0, -490.0, 210.0, -426.0)
+	next_round_button.custom_minimum_size = Vector2(460.0, 84.0)
+	next_round_button.add_theme_font_size_override("font_size", 26)
+	round_results_title.add_theme_font_size_override("font_size", 28)
+	round_results_title_panel.custom_minimum_size.y = 52.0
+	for font_kind in ["normal_font_size", "bold_font_size", "italics_font_size", "bold_italics_font_size"]:
+		round_results_label.add_theme_font_size_override(font_kind, 24)
+	round_results_label.add_theme_constant_override("line_separation", 6)
+	round_results_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_position_action_label_for_table_mode(false)
+
+	for player_index in player_panels.size():
+		_place_player_panel(player_panels[player_index], player_index)
+		_place_player_avatar_badge(avatar_badges[player_index], player_index)
+	for slot_index in trick_card_views.size():
+		_place_trick_slot(trick_card_views[slot_index], slot_index)
+	for holder_index in bot_card_back_holders.size():
+		_place_bot_card_back_holder(bot_card_back_holders[holder_index], holder_index + 1)
+	_refresh_table_markers()
+	_refresh_mobile_action_dock()
+	_create_mobile_hand_input()
+	call_deferred("_align_social_controls_to_local_player_panel")
+
+
+func _create_mobile_hand_input() -> void:
+	if not mobile_table_layout or is_instance_valid(mobile_hand_input):
+		return
+	mobile_hand_input = MobileHandInputResource.new()
+	mobile_hand_input.name = "MobileHandInput"
+	add_child(mobile_hand_input)
+	mobile_hand_input.configure(hand_container, _can_use_mobile_hand_input, _get_mobile_hand_input_scope, _get_mobile_card_drop_rect)
+	mobile_hand_input.card_confirmed.connect(_on_mobile_hand_card_confirmed)
+	mobile_hand_input.pointer_blockers.assign([chat_panel])
+	for child in hand_container.get_children():
+		if child is CardView:
+			_configure_mobile_hand_card(child)
+
+
+func _configure_mobile_hand_card(view: CardView, card_key := "") -> void:
+	if not mobile_table_layout:
+		return
+	view.set_mobile_input_managed(true)
+	view.set_meta("mobile_card_key", card_key if not card_key.is_empty() else str(view.displayed_card.get_instance_id()))
+
+
+func _can_use_mobile_hand_input() -> bool:
+	if not mobile_table_layout or is_bug_report_review_mode or is_score_sheet_visible or is_undo_vote_in_progress:
+		return false
+	if is_instance_valid(chat_panel) and chat_panel.visible and is_instance_valid(chat_input) and chat_input.has_focus():
+		return false
+	for overlay in [menu_overlay, first_turn_roll_panel, score_sheet_panel, reaction_picker, sticker_picker, soundpad_picker, stage_announcement_overlay]:
+		if is_instance_valid(overlay) and overlay.visible:
+			return false
+	if _is_steam_p2p_main_table_active():
+		var snapshot := _get_network_main_snapshot()
+		var round_data: Dictionary = snapshot.get("round", {})
+		return int(round_data.get("state", Round.State.SETUP)) == Round.State.PLAYING and not loopback_network_joker_selection_open and not network_card_play_presentation_active and not network_round_finish_presentation_active and not bool((snapshot.get("undo_state", {}) as Dictionary).get("pending", false))
+	return pending_joker_card == null and not is_trick_presentation_active and (_is_human_turn() or _can_prepare_local_premove())
+
+
+func _get_mobile_hand_input_scope() -> String:
+	if _is_steam_p2p_main_table_active():
+		var snapshot := _get_network_main_snapshot()
+		var round_data: Dictionary = snapshot.get("round", {})
+		return "network:%d:%d:%d" % [int(round_data.get("number", -1)), int(round_data.get("tricks_played", -1)), _get_network_table_active_player_index(round_data, snapshot.get("active_trick", {}))]
+	return "local:%d:%d:%d:%d" % [game.get_instance_id(), game.current_round.number, game.current_round.tricks_played, _get_current_player_index()]
+
+
+func _get_mobile_card_drop_rect() -> Rect2:
+	var left := player_panels[1].get_global_rect().end.x + 18.0
+	var right := player_panels[3].global_position.x - 18.0
+	var top := player_panels[2].get_global_rect().end.y + 28.0
+	var bottom := player_panels[0].global_position.y - 24.0
+	return Rect2(left, top, maxf(1.0, right - left), maxf(1.0, bottom - top))
+
+
+func _on_mobile_hand_card_confirmed(card: Card, card_key: String) -> void:
+	if not _can_use_mobile_hand_input() or card == null:
+		return
+	if _is_steam_p2p_main_table_active():
+		if not _is_network_table_card_rule_available(card_key, card.is_joker):
+			return
+		# The gesture already provided confirmation for a premove.
+		if network_premove_card_key != card_key:
+			network_premove_candidate_key = card_key
+		if card.is_joker:
+			_on_network_table_joker_pressed(card, card_key)
+		else:
+			_on_network_table_card_pressed(card, card_key)
+		return
+	if card not in game.players[HUMAN_PLAYER_INDEX].hand or not _is_card_available_to_human(card):
+		return
+	if not _is_human_turn() and local_premove_card != card:
+		local_premove_candidate = card
+	_on_card_pressed(card)
+
+
+func _get_score_sheet_button_text() -> String:
+	var label := tr("SCORE_SHEET_ICON")
+	# The clipboard emoji reserves blank space on Android fonts.
+	return label.trim_prefix("📋").strip_edges() if mobile_table_layout else label
+
+
+func _create_mobile_table_chrome() -> void:
+	if not mobile_table_layout or is_instance_valid(mobile_top_bar):
+		return
+
+	mobile_top_bar = PanelContainer.new()
+	mobile_top_bar.name = "MobileTopBar"
+	mobile_top_bar.z_index = 90
+	mobile_top_bar.mouse_filter = Control.MOUSE_FILTER_STOP
+	_set_control_layout(mobile_top_bar, 0.0, 0.0, 1.0, 0.0, 20.0, 6.0, -20.0, 74.0)
+	var top_style := _create_flat_style(Color(0.965, 0.95, 0.89, 0.99), Color(0.55, 0.37, 0.14, 0.94), 2, 12, 4)
+	top_style.content_margin_left = 12.0
+	top_style.content_margin_right = 12.0
+	top_style.content_margin_top = 7.0
+	top_style.content_margin_bottom = 7.0
+	mobile_top_bar.add_theme_stylebox_override("panel", top_style)
+	add_child(mobile_top_bar)
+
+	var top_row := Control.new()
+	top_row.name = "MobileTopRow"
+	top_row.custom_minimum_size.y = 52.0
+	mobile_top_bar.add_child(top_row)
+	round_history_toggle_button.reparent(top_row)
+	music_player_panel.visible = false
+	table_header.reparent(top_row)
+	phase_label.reparent(top_row)
+	score_sheet_toggle_button.reparent(top_row)
+	pause_menu_button.reparent(top_row)
+	top_row.resized.connect(_queue_mobile_top_bar_layout)
+	for button in [round_history_toggle_button, score_sheet_toggle_button, pause_menu_button]:
+		button.minimum_size_changed.connect(_queue_mobile_top_bar_layout)
+	_queue_mobile_top_bar_layout()
+
+	mobile_bottom_dock = PanelContainer.new()
+	mobile_bottom_dock.name = "MobileBottomDock"
+	mobile_bottom_dock.z_index = 92
+	mobile_bottom_dock.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_set_control_layout(mobile_bottom_dock, 0.0, 1.0, 1.0, 1.0, 24.0, -76.0, -24.0, -6.0)
+	var dock_style := StyleBoxEmpty.new()
+	mobile_bottom_dock.add_theme_stylebox_override("panel", dock_style)
+	add_child(mobile_bottom_dock)
+
+	var dock_row := HBoxContainer.new()
+	dock_row.name = "MobileBottomRow"
+	dock_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	dock_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	dock_row.add_theme_constant_override("separation", 14)
+	mobile_bottom_dock.add_child(dock_row)
+	hand_sort_by_suit_button.reparent(dock_row)
+	hand_sort_by_suit_button.custom_minimum_size = Vector2(180.0, 50.0)
+	hand_sort_by_suit_button.add_theme_font_size_override("font_size", 16)
+	hand_sort_trumps_left_button.reparent(dock_row)
+	hand_sort_trumps_left_button.custom_minimum_size = Vector2(190.0, 50.0)
+	hand_sort_trumps_left_button.add_theme_font_size_override("font_size", 16)
+	var mobile_dock_spacer := Control.new()
+	mobile_dock_spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	mobile_dock_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	dock_row.add_child(mobile_dock_spacer)
+
+	mobile_bid_menu_button = Button.new()
+	mobile_bid_menu_button.name = "MobileBidMenuButton"
+	mobile_bid_menu_button.text = tr("MOBILE_BID_BUTTON")
+	mobile_bid_menu_button.custom_minimum_size = Vector2(160.0, 52.0)
+	mobile_bid_menu_button.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	_apply_compact_table_action_button_style(mobile_bid_menu_button, 52.0)
+	mobile_bid_menu_button.add_theme_font_size_override("font_size", 17)
+	mobile_bid_menu_button.pressed.connect(_on_mobile_bid_menu_pressed)
+	dock_row.add_child(mobile_bid_menu_button)
+	undo_button.reparent(dock_row)
+	undo_button.custom_minimum_size = Vector2(240.0, 52.0)
+	undo_button.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+
+	mobile_bid_popup = PanelContainer.new()
+	mobile_bid_popup.name = "MobileBidPopup"
+	mobile_bid_popup.visible = false
+	mobile_bid_popup.z_index = 94
+	mobile_bid_popup.mouse_filter = Control.MOUSE_FILTER_STOP
+	_set_control_layout(mobile_bid_popup, 0.5, 1.0, 0.5, 1.0, 260.0, -188.0, 660.0, -86.0)
+	var popup_style := _create_flat_style(Color(0.01, 0.065, 0.043, 0.99), Color(0.86, 0.61, 0.18, 0.98), 2, 14, 9)
+	popup_style.content_margin_left = 14.0
+	popup_style.content_margin_right = 14.0
+	popup_style.content_margin_top = 10.0
+	popup_style.content_margin_bottom = 10.0
+	mobile_bid_popup.add_theme_stylebox_override("panel", popup_style)
+	add_child(mobile_bid_popup)
+
+	var bid_popup_content := VBoxContainer.new()
+	bid_popup_content.add_theme_constant_override("separation", 6)
+	mobile_bid_popup.add_child(bid_popup_content)
+	var bid_title := Label.new()
+	bid_title.name = "BidTitle"
+	bid_title.text = tr("MOBILE_BID_CHOOSE")
+	bid_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	bid_title.add_theme_font_size_override("font_size", 17)
+	bid_title.add_theme_color_override("font_color", Color(0.95, 0.83, 0.48, 1.0))
+	bid_popup_content.add_child(bid_title)
+	bid_controls.reparent(bid_popup_content)
+	bid_controls.columns = 3
+	bid_controls.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	bid_controls.add_theme_constant_override("h_separation", 8)
+	bid_controls.add_theme_constant_override("v_separation", 8)
+
+
+func _queue_mobile_top_bar_layout() -> void:
+	call_deferred("_position_mobile_top_bar_content")
+
+
+func _position_mobile_top_bar_content() -> void:
+	if not mobile_table_layout or not is_instance_valid(mobile_top_bar):
+		return
+	var row := mobile_top_bar.get_node("MobileTopRow") as Control
+	var width := row.size.x
+	var history_size := round_history_toggle_button.get_combined_minimum_size()
+	var menu_size := pause_menu_button.get_combined_minimum_size()
+	var score_size := score_sheet_toggle_button.get_combined_minimum_size()
+	var menu_left := width - menu_size.x
+	var score_left := menu_left - 10.0 - score_size.x
+	_set_control_layout(round_history_toggle_button, 0.0, 0.5, 0.0, 0.5, 0.0, -history_size.y / 2.0, history_size.x, history_size.y / 2.0)
+	_set_control_layout(pause_menu_button, 0.0, 0.5, 0.0, 0.5, menu_left, -menu_size.y / 2.0, width, menu_size.y / 2.0)
+	_set_control_layout(score_sheet_toggle_button, 0.0, 0.5, 0.0, 0.5, score_left, -score_size.y / 2.0, menu_left - 10.0, score_size.y / 2.0)
+	# The phase owns a symmetric area around the table center. Neither the
+	# trump text nor differently sized translated buttons can move it.
+	var phase_half_width := minf(width * 0.18, minf(width / 2.0 - history_size.x - 12.0, score_left - width / 2.0 - 12.0))
+	phase_half_width = maxf(1.0, phase_half_width)
+	_set_control_layout(phase_label, 0.5, 0.5, 0.5, 0.5, -phase_half_width, -21.0, phase_half_width, 21.0)
+	var trump_left := width / 2.0 + phase_half_width + 12.0
+	_set_control_layout(table_header, 0.0, 0.5, 0.0, 0.5, trump_left, -21.0, maxf(trump_left + 1.0, score_left - 10.0), 21.0)
+	trump_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+
+func _on_mobile_sort_pressed() -> void:
+	if is_bug_report_review_mode or is_processing_automatic_actions:
+		return
+	hand_sort_mode = (
+		HandSortMode.TRUMPS_LEFT
+		if hand_sort_mode == HandSortMode.BY_SUIT
+		else HandSortMode.BY_SUIT
+	)
+	_save_current_session()
+	_refresh_ui()
+
+
+func _on_mobile_bid_menu_pressed() -> void:
+	if not is_instance_valid(mobile_bid_popup) or not is_instance_valid(mobile_bid_menu_button):
+		return
+	if mobile_bid_menu_button.disabled:
+		return
+	mobile_bid_selection_open = not mobile_bid_selection_open
+	mobile_bid_popup.visible = mobile_bid_selection_open
+	if mobile_bid_selection_open:
+		_position_mobile_bid_popup()
+		call_deferred("_position_mobile_bid_popup")
+
+
+func _refresh_mobile_action_dock() -> void:
+	if not mobile_table_layout or not is_instance_valid(mobile_bid_menu_button):
+		return
+	var action_count := bid_controls.get_child_count()
+	var has_actions := action_count > 0
+	mobile_bid_menu_button.disabled = not has_actions
+	_position_mobile_bid_popup()
+	call_deferred("_position_mobile_bid_popup")
+	if not has_actions:
+		mobile_bid_selection_open = false
+	mobile_bid_popup.visible = has_actions and mobile_bid_selection_open
+
+func _position_mobile_bid_popup() -> void:
+	if (
+		not is_instance_valid(mobile_bid_popup)
+		or not is_instance_valid(mobile_bid_menu_button)
+	):
+		return
+	var popup_parent := mobile_bid_popup.get_parent() as Control
+	if popup_parent == null:
+		return
+	var action_count := bid_controls.get_child_count()
+	var row_count: int = maxi(1, int(ceil(float(action_count) / 3.0)))
+	var popup_height := 54.0 + float(row_count * 48 + maxi(0, row_count - 1) * 8)
+	var popup_width := 400.0
+	var button_rect := mobile_bid_menu_button.get_global_rect()
+	var parent_inverse: Transform2D = popup_parent.get_global_transform_with_canvas().affine_inverse()
+	var button_top_left: Vector2 = parent_inverse * button_rect.position
+	var button_center: Vector2 = parent_inverse * button_rect.get_center()
+	_set_control_layout(
+		mobile_bid_popup,
+		0.0,
+		0.0,
+		0.0,
+		0.0,
+		button_center.x - popup_width * 0.5,
+		button_top_left.y - popup_height - 8.0,
+		button_center.x + popup_width * 0.5,
+		button_top_left.y - 8.0
+	)
 func _create_table_visual_styles() -> void:
 	_apply_surround_theme_to_rect(background)
 	table_panel.add_theme_stylebox_override(
@@ -1097,7 +1530,7 @@ func _apply_minimal_scrollbar_style(scroll_container: ScrollContainer, use_menu_
 
 
 func _apply_table_action_button_style(button: Button) -> void:
-	button.add_theme_font_size_override("font_size", 15)
+	button.add_theme_font_size_override("font_size", 17 if mobile_table_layout else 15)
 	button.add_theme_color_override("font_color", Color(0.96, 0.97, 0.94, 1.0))
 	button.add_theme_color_override("font_hover_color", Color(1.0, 0.94, 0.72, 1.0))
 	button.add_theme_color_override("font_pressed_color", Color(1.0, 0.88, 0.48, 1.0))
@@ -1122,7 +1555,7 @@ func _apply_table_action_button_style(button: Button) -> void:
 
 func _apply_compact_table_action_button_style(button: Button, minimum_height: float) -> void:
 	_apply_table_action_button_style(button)
-	button.add_theme_font_size_override("font_size", 14)
+	button.add_theme_font_size_override("font_size", 16 if mobile_table_layout else 14)
 	button.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	button.custom_minimum_size = Vector2(button.custom_minimum_size.x, minimum_height)
 	for style_name in [&"normal", &"hover", &"pressed", &"disabled"]:
@@ -1134,7 +1567,7 @@ func _apply_compact_table_action_button_style(button: Button, minimum_height: fl
 
 
 func _apply_table_text_button_style(button: Button) -> void:
-	button.add_theme_font_size_override("font_size", 16)
+	button.add_theme_font_size_override("font_size", 18 if mobile_table_layout else 16)
 	button.add_theme_color_override("font_color", Color(0.84, 0.91, 0.84, 1.0))
 	button.add_theme_color_override("font_hover_color", Color(1.0, 0.84, 0.38, 1.0))
 	button.add_theme_color_override("font_pressed_color", Color(0.98, 0.66, 0.28, 1.0))
@@ -1468,7 +1901,7 @@ func _create_luxury_menu_panel_style() -> StyleBoxFlat:
 func _refresh_menu_presentation(wide := false, compact_main := false) -> void:
 	if not is_instance_valid(menu_panel):
 		return
-	menu_panel_half_width = 610.0 if wide else 370.0
+	menu_panel_half_width = 610.0 if wide or mobile_table_layout else 370.0
 	var half_height := 420.0 if wide else 305.0 if compact_main else 390.0
 	_set_control_layout(menu_panel, 0.5, 0.5, 0.5, 0.5, -menu_panel_half_width, -half_height, menu_panel_half_width, half_height)
 	menu_panel.add_theme_stylebox_override("panel", _create_luxury_menu_panel_style())
@@ -1620,6 +2053,9 @@ func _on_menu_backdrop_gui_input(event: InputEvent) -> void:
 func _build_main_menu_content() -> void:
 	online_hub_is_open = false
 	_clear_children(menu_content)
+	if mobile_table_layout:
+		_build_mobile_main_menu_content()
+		return
 	_refresh_menu_presentation(false, true)
 	_add_menu_title("PROJECT JOKER", "")
 	_add_menu_spacer(2.0)
@@ -1632,6 +2068,60 @@ func _build_main_menu_content() -> void:
 	_add_menu_button(tr("MENU_STATISTICS"), _show_statistics_menu)
 	_add_menu_button(tr("MENU_SETTINGS"), _show_settings_menu)
 	_add_menu_button(tr("MENU_QUIT"), _on_quit_pressed)
+
+
+func _build_mobile_main_menu_content() -> void:
+	_refresh_menu_presentation(true)
+	_add_menu_title("PROJECT JOKER", "")
+	_add_menu_spacer(6.0)
+
+	var tile_rows := VBoxContainer.new()
+	tile_rows.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	tile_rows.add_theme_constant_override("separation", 18)
+	menu_content.add_child(tile_rows)
+
+	var first_row := HBoxContainer.new()
+	first_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	first_row.add_theme_constant_override("separation", 18)
+	tile_rows.add_child(first_row)
+	if _has_saved_session():
+		_add_mobile_main_menu_tile(first_row, tr("MENU_CONTINUE"), _on_continue_saved_game_pressed)
+	_add_mobile_main_menu_tile(first_row, tr("MENU_NEW_BOTS"), _show_new_game_setup)
+	_add_mobile_main_menu_tile(first_row, tr("MENU_ONLINE"), _show_online_hub.bind(OnlineHubTab.OPEN_TABLES, true))
+
+	var second_row := HBoxContainer.new()
+	second_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	second_row.add_theme_constant_override("separation", 18)
+	tile_rows.add_child(second_row)
+	_add_mobile_main_menu_tile(second_row, tr("MENU_TUTORIAL"), _show_tutorial_menu)
+	_add_mobile_main_menu_tile(second_row, tr("MENU_PROFILE"), _show_profile_menu)
+	_add_mobile_main_menu_tile(second_row, tr("MENU_SETTINGS"), _show_settings_menu)
+
+	if OS.has_feature("android"):
+		var exit_row := HBoxContainer.new()
+		exit_row.alignment = BoxContainer.ALIGNMENT_END
+		menu_content.add_child(exit_row)
+		var exit_button := _create_menu_button("×", _on_quit_pressed)
+		exit_button.tooltip_text = tr("MENU_QUIT")
+		exit_button.custom_minimum_size = Vector2(48.0, 42.0)
+		exit_button.add_theme_font_size_override("font_size", 22)
+		exit_row.add_child(exit_button)
+	_queue_menu_panel_fit()
+
+
+func _add_mobile_main_menu_tile(parent: Container, label_text: String, callback: Callable) -> void:
+	var button := _create_menu_button(label_text, callback)
+	_apply_mobile_menu_tile_style(button)
+	parent.add_child(button)
+
+
+func _apply_mobile_menu_tile_style(button: Button) -> void:
+	button.text = button.text.to_upper()
+	button.custom_minimum_size = Vector2(300.0, 190.0)
+	button.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	button.add_theme_font_size_override("font_size", 24)
+	button.set_meta("mobile_menu_tile", true)
+	_apply_beveled_menu_button_style(button, false)
 
 
 func _get_build_version_text() -> String:
@@ -1841,9 +2331,9 @@ func _build_online_create_room_tab() -> void:
 	_add_menu_label("Кто сможет увидеть и открыть комнату", 17)
 	online_lobby_visibility_selector = OptionButton.new()
 	online_lobby_visibility_selector.name = "OnlineLobbyVisibilitySelector"
-	online_lobby_visibility_selector.add_item("Открытая — видна всем", SteamBridge.LobbyVisibility.PUBLIC)
-	online_lobby_visibility_selector.add_item("Только для друзей", SteamBridge.LobbyVisibility.FRIENDS_ONLY)
-	online_lobby_visibility_selector.add_item("По приглашению", SteamBridge.LobbyVisibility.PRIVATE)
+	online_lobby_visibility_selector.add_item(tr("Открытая — видна всем"), SteamBridge.LobbyVisibility.PUBLIC)
+	online_lobby_visibility_selector.add_item(tr("Только для друзей"), SteamBridge.LobbyVisibility.FRIENDS_ONLY)
+	online_lobby_visibility_selector.add_item(tr("По приглашению"), SteamBridge.LobbyVisibility.PRIVATE)
 	online_lobby_visibility_selector.select(1)
 	online_lobby_visibility_selector.custom_minimum_size = Vector2(0.0, 44.0)
 	online_lobby_visibility_selector.add_theme_font_size_override("font_size", 17)
@@ -1858,8 +2348,8 @@ func _build_online_create_room_tab() -> void:
 	_add_menu_label("Режим партии", 17)
 	online_match_mode_selector = OptionButton.new()
 	online_match_mode_selector.name = "OnlineMatchModeSelector"
-	online_match_mode_selector.add_item("Классическая · каждый за себя", 0)
-	online_match_mode_selector.add_item("Командная 2×2 · партнёры напротив", 1)
+	online_match_mode_selector.add_item(tr("Классическая · каждый за себя"), 0)
+	online_match_mode_selector.add_item(tr("Командная 2×2 · партнёры напротив"), 1)
 	online_match_mode_selector.select(0)
 	online_match_mode_selector.custom_minimum_size = Vector2(0.0, 44.0)
 	online_match_mode_selector.add_theme_font_size_override("font_size", 17)
@@ -1867,8 +2357,8 @@ func _build_online_create_room_tab() -> void:
 
 	online_team_one_name_edit = LineEdit.new()
 	online_team_one_name_edit.name = "OnlineTeamOneNameEdit"
-	online_team_one_name_edit.placeholder_text = "Название команды хоста"
-	online_team_one_name_edit.text = "Команда 1"
+	online_team_one_name_edit.placeholder_text = tr("Название команды хоста")
+	online_team_one_name_edit.text = tr("Команда 1")
 	online_team_one_name_edit.max_length = SteamBridge.TEAM_NAME_MAX_LENGTH
 	online_team_one_name_edit.custom_minimum_size = Vector2(0.0, 42.0)
 	online_team_one_name_edit.add_theme_font_size_override("font_size", 16)
@@ -1907,13 +2397,13 @@ func _build_online_my_games_tab() -> void:
 		_add_menu_label(_get_online_lobby_summary_text(saved_summary), 16)
 	elif bool(saved_summary.get("confirmed_missing", false)):
 		_add_menu_label(
-			"Комната %d сейчас недоступна. Возможно, хост закрыл игру или потерял соединение." % active_online_lobby_id,
+			tr("Комната %d сейчас недоступна. Возможно, хост закрыл игру или потерял соединение.") % active_online_lobby_id,
 			16,
 			Color(0.95, 0.68, 0.48, 1.0)
 		)
 	else:
 		_add_menu_label(
-			"Комната %d сохранена. Проверяем, продолжает ли хост держать партию…" % active_online_lobby_id,
+			tr("Комната %d сохранена. Проверяем, продолжает ли хост держать партию…") % active_online_lobby_id,
 			16
 		)
 		steam_bridge.request_lobby_summary(active_online_lobby_id)
@@ -1932,12 +2422,12 @@ func _build_online_my_games_tab() -> void:
 
 func _get_online_lobby_summary_text(summary: Dictionary) -> String:
 	var lobby_id := int(summary.get("lobby_id", 0))
-	var state_text := "партия идёт" if str(summary.get("match_state", "")) == SteamBridge.LOBBY_STATE_PLAYING else "ожидание игроков"
+	var state_text := tr("идёт партия") if str(summary.get("match_state", "")) == SteamBridge.LOBBY_STATE_PLAYING else tr("ожидает игроков")
 	var host_name := str(summary.get("host_name", "")).strip_edges()
 	if host_name.is_empty():
-		host_name = "неизвестен"
-	var mode_text := "2×2" if str(summary.get("match_mode", SteamBridge.MATCH_MODE_CLASSIC)) == SteamBridge.MATCH_MODE_TEAMS_2V2 else "классика"
-	return "Комната %d · %s · хост: %s · %s · участников %d/%d" % [
+		host_name = tr("неизвестен")
+	var mode_text := "2×2" if str(summary.get("match_mode", SteamBridge.MATCH_MODE_CLASSIC)) == SteamBridge.MATCH_MODE_TEAMS_2V2 else tr("классика")
+	return tr("Комната %d · %s · хост: %s · %s · участников %d/%d") % [
 		lobby_id,
 		mode_text,
 		host_name,
@@ -1967,7 +2457,7 @@ func _on_create_online_lobby_pressed() -> void:
 	var match_mode := SteamBridge.MATCH_MODE_CLASSIC
 	if is_instance_valid(online_match_mode_selector) and online_match_mode_selector.get_selected_id() == 1:
 		match_mode = SteamBridge.MATCH_MODE_TEAMS_2V2
-	var team_one_name := online_team_one_name_edit.text if is_instance_valid(online_team_one_name_edit) else "Команда 1"
+	var team_one_name := online_team_one_name_edit.text if is_instance_valid(online_team_one_name_edit) else tr("Команда 1")
 	steam_bridge.create_lobby(selected_visibility, match_mode, team_one_name)
 	_show_steam_lobby_menu()
 
@@ -2113,8 +2603,8 @@ func _show_steam_lobby_menu() -> void:
 		_add_menu_label("Выбери команду", 16)
 		steam_lobby_team_selector = OptionButton.new()
 		steam_lobby_team_selector.name = "SteamLobbyTeamSelector"
-		steam_lobby_team_selector.add_item(tr(str(initial_team_names[0])), 0)
-		steam_lobby_team_selector.add_item(tr(str(initial_team_names[1])), 1)
+		steam_lobby_team_selector.add_item(_localize_steam_team_name(str(initial_team_names[0])), 0)
+		steam_lobby_team_selector.add_item(_localize_steam_team_name(str(initial_team_names[1])), 1)
 		var initial_team_id := int(initial_lobby_state.get("local_team_id", -1))
 		if initial_team_id >= 0:
 			steam_lobby_team_selector.select(initial_team_id)
@@ -2360,7 +2850,7 @@ func _refresh_steam_lobby_status() -> void:
 		steam_p2p_main_table_presentation = false
 	var member_count := int(lobby_state.get("member_count", 0))
 	var member_limit := int(lobby_state.get("member_limit", 4))
-	var lobby_status := str(lobby_state.get("status", "Статус Steam-комнаты не получен."))
+	var lobby_status := str(lobby_state.get("status", tr("Статус Steam-комнаты не получен.")))
 	var local_ready := bool(lobby_state.get("local_ready", false))
 	var fill_empty_seats_with_bots := bool(lobby_state.get("fill_empty_seats_with_bots", false))
 	var lobby_bot_difficulty := clampi(int(lobby_state.get("bot_difficulty", bot_difficulty)), 0, BOT_DIFFICULTY_COUNT - 1)
@@ -2372,12 +2862,12 @@ func _refresh_steam_lobby_status() -> void:
 	var bot_count := int(lobby_state.get("bot_count", 0))
 	var local_is_host: bool = int(lobby_state.get("lobby_owner", 0)) == steam_bridge.get_local_steam_id()
 	var members: Array = lobby_state.get("members", [])
-	var visibility_label := str(lobby_state.get("visibility_label", "только для друзей"))
+	var visibility_label := str(lobby_state.get("visibility_label", tr("только для друзей")))
 	var lobby_match_state := str(lobby_state.get("match_state", SteamBridge.LOBBY_STATE_WAITING))
 	var lobby_match_mode := str(lobby_state.get("match_mode", SteamBridge.MATCH_MODE_CLASSIC))
 	var is_team_match := lobby_match_mode == SteamBridge.MATCH_MODE_TEAMS_2V2
-	var team_names: Array = lobby_state.get("team_names", ["Команда 1", "Команда 2"])
-	var display_team_names := [tr(str(team_names[0])), tr(str(team_names[1]))]
+	var team_names: Array = lobby_state.get("team_names", [tr("Команда 1"), tr("Команда 2")])
+	var display_team_names := [_localize_steam_team_name(str(team_names[0])), _localize_steam_team_name(str(team_names[1]))]
 	var team_counts: Array = lobby_state.get("team_counts", [0, 0])
 	var local_team_id := int(lobby_state.get("local_team_id", -1))
 	if is_team_match and not is_instance_valid(steam_lobby_team_selector):
@@ -2385,45 +2875,45 @@ func _refresh_steam_lobby_status() -> void:
 		return
 	bot_difficulty = lobby_bot_difficulty
 	match_history_mode = lobby_history_mode
-	var network_bot_difficulty_name: String = ["лёгкий", "обычный", "сложный"][lobby_bot_difficulty]
+	var network_bot_difficulty_name: String = [tr("лёгкий"), tr("обычный"), tr("сложный")][lobby_bot_difficulty]
 
-	steam_lobby_status_label.text = lobby_status
+	steam_lobby_status_label.text = _localize_steam_lobby_status(lobby_status)
 	if lobby_id > 0:
-		steam_lobby_details_label.text = "Комната: %d\nРежим: %s\nУчастники: %d из %d\nИстория: %s\nДоступ: %s · состояние: %s · протокол %d" % [
+		steam_lobby_details_label.text = tr("Комната: %d\nРежим: %s\nУчастники: %d из %d\nИстория: %s\nДоступ: %s · состояние: %s · протокол %d") % [
 			lobby_id,
-			"2×2 · %s против %s" % [display_team_names[0], display_team_names[1]] if is_team_match else "классическая игра",
+			tr("2×2 · %s против %s") % [display_team_names[0], display_team_names[1]] if is_team_match else tr("классическая игра"),
 			member_count,
 			member_limit,
 			_get_history_mode_label(lobby_history_mode),
-			visibility_label,
-			"партия идёт" if lobby_match_state == SteamBridge.LOBBY_STATE_PLAYING else "ожидание",
+			tr(visibility_label),
+			tr("партия идёт") if lobby_match_state == SteamBridge.LOBBY_STATE_PLAYING else tr("ожидание"),
 			LoopbackNetwork.PROTOCOL_VERSION
 		]
 	else:
-		steam_lobby_details_label.text = "Steam: %s\nПосле создания появятся ID комнаты и число участников." % ("подключён" if initialized else "ещё не подключён")
+		steam_lobby_details_label.text = tr("Steam: %s\nПосле создания появятся ID комнаты и число участников.") % (tr("подключён") if initialized else tr("ещё не подключён"))
 
 	var member_lines: PackedStringArray = []
 	for member_variant in members:
 		var member: Dictionary = member_variant
-		var member_name := str(member.get("name", "Игрок"))
-		var member_role := " · хост" if bool(member.get("is_owner", false)) else ""
-		var member_ready := "✓ готов" if bool(member.get("ready", false)) else "… ждём"
+		var member_name := str(member.get("name", tr("Игрок")))
+		var member_role := tr(" · хост") if bool(member.get("is_owner", false)) else ""
+		var member_ready := tr("✓ готов") if bool(member.get("ready", false)) else tr("… ждём")
 		var member_team_id := int(member.get("team_id", -1))
-		var member_team := " · %s" % display_team_names[member_team_id] if is_team_match and member_team_id >= 0 and member_team_id < 2 else " · команда не выбрана" if is_team_match else ""
+		var member_team := " · %s" % display_team_names[member_team_id] if is_team_match and member_team_id >= 0 and member_team_id < 2 else tr(" · команда не выбрана") if is_team_match else ""
 		member_lines.append("%s%s%s — %s" % [member_name, member_role, member_team, member_ready])
 	if is_team_match:
 		var bot_number := 1
 		for team_id in 2:
 			var missing_team_seats := maxi(0, 2 - int(team_counts[team_id])) if fill_empty_seats_with_bots else 0
 			for _missing_seat in missing_team_seats:
-				member_lines.append("Бот %d · %s — ✓ готов · %s" % [bot_number, display_team_names[team_id], network_bot_difficulty_name])
+				member_lines.append(tr("Бот %d · %s — ✓ готов · %s") % [bot_number, display_team_names[team_id], network_bot_difficulty_name])
 				bot_number += 1
 	else:
 		for bot_index in bot_count:
-			member_lines.append("Бот %d — ✓ готов · %s" % [bot_index + 1, network_bot_difficulty_name])
+			member_lines.append(tr("Бот %d — ✓ готов · %s") % [bot_index + 1, network_bot_difficulty_name])
 	for empty_index in maxi(0, member_limit - member_count - bot_count):
-		member_lines.append("Свободное место %d" % (member_count + bot_count + empty_index + 1))
-	steam_lobby_members_label.text = "Участники комнаты\n%s" % "\n".join(member_lines) if not member_lines.is_empty() else ""
+		member_lines.append(tr("Свободное место %d") % (member_count + bot_count + empty_index + 1))
+	steam_lobby_members_label.text = tr("Участники комнаты\n%s") % "\n".join(member_lines) if not member_lines.is_empty() else ""
 
 	if is_instance_valid(steam_lobby_create_button):
 		steam_lobby_create_button.disabled = not initialized or lobby_id > 0
@@ -2431,10 +2921,10 @@ func _refresh_steam_lobby_status() -> void:
 		steam_lobby_invite_button.disabled = lobby_id <= 0
 	if is_instance_valid(steam_lobby_ready_button):
 		steam_lobby_ready_button.disabled = lobby_id <= 0 or (is_team_match and local_team_id < 0)
-		steam_lobby_ready_button.text = "Готов ✓ (отменить)" if local_ready else "Отметиться готовым"
+		steam_lobby_ready_button.text = tr("Готов ✓ (отменить)") if local_ready else tr("Отметиться готовым")
 	if is_instance_valid(steam_lobby_team_selector) and is_team_match:
-		steam_lobby_team_selector.set_item_text(0, "%s · мест %d/2" % [display_team_names[0], int(team_counts[0])])
-		steam_lobby_team_selector.set_item_text(1, "%s · мест %d/2" % [display_team_names[1], int(team_counts[1])])
+		steam_lobby_team_selector.set_item_text(0, tr("%s · мест %d/2") % [display_team_names[0], int(team_counts[0])])
+		steam_lobby_team_selector.set_item_text(1, tr("%s · мест %d/2") % [display_team_names[1], int(team_counts[1])])
 		if local_team_id >= 0:
 			steam_lobby_team_selector.select(local_team_id)
 		steam_lobby_team_selector.disabled = local_is_host or lobby_match_state != SteamBridge.LOBBY_STATE_WAITING or (steam_p2p_match != null and steam_p2p_match.is_running())
@@ -2463,7 +2953,7 @@ func _refresh_steam_lobby_status() -> void:
 		steam_p2p_prepare_button.disabled = not can_prepare_p2p or (steam_p2p_match != null and steam_p2p_match.is_running())
 	if is_instance_valid(steam_p2p_prepare_with_bots_button):
 		steam_p2p_prepare_with_bots_button.disabled = lobby_id <= 0 or not local_is_host or (member_count >= member_limit and not fill_empty_seats_with_bots) or (steam_p2p_match != null and steam_p2p_match.is_running())
-		steam_p2p_prepare_with_bots_button.text = "Убрать ботов" if fill_empty_seats_with_bots else "Заполнить свободные места ботами"
+		steam_p2p_prepare_with_bots_button.text = tr("Убрать ботов") if fill_empty_seats_with_bots else tr("Заполнить свободные места ботами")
 	if is_instance_valid(steam_p2p_start_round_button):
 		_refresh_steam_first_turn_roll_button()
 	if is_instance_valid(steam_p2p_open_table_button):
@@ -2479,10 +2969,85 @@ func _refresh_steam_lobby_status() -> void:
 				if member_steam_id <= 0 or member_steam_id == steam_bridge.get_local_steam_id():
 					continue
 				steam_lobby_kick_controls.add_child(_create_menu_button(
-					"Исключить %s из комнаты" % str(member.get("name", "Игрок")),
+					tr("Исключить %s из комнаты") % str(member.get("name", tr("Игрок"))),
 					_on_kick_steam_lobby_member_pressed.bind(member_steam_id)
 				))
 	_refresh_steam_p2p_status()
+
+
+func _localize_steam_team_name(team_name: String) -> String:
+	return tr(team_name) if team_name in ["Команда 1", "Команда 2"] else team_name
+
+
+func _localize_steam_lobby_status(message: String) -> String:
+	# Translate only presentation text. Keep diagnostic/network messages and names intact.
+	var translated := tr(message)
+	if translated != message:
+		return translated
+	var templates := [
+		["Создаём Steam-комнату «%s» на четыре места…", [0]],
+		["Входим в Steam-комнату по %s…", [0]],
+		["Steam не создал комнату. Код результата: %d.", []],
+		["Steam-комната «%s» создана. Ожидаем игроков.", [0]],
+		["Не удалось войти в Steam-комнату. Код ответа: %d.", []],
+		["%s пригласил тебя в Steam-комнату. Прими приглашение в Steam.", []],
+		["Не удалось установить Steam P2P-связь с %s. Код: %d.", []],
+	]
+	for entry in templates:
+		var key: String = entry[0]
+		var pattern := "^"
+		var kinds: Array[String] = []
+		var offset := 0
+		while offset < key.length():
+			var token := key.substr(offset, 2)
+			if token in ["%s", "%d"]:
+				pattern += "(.+?)" if token == "%s" else "(-?[0-9]+)"
+				kinds.append(token)
+				offset += 2
+			else:
+				var character := key.substr(offset, 1)
+				if "\\.^$|()[]{}*+?".contains(character):
+					pattern += "\\"
+				pattern += character
+				offset += 1
+		var expression := RegEx.create_from_string(pattern + "$")
+		var result := expression.search(message)
+		if result == null:
+			continue
+		var arguments: Array = []
+		for index in kinds.size():
+			var value := result.get_string(index + 1)
+			arguments.append(int(value) if kinds[index] == "%d" else tr(value) if index in entry[1] else value)
+		return tr(key) % arguments
+	return message
+
+
+func _get_steam_table_connection_text() -> String:
+	# The room shows player-facing state, not the transport's internal debug log.
+	if steam_p2p_match == null or not steam_p2p_match.is_running():
+		return tr("Сетевой стол ещё не подключён. Все участники отмечают готовность и нажимают «Подключиться к игровому столу».")
+	if steam_p2p_match.is_client() and not steam_p2p_match._is_steam_host_ready():
+		return tr("Подключаемся к игровому столу…")
+	if steam_p2p_match.is_match_paused_for_reconnect():
+		return tr("Игра приостановлена: ждём переподключения игроков.")
+	if steam_p2p_match.lobby_round_started:
+		var snapshot: Dictionary = steam_p2p_match.get_test_table_snapshot()
+		var round_data: Dictionary = snapshot.get("round", {})
+		var state := int(round_data.get("state", Round.State.SETUP))
+		var phase := tr("TABLE_PHASE_SETUP")
+		match state:
+			Round.State.BIDDING:
+				phase = tr("TABLE_PHASE_BIDDING")
+			Round.State.PLAYING:
+				phase = tr("TABLE_PHASE_PLAYING")
+			Round.State.FINISHED:
+				phase = tr("TABLE_PHASE_FINISHED")
+		return tr("Сетевой стол подключён. Раздача %d · %s.") % [int(round_data.get("number", snapshot.get("round_number", 0))), phase]
+	if steam_p2p_match.is_first_turn_roll_complete():
+		return tr("Первый ход определён. Ждём начала первой раздачи.")
+	if steam_p2p_match.is_first_turn_roll_active():
+		return tr("Розыгрыш первого хода идёт")
+	return tr("Стол подключён. Ожидаем остальных игроков.")
 
 
 func _refresh_steam_p2p_status() -> void:
@@ -2495,10 +3060,7 @@ func _refresh_steam_p2p_status() -> void:
 		elif steam_p2p_table_presentation and is_instance_valid(network_table_view) and network_table_view.visible:
 			_refresh_network_table_view()
 		return
-	if steam_p2p_match == null or not steam_p2p_match.is_running():
-		steam_p2p_status_label.text = "Steam P2P ещё не подключён. После готовности всех четырёх игроков каждый нажимает «Подготовить Steam P2P»."
-	else:
-		steam_p2p_status_label.text = "Steam P2P: %s" % steam_p2p_match.status_text
+	steam_p2p_status_label.text = _get_steam_table_connection_text()
 	_refresh_steam_reconnect_controls()
 	if is_instance_valid(steam_p2p_prepare_button) and steam_p2p_match != null and steam_p2p_match.is_running():
 		steam_p2p_prepare_button.disabled = true
@@ -2544,14 +3106,14 @@ func _refresh_steam_reconnect_controls() -> void:
 	for player_index_variant in steam_p2p_match.get_reconnecting_player_indices():
 		var player_index := int(player_index_variant)
 		var label := Label.new()
-		label.text = "Место %d: игрок отключился. Можно подождать или временно передать место боту." % (player_index + 1)
+		label.text = tr("Место %d: игрок отключился. Можно подождать или временно передать место боту.") % (player_index + 1)
 		label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		label.add_theme_font_size_override("font_size", 15)
 		label.add_theme_color_override("font_color", Color(1.0, 0.72, 0.32, 1.0))
 		steam_reconnect_controls.add_child(label)
 		steam_reconnect_controls.add_child(_create_menu_button(
-			"Заполнить место %d ботом" % (player_index + 1),
+			tr("Заполнить место %d ботом") % (player_index + 1),
 			_on_replace_disconnected_player_with_bot_pressed.bind(player_index),
 			true
 		))
@@ -2755,6 +3317,9 @@ func _on_start_loopback_test_response_joker_round_pressed() -> void:
 
 
 func _on_submit_loopback_test_bid_pressed(bid: int) -> void:
+	mobile_bid_selection_open = false
+	if is_instance_valid(mobile_bid_popup):
+		mobile_bid_popup.visible = false
 	var network_match = _get_active_network_match()
 	if network_match == null:
 		return
@@ -3572,6 +4137,8 @@ func _get_restricted_network_history_lines(snapshot: Dictionary, active_trick: D
 func _refresh_network_main_action_controls(snapshot: Dictionary, round_data: Dictionary) -> void:
 	_clear_children(bid_controls)
 	_clear_children(joker_controls)
+	if mobile_table_layout:
+		call_deferred("_refresh_mobile_action_dock")
 	joker_controls.visible = false
 	var network_match = _get_active_network_match()
 	if network_match == steam_p2p_match and steam_p2p_match.is_host():
@@ -3605,11 +4172,15 @@ func _refresh_network_main_action_controls(snapshot: Dictionary, round_data: Dic
 		available_bids = network_match.get_available_host_test_bids()
 	elif network_match != null and network_match.is_client() and network_match.can_submit_test_bid():
 		available_bids = network_match.get_available_test_bids()
+	_configure_bid_controls_layout(available_bids.size())
 	for bid in available_bids:
 		var bid_button := Button.new()
-		bid_button.text = tr("BID_BUTTON") % bid
-		bid_button.custom_minimum_size = Vector2(100.0, 36.0)
-		_apply_compact_table_action_button_style(bid_button, 36.0)
+		bid_button.text = str(bid) if mobile_table_layout else tr("BID_BUTTON") % bid
+		var bid_button_size := Vector2(112.0, 48.0) if mobile_table_layout else Vector2(100.0, 36.0)
+		bid_button.custom_minimum_size = bid_button_size
+		_apply_compact_table_action_button_style(bid_button, bid_button_size.y)
+		if mobile_table_layout:
+			bid_button.add_theme_font_size_override("font_size", 17)
 		bid_button.pressed.connect(_on_submit_loopback_test_bid_pressed.bind(bid))
 		bid_controls.add_child(bid_button)
 
@@ -3680,16 +4251,24 @@ func _refresh_network_main_joker_controls() -> void:
 	joker_controls.visible = true
 	joker_controls.mouse_filter = Control.MOUSE_FILTER_STOP
 	var is_leading_joker := _is_loopback_test_joker_leading()
-	if is_leading_joker:
+	if mobile_table_layout:
+		if is_leading_joker and loopback_network_pending_joker_suit < Card.Suit.CLUBS:
+			joker_controls.columns = 3
+			_set_control_layout(joker_controls, 0.5, 0.0, 0.5, 0.0, -400.0, 300.0, 400.0, 430.0)
+		elif is_leading_joker:
+			joker_controls.columns = 2
+			_set_control_layout(joker_controls, 0.5, 0.0, 0.5, 0.0, -400.0, 300.0, 400.0, 630.0)
+		else:
+			joker_controls.columns = 3
+			_set_control_layout(joker_controls, 0.5, 0.0, 0.5, 0.0, -510.0, 550.0, 510.0, 616.0)
+	elif is_leading_joker:
 		joker_controls.columns = 1
 		_set_control_layout(joker_controls, 0.0, 1.0, 0.0, 1.0, 64.0, -510.0, 444.0, -128.0)
 	else:
-		joker_controls.columns = 2
-		_set_control_layout(joker_controls, 0.5, 1.0, 0.5, 1.0, -280.0, -270.0, 280.0, -218.0)
-
-	if not is_leading_joker:
 		joker_controls.columns = 3
 		_set_control_layout(joker_controls, 0.5, 1.0, 0.5, 1.0, -390.0, -270.0, 390.0, -218.0)
+
+	if not is_leading_joker:
 		_add_network_main_joker_button("Джокер забирает", _on_submit_loopback_test_joker_pressed.bind(Trick.JokerMode.JOKER_WINS))
 		_add_network_main_joker_button("Сбросить Джокер (не забирает)", _on_submit_loopback_test_joker_pressed.bind(Trick.JokerMode.NORMAL_CARD_WINS))
 		_add_network_main_joker_button("← Назад к картам", _on_cancel_loopback_test_joker_selection_pressed)
@@ -3697,11 +4276,12 @@ func _refresh_network_main_joker_controls() -> void:
 
 	if loopback_network_pending_joker_suit < Card.Suit.CLUBS:
 		for suit in [Card.Suit.CLUBS, Card.Suit.SPADES, Card.Suit.HEARTS, Card.Suit.DIAMONDS]:
-			_add_network_main_joker_button("Объявить %s" % _get_suit_symbol(suit), _on_choose_loopback_test_joker_suit_pressed.bind(suit))
+			var suit_label := _get_localized_suit_name(suit) if mobile_table_layout else _get_suit_symbol(suit)
+			_add_network_main_joker_button("Объявить %s" % suit_label, _on_choose_loopback_test_joker_suit_pressed.bind(suit))
 		_add_network_main_joker_button("Отменить выбор", _on_cancel_loopback_test_joker_selection_pressed)
 		return
 
-	var suit_symbol := _get_suit_symbol(loopback_network_pending_joker_suit)
+	var suit_symbol := _get_localized_suit_name(loopback_network_pending_joker_suit) if mobile_table_layout else _get_suit_symbol(loopback_network_pending_joker_suit)
 	var conditions: Array = [
 		["%s: Джокер забирает" % suit_symbol, Trick.JokerMode.JOKER_WINS, Trick.ForcedCardRank.NONE],
 		["%s: старшая забирает" % suit_symbol, Trick.JokerMode.HIGHEST_DECLARED_CARD_WINS, Trick.ForcedCardRank.NONE],
@@ -3724,7 +4304,9 @@ func _refresh_network_main_joker_controls() -> void:
 func _add_network_main_joker_button(label_text: String, callback: Callable) -> void:
 	var button := Button.new()
 	button.text = label_text
-	button.custom_minimum_size = Vector2(0.0, 44.0)
+	button.custom_minimum_size = Vector2(0.0, 58.0 if mobile_table_layout else 44.0)
+	button.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	button.add_theme_font_size_override("font_size", 16 if mobile_table_layout else 14)
 	button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_apply_table_action_button_style(button)
 	button.pressed.connect(callback)
@@ -3782,6 +4364,8 @@ func _refresh_network_main_hand(snapshot: Dictionary, round_data: Dictionary) ->
 		var card: Card = displayed_cards[display_index]
 		var card_view := CardView.new()
 		card_view.set_card(card)
+		if mobile_table_layout:
+			card_view.set_card_size(Vector2(132.0, 194.0))
 		card_view.set_hand_presentation(display_index, displayed_cards.size())
 		var card_key: String = str(card_keys_by_instance.get(card, ""))
 		var rule_available: bool = bool(rule_availability_by_card.get(card, false))
@@ -3817,6 +4401,7 @@ func _refresh_network_main_hand(snapshot: Dictionary, round_data: Dictionary) ->
 			else:
 				card_view.card_pressed.connect(_on_network_table_card_pressed.bind(card_key))
 		hand_container.add_child(card_view)
+		_configure_mobile_hand_card(card_view, card_key)
 
 
 func _refresh_network_main_results(snapshot: Dictionary, round_data: Dictionary) -> void:
@@ -4018,7 +4603,7 @@ func _refresh_network_main_markers(snapshot: Dictionary, round_data: Dictionary,
 
 
 func _refresh_network_main_score_sheet(snapshot: Dictionary, round_data: Dictionary) -> void:
-	score_sheet_toggle_button.text = tr("SCORE_SHEET_ICON")
+	score_sheet_toggle_button.text = _get_score_sheet_button_text()
 	score_sheet_toggle_button.disabled = false
 	score_sheet_panel.visible = is_score_sheet_visible
 	if is_instance_valid(score_sheet_backdrop):
@@ -4324,7 +4909,7 @@ func _create_network_table_view() -> void:
 func _create_network_table_deck_visual() -> void:
 	network_table_deck_visual = Control.new()
 	network_table_deck_visual.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_set_control_layout(network_table_deck_visual, 1.0, 0.0, 1.0, 0.0, -270.0, 106.0, -52.0, 196.0)
+	_set_control_layout(network_table_deck_visual, 1.0, 0.0, 1.0, 0.0, -350.0, 106.0, -132.0, 196.0)
 	network_table_view.add_child(network_table_deck_visual)
 
 	for card_index in range(3):
@@ -4376,8 +4961,8 @@ func _create_network_table_player_widgets() -> void:
 		stats_label.fit_content = true
 		stats_label.scroll_active = false
 		stats_label.autowrap_mode = TextServer.AUTOWRAP_OFF
-		stats_label.custom_minimum_size = Vector2(0.0, 32.0)
-		stats_label.add_theme_font_size_override("normal_font_size", 17)
+		stats_label.custom_minimum_size = Vector2(0.0, 38.0 if mobile_table_layout else 32.0)
+		stats_label.add_theme_font_size_override("normal_font_size", 19 if mobile_table_layout else 17)
 		stats_label.add_theme_color_override("font_color", Color(0.83, 0.89, 0.82, 1.0))
 		content.add_child(stats_label)
 		network_table_player_stats_labels.append(stats_label)
@@ -4438,8 +5023,8 @@ func _refresh_network_table_view() -> void:
 
 	if _is_steam_p2p_table_active():
 		network_table_title_label.text = "Steam P2P · сетевая партия"
-		network_table_close_button.text = "Вернуться в Steam-комнату"
-		network_table_close_button.tooltip_text = "Вернуться в техническую Steam-комнату"
+		network_table_close_button.text = tr("Вернуться в Steam-комнату")
+		network_table_close_button.tooltip_text = tr("Вернуться в Steam-комнату")
 	else:
 		network_table_title_label.text = "Сетевой стол · локальный ENet-тест" if loopback_network_is_technical_presentation else "Сетевая партия"
 		network_table_close_button.text = "Вернуться к тесту" if loopback_network_is_technical_presentation else "Вернуться в комнату"
@@ -5028,7 +5613,7 @@ func _create_network_table_joker_choice_controls() -> void:
 		network_table_action_controls.add_child(_create_network_table_action_button("Отменить выбор", _on_cancel_loopback_test_joker_selection_pressed))
 		return
 
-	var suit_symbol := _get_suit_symbol(loopback_network_pending_joker_suit)
+	var suit_symbol := _get_localized_suit_name(loopback_network_pending_joker_suit) if mobile_table_layout else _get_suit_symbol(loopback_network_pending_joker_suit)
 	title.text = "Джокер: условие для %s" % suit_symbol
 	var conditions := [
 		["%s: Джокер забирает" % suit_symbol, Trick.JokerMode.JOKER_WINS, Trick.ForcedCardRank.NONE],
@@ -5203,7 +5788,8 @@ func _format_final_standings_bbcode(standings: Array[Dictionary]) -> String:
 				_format_standing_joker_statistics(standing, true)
 			]
 		)
-	return "\n".join(final_lines)
+	var result := "\n".join(final_lines)
+	return result.replace("[font_size=19]", "[font_size=26]").replace("[font_size=21]", "[font_size=28]") if mobile_table_layout else result
 
 
 func _format_standing_joker_statistics(standing: Dictionary, bbcode_safe := false) -> String:
@@ -5402,7 +5988,7 @@ func _format_round_result_bbcode(
 	var score_color := "#65e686" if round_score > 0 else "#ff6b61" if round_score < 0 else "#d8c77c"
 	var previous_total := total_score - round_score
 	var safe_player_name := player_name.replace("[", "(").replace("]", ")")
-	return (
+	var result := (
 		"[center][font_size=18][b][color=#ffffff]%s[/color][/b][/font_size]"
 		+ "  [color=#c9d8ca]%s[/color] [font_size=20][b][color=#ffffff]%d[/color][/b][/font_size]"
 		+ "  [color=#6f8d77]•[/color] [b][color=%s]%s[/color][/b]"
@@ -5420,6 +6006,7 @@ func _format_round_result_bbcode(
 		previous_total,
 		total_score
 	]
+	return result.replace("[font_size=18]", "[font_size=26]").replace("[font_size=20]", "[font_size=28]") if mobile_table_layout else result
 
 
 func _create_network_table_card(card_data: Dictionary) -> Card:
@@ -5529,7 +6116,7 @@ func _refresh_loopback_network_joker_selection_controls() -> void:
 		_add_loopback_test_joker_cancel_button()
 		return
 
-	var suit_symbol := _get_suit_symbol(loopback_network_pending_joker_suit)
+	var suit_symbol := _get_localized_suit_name(loopback_network_pending_joker_suit) if mobile_table_layout else _get_suit_symbol(loopback_network_pending_joker_suit)
 	title.text = "Джокер: выбери условие для %s" % suit_symbol
 	var condition_rows := [
 		[
@@ -5946,6 +6533,7 @@ func _show_profile_menu() -> void:
 	_add_menu_button("Вернуть стандартный аватар", _on_reset_profile_avatar_pressed)
 	_add_menu_spacer(10.0)
 	_add_menu_button("Музыка профиля", _show_music_profile_menu)
+	_add_menu_button("Статистика и рейтинг", Callable(self, "_show_statistics_menu").bind(false, true))
 	_add_menu_button("Сохранить профиль", _save_profile, true)
 	_add_menu_button("Назад", _return_from_menu_subpage)
 
@@ -6473,6 +7061,8 @@ func _show_tutorial_menu() -> void:
 		menu_overlay.visible = true
 	_clear_children(menu_content)
 	_add_menu_title("Обучение", "Короткие подсказки помогают освоиться за столом и не блокируют игру")
+	if mobile_table_layout:
+		_add_menu_label(tr("MOBILE_CARD_GESTURES"), 22)
 	_add_settings_toggle(
 		"TutorialHintsToggle",
 		"Подсказки во время игры",
@@ -6589,6 +7179,7 @@ func _relocalize_current_action_text() -> void:
 
 
 func _relocalize_runtime_controls() -> void:
+	_relocalize_social_controls()
 	if is_instance_valid(chat_panel):
 		var chat_title := chat_panel.find_child("ChatTitle", true, false) as Label
 		if is_instance_valid(chat_title):
@@ -6602,7 +7193,7 @@ func _relocalize_runtime_controls() -> void:
 	if is_instance_valid(chat_toggle_button):
 		chat_toggle_button.tooltip_text = tr("CHAT_OPEN")
 	if is_instance_valid(score_sheet_toggle_button):
-		score_sheet_toggle_button.text = tr("SCORE_SHEET_ICON")
+		score_sheet_toggle_button.text = _get_score_sheet_button_text()
 	if is_instance_valid(round_history_toggle_button):
 		round_history_toggle_button.text = (
 			tr("HISTORY_LAST_BUTTON")
@@ -6615,6 +7206,14 @@ func _relocalize_runtime_controls() -> void:
 		hand_sort_trumps_left_button.text = tr("SORT_TRUMPS_LEFT")
 	if is_instance_valid(undo_button):
 		undo_button.text = tr("UNDO_MOVE")
+	if is_instance_valid(mobile_sort_button):
+		mobile_sort_button.text = tr("MOBILE_SORT_BUTTON")
+	if is_instance_valid(mobile_bid_menu_button):
+		mobile_bid_menu_button.text = tr("MOBILE_BID_BUTTON")
+	if is_instance_valid(mobile_bid_popup):
+		var mobile_bid_title := mobile_bid_popup.find_child("BidTitle", true, false) as Label
+		if is_instance_valid(mobile_bid_title):
+			mobile_bid_title.text = tr("MOBILE_BID_CHOOSE")
 	if is_instance_valid(dealer_marker):
 		dealer_marker.tooltip_text = tr("DEALER_TOOLTIP")
 	if is_instance_valid(lead_marker):
@@ -6813,28 +7412,6 @@ func _show_display_settings_menu() -> void:
 	)
 	_add_menu_spacer(12.0)
 
-	var button_style_label := Label.new()
-	button_style_label.text = tr("Оформление кнопок")
-	button_style_label.add_theme_font_override("font", menu_button_font)
-	button_style_label.add_theme_font_size_override("font_size", 18)
-	button_style_label.add_theme_color_override("font_color", palette.text)
-	menu_content.add_child(button_style_label)
-
-	var button_style_selector := OptionButton.new()
-	button_style_selector.name = "MenuButtonStyleSelector"
-	for button_style_name in MENU_BUTTON_STYLE_NAMES:
-		button_style_selector.add_item(tr(button_style_name))
-	button_style_selector.custom_minimum_size = Vector2(0.0, 44.0)
-	button_style_selector.add_theme_font_size_override("font_size", 17)
-	button_style_selector.selected = int(menu_button_style)
-	button_style_selector.item_selected.connect(_on_menu_button_style_selected)
-	menu_content.add_child(button_style_selector)
-	_add_menu_label(
-		"Можно сравнить лаконичный прежний вариант и объёмные кнопки с подсветкой.",
-		14,
-		palette.secondary
-	)
-	_add_menu_spacer(16.0)
 
 	var background_label := Label.new()
 	background_label.text = tr("Фон главного меню")
@@ -6857,14 +7434,23 @@ func _show_display_settings_menu() -> void:
 		14,
 		palette.secondary
 	)
-	_add_menu_spacer(14.0)
-	_add_settings_toggle(
-		"FullscreenToggle",
-		"Полноэкранный режим",
-		"Переключает игру между полноэкранным и развёрнутым оконным режимами.",
-		DisplayServer.window_get_mode() == DisplayServer.WINDOW_MODE_FULLSCREEN,
-		_on_fullscreen_toggled
-	)
+	if not mobile_table_layout:
+		_add_menu_spacer(14.0)
+		_add_settings_toggle(
+			"MusicPlayerVisibleToggle",
+			"Показывать аудиоплеер",
+			"Показывает или скрывает компактное управление фоновой музыкой на игровом экране.",
+			not music_player_hidden,
+			_on_music_player_display_toggled
+		)
+		_add_menu_spacer(10.0)
+		_add_settings_toggle(
+			"FullscreenToggle",
+			"Полноэкранный режим",
+			"Переключает игру между полноэкранным и развёрнутым оконным режимами.",
+			DisplayServer.window_get_mode() == DisplayServer.WINDOW_MODE_FULLSCREEN,
+			_on_fullscreen_toggled
+		)
 	_add_menu_spacer(14.0)
 	_add_menu_button("Назад к настройкам", _show_settings_menu, true)
 
@@ -6882,10 +7468,25 @@ func _show_final_session_menu() -> void:
 	_add_menu_button("Вернуться в меню", _on_return_to_menu_pressed)
 
 
-func _show_statistics_menu(return_to_final_menu := false) -> void:
+func _show_statistics_menu(return_to_final_menu := false, return_to_profile := false) -> void:
 	statistics_return_to_final_menu = return_to_final_menu
+	statistics_return_to_profile = return_to_profile
 	_clear_children(menu_content)
-	_add_menu_title("Статистика", "Результаты полностью завершённых локальных партий")
+	_ensure_current_season_statistics()
+	_add_menu_title("Статистика", "Личные результаты и сезонный рейтинг")
+
+	var season_games: int = int(local_statistics["season_games"])
+	var season_wins: int = int(local_statistics["season_wins"])
+	var season_losses: int = int(local_statistics["season_losses"])
+	var season_mvp: int = int(local_statistics["season_mvp"])
+	var season_points: float = float(local_statistics["season_points"])
+	var season_total_games: int = maxi(season_games, int(local_statistics["season_total_games"]))
+	var season_rating := _calculate_season_rating(season_points, season_games, season_mvp, season_total_games)
+	_add_menu_label(_get_current_season_name(), 20, Color(0.97, 0.86, 0.55, 1.0))
+	_add_menu_label(tr("SEASON_RATING_SUMMARY") % [season_rating, season_points, season_games, season_mvp], 18)
+	_add_menu_label(tr("SEASON_WIN_LOSS") % [season_wins, season_losses], 16, Color(0.72, 0.85, 0.76, 1.0))
+	_add_menu_label("Общее число игр сезона будет синхронизироваться между ПК и телефонами через сервер. До подключения сервера рейтинг показан предварительно.", 14, Color(0.72, 0.85, 0.76, 1.0))
+	_add_menu_spacer(12.0)
 
 	var completed_games: int = int(local_statistics["completed_games"])
 	if completed_games <= 0:
@@ -6922,8 +7523,60 @@ func _return_from_statistics_menu() -> void:
 	if statistics_return_to_final_menu:
 		_show_final_session_menu()
 		return
+	if statistics_return_to_profile:
+		statistics_return_to_profile = false
+		_show_profile_menu()
+		return
 
 	_return_from_menu_subpage()
+
+
+func _get_current_season_key() -> String:
+	var date_time := Time.get_datetime_dict_from_system()
+	var month := int(date_time.get("month", 1))
+	var season_id := "winter"
+	if month >= 3 and month <= 5:
+		season_id = "spring"
+	elif month >= 6 and month <= 8:
+		season_id = "summer"
+	elif month >= 9 and month <= 11:
+		season_id = "autumn"
+	return "%d_%s" % [int(date_time.get("year", 2026)), season_id]
+
+
+func _get_current_season_name() -> String:
+	var month := int(Time.get_datetime_dict_from_system().get("month", 1))
+	if month >= 3 and month <= 5:
+		return tr("SEASON_SPRING")
+	if month >= 6 and month <= 8:
+		return tr("SEASON_SUMMER")
+	if month >= 9 and month <= 11:
+		return tr("SEASON_AUTUMN")
+	return tr("SEASON_WINTER")
+
+
+func _ensure_current_season_statistics() -> void:
+	var current_key := _get_current_season_key()
+	if str(local_statistics.get("season_key", "")) == current_key:
+		return
+	local_statistics["season_key"] = current_key
+	local_statistics["season_games"] = 0
+	local_statistics["season_wins"] = 0
+	local_statistics["season_losses"] = 0
+	local_statistics["season_mvp"] = 0
+	local_statistics["season_points"] = 0.0
+	local_statistics["season_total_games"] = 0
+
+
+func _calculate_season_rating(points: float, player_games: int, mvp_count: int, total_season_games: int) -> float:
+	if player_games <= 0 or total_season_games <= 0:
+		return 0.0
+	return (
+		(points / float(player_games))
+		* (0.1 * float(mvp_count) + 1.0)
+		* ((float(player_games) / float(total_season_games)) * 1.3)
+		* 100.0
+	)
 
 
 func _add_settings_volume_slider(
@@ -6942,7 +7595,7 @@ func _add_settings_volume_slider(
 	label.custom_minimum_size = Vector2(155.0, 40.0)
 	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	label.add_theme_font_override("font", menu_button_font)
-	label.add_theme_font_size_override("font_size", 18)
+	label.add_theme_font_size_override("font_size", 24 if mobile_table_layout else 18)
 	label.add_theme_color_override("font_color", palette.text)
 	row.add_child(label)
 
@@ -6953,7 +7606,7 @@ func _add_settings_volume_slider(
 	slider.step = 1.0
 	slider.value = clampi(current_percent, 0, 100)
 	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	slider.custom_minimum_size = Vector2(240.0, 40.0)
+	slider.custom_minimum_size = Vector2(240.0, 80.0 if mobile_table_layout else 40.0)
 	slider.tooltip_text = "%s: 0–100%%" % tr(label_text)
 	slider.value_changed.connect(callback)
 	row.add_child(slider)
@@ -6964,7 +7617,7 @@ func _add_settings_volume_slider(
 	value_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	value_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	value_label.add_theme_font_override("font", menu_body_font)
-	value_label.add_theme_font_size_override("font_size", 17)
+	value_label.add_theme_font_size_override("font_size", 22 if mobile_table_layout else 17)
 	value_label.add_theme_color_override("font_color", palette.heading)
 	row.add_child(value_label)
 	return value_label
@@ -6982,9 +7635,9 @@ func _add_settings_toggle(
 	toggle.name = toggle_name
 	toggle.text = tr(label_text)
 	toggle.button_pressed = is_enabled
-	toggle.custom_minimum_size = Vector2(0.0, 38.0)
+	toggle.custom_minimum_size = Vector2(0.0, 76.0 if mobile_table_layout else 38.0)
 	toggle.add_theme_font_override("font", menu_button_font)
-	toggle.add_theme_font_size_override("font_size", 18)
+	toggle.add_theme_font_size_override("font_size", 24 if mobile_table_layout else 18)
 	toggle.add_theme_color_override("font_color", palette.text)
 	toggle.toggled.connect(callback)
 	menu_content.add_child(toggle)
@@ -6994,6 +7647,10 @@ func _add_settings_toggle(
 
 
 func _add_menu_title(title_text: String, subtitle_text: String) -> void:
+	if mobile_table_layout:
+		_refresh_menu_presentation(true)
+		menu_scroll.scroll_vertical = 0
+		call_deferred("_prepare_mobile_menu_fields", menu_content)
 	var palette := _get_menu_palette()
 	var title_label := Label.new()
 	title_label.text = tr(title_text)
@@ -7020,6 +7677,19 @@ func _add_menu_title(title_text: String, subtitle_text: String) -> void:
 	_queue_menu_panel_fit()
 
 
+func _prepare_mobile_menu_fields(node: Node) -> void:
+	if not is_instance_valid(node):
+		return
+	# Inputs remain inputs, but their touch targets must match the phone UI.
+	if node is OptionButton or node is LineEdit:
+		node.custom_minimum_size.y = maxf(node.custom_minimum_size.y, 72.0)
+		node.add_theme_font_size_override("font_size", 24)
+		if node is OptionButton:
+			node.get_popup().add_theme_font_size_override("font_size", 24)
+			node.get_popup().add_theme_constant_override("v_separation", 16)
+	for child in node.get_children():
+		_prepare_mobile_menu_fields(child)
+
 func _add_menu_label(label_text: String, font_size: int, font_color: Color = Color(0.0, 0.0, 0.0, 0.0)) -> void:
 	var palette := _get_menu_palette()
 	var label := Label.new()
@@ -7045,15 +7715,47 @@ func _resolve_menu_text_color(requested_color: Color, palette: Dictionary) -> Co
 func _add_menu_spacer(height: float) -> void:
 	var spacer := Control.new()
 	spacer.custom_minimum_size = Vector2(0.0, height)
+	spacer.set_meta("menu_spacer", true)
 	menu_content.add_child(spacer)
 	_queue_menu_panel_fit()
 
 
 func _add_menu_button(label_text: String, callback: Callable, is_primary: bool = false) -> Button:
 	var button := _create_menu_button(label_text, callback, is_primary)
-	menu_content.add_child(button)
+	if mobile_table_layout:
+		_apply_mobile_menu_tile_style(button)
+		var grid := _get_mobile_menu_action_grid()
+		grid.add_child(button)
+		grid.columns = mini(3, grid.get_child_count())
+	else:
+		menu_content.add_child(button)
 	_queue_menu_panel_fit()
 	return button
+
+
+func _get_mobile_menu_action_grid() -> GridContainer:
+	# Adjacent menu actions share one tile grid, including a trailing Back
+	# action separated by an old desktop spacer.
+	var last_index := menu_content.get_child_count() - 1
+	while last_index >= 0 and menu_content.get_child(last_index).has_meta("menu_spacer"):
+		last_index -= 1
+	if last_index >= 0:
+		var previous := menu_content.get_child(last_index)
+		if previous.has_meta("mobile_action_group"):
+			while menu_content.get_child_count() > last_index + 1:
+				var spacer := menu_content.get_child(last_index + 1)
+				menu_content.remove_child(spacer)
+				spacer.queue_free()
+			return previous.get_child(0) as GridContainer
+	var center := CenterContainer.new()
+	center.set_meta("mobile_action_group", true)
+	center.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	menu_content.add_child(center)
+	var grid := GridContainer.new()
+	grid.add_theme_constant_override("h_separation", 18)
+	grid.add_theme_constant_override("v_separation", 18)
+	center.add_child(grid)
+	return grid
 
 
 func _create_menu_button(label_text: String, callback: Callable, is_primary: bool = false) -> Button:
@@ -7073,10 +7775,7 @@ func _create_menu_button(label_text: String, callback: Callable, is_primary: boo
 	button.add_theme_color_override("font_hover_color", palette.glow)
 	button.add_theme_color_override("font_pressed_color", palette.border_bright)
 	button.add_theme_color_override("font_disabled_color", Color(palette.disabled, 0.82))
-	if menu_button_style == MenuButtonStyle.LUXURY_BEVELED:
-		_apply_beveled_menu_button_style(button, is_primary)
-	else:
-		_apply_classic_menu_button_style(button, is_primary)
+	_apply_beveled_menu_button_style(button, is_primary)
 	button.pressed.connect(callback)
 	return button
 
@@ -7393,31 +8092,54 @@ func _on_pause_menu_pressed() -> void:
 
 func _build_pause_menu_content() -> void:
 	_clear_children(menu_content)
+	if mobile_table_layout:
+		_build_mobile_pause_menu_content(false)
+		return
 	_add_menu_title("Пауза", "Текущая локальная партия ждёт твоего решения")
 	_add_menu_spacer(18.0)
 	_add_menu_button("Продолжить", _resume_current_game, true)
-	_add_menu_button("Показать аудиоплеер" if music_player_hidden else "Скрыть аудиоплеер", _on_music_player_visibility_toggle_pressed)
 	_add_menu_button("Обучение", _show_tutorial_menu)
 	_add_menu_button("Профиль", _show_profile_menu)
 	_add_menu_button("Статистика", _show_statistics_menu)
 	_add_menu_button("Правила", _show_rules_menu)
 	_add_menu_button("Настройки", _show_settings_menu)
 	_add_menu_button("Сообщить об ошибке", _show_bug_report_menu)
+	_add_menu_button("В главное меню", _show_save_and_menu_confirmation)
 	_add_menu_button("Завершить партию", _show_end_session_confirmation)
 
 
 func _build_network_pause_menu_content() -> void:
 	_clear_children(menu_content)
+	if mobile_table_layout:
+		_build_mobile_pause_menu_content(true)
+		return
 	_add_menu_title("Сетевая пауза", "Сетевая раздача продолжается у хоста. Здесь можно безопасно вернуться в комнату или открыть личные настройки.")
 	_add_menu_spacer(18.0)
 	_add_menu_button("Продолжить", _resume_current_game, true)
 	_add_menu_button("Вернуться в Steam-комнату", _return_to_steam_lobby_from_main_table)
-	_add_menu_button("Показать аудиоплеер" if music_player_hidden else "Скрыть аудиоплеер", _on_music_player_visibility_toggle_pressed)
 	_add_menu_button("Профиль", _show_profile_menu)
 	_add_menu_button("Правила", _show_rules_menu)
 	_add_menu_button("Настройки", _show_settings_menu)
-	_add_menu_label("Расписка и история на столе показывают только публичные данные. Голосование за возврат, чат и реакции будут подключены отдельным сетевым шагом.", 14, Color(0.72, 0.85, 0.76, 1.0))
+	_add_menu_label("Расписка и история на столе показывают только публичные данные.", 14, Color(0.72, 0.85, 0.76, 1.0))
 
+
+func _build_mobile_pause_menu_content(is_network_pause: bool) -> void:
+	_refresh_menu_presentation(true)
+	_add_menu_title("Сетевая пауза" if is_network_pause else "Пауза", "")
+	_add_menu_spacer(8.0)
+	_add_menu_button("Продолжить", _resume_current_game)
+	if not is_network_pause:
+		_add_menu_button("Обучение", _show_tutorial_menu)
+	_add_menu_button("Профиль", _show_profile_menu)
+	if not is_network_pause:
+		_add_menu_button("Статистика", _show_statistics_menu)
+	_add_menu_button("Настройки", _show_settings_menu)
+	if is_network_pause:
+		_add_menu_button("Вернуться в Steam-комнату", _return_to_steam_lobby_from_main_table)
+	else:
+		_add_menu_button("В главное меню", _show_save_and_menu_confirmation)
+		_add_menu_button("Завершить партию", _show_end_session_confirmation)
+	_queue_menu_panel_fit()
 
 func _return_to_steam_lobby_from_main_table() -> void:
 	_reset_loopback_network_joker_selection()
@@ -7469,18 +8191,58 @@ func _resume_current_game() -> void:
 	is_pause_menu_open = false
 	_hide_main_menu()
 	_refresh_ui()
+	if not _is_steam_p2p_main_table_active():
+		_advance_automatic_actions()
+
+
+func _show_save_and_menu_confirmation() -> void:
+	_clear_children(menu_content)
+	_add_menu_title("В главное меню?", "Текущая партия с ботами сохранится")
+	_add_menu_label("Продолжить можно будет кнопкой «Продолжить партию» в главном меню — даже после закрытия приложения.", 22 if mobile_table_layout else 16)
+	_add_menu_spacer(14.0)
+	_add_menu_button("Сохранить и выйти", _save_and_return_to_main_menu)
+	_add_menu_button("Остаться в игре", _resume_current_game)
+
+
+func _save_and_return_to_main_menu() -> void:
+	if _is_steam_p2p_main_table_active() or is_bug_report_review_mode:
+		return
+	menu_overlay.visible = true
+	_clear_children(menu_content)
+	_add_menu_title("Сохранение партии", "Завершаем текущую анимацию хода…")
+	# New decisions are blocked by the menu. Finish the in-flight animation
+	# or undo before serializing and replacing the live game.
+	while is_processing_automatic_actions or is_trick_presentation_active or is_undo_vote_in_progress:
+		await get_tree().process_frame
+	_stop_human_turn_timer()
+	_reset_turn_reminder()
+	if game.current_round.state != Round.State.SETUP and not _is_full_game_complete():
+		if not _save_current_session():
+			_clear_children(menu_content)
+			_add_menu_title("Не удалось сохранить", "Партия остаётся открытой. Попробуй ещё раз.")
+			_add_menu_button("Повторить сохранение", _save_and_return_to_main_menu)
+			_add_menu_button("Остаться в игре", _resume_current_game)
+			return
+	_reset_game_session()
+	_show_main_menu()
 
 
 func _show_end_session_confirmation() -> void:
 	_clear_children(menu_content)
 	_add_menu_title("Завершить партию?", "Текущая локальная партия будет сброшена")
-	_add_menu_label("Вернуться к этой партии после завершения пока нельзя: сохранение незавершённых игр будет добавлено отдельным этапом.", 16)
+	_add_menu_label("Завершение удалит сохранение этой партии. Если хочешь продолжить позже, выбери «Сохранить и выйти».", 22 if mobile_table_layout else 16)
 	_add_menu_spacer(14.0)
-	_add_menu_button("Завершить и вернуться в меню", _confirm_end_current_session)
+	_add_menu_button("Сохранить и выйти", _save_and_return_to_main_menu)
+	_add_menu_button("Завершить без сохранения", _confirm_end_current_session)
 	_add_menu_button("Отмена", _build_pause_menu_content, true)
 
 
 func _confirm_end_current_session() -> void:
+	menu_overlay.visible = true
+	_clear_children(menu_content)
+	_add_menu_title("Завершение партии", "")
+	while is_processing_automatic_actions or is_trick_presentation_active or is_undo_vote_in_progress:
+		await get_tree().process_frame
 	_delete_saved_session()
 	_reset_game_session()
 	_show_main_menu()
@@ -7495,6 +8257,8 @@ func _return_from_menu_subpage() -> void:
 
 
 func _on_quit_pressed() -> void:
+	if not _is_steam_p2p_main_table_active() and not is_bug_report_review_mode:
+		_save_current_session()
 	get_tree().quit()
 
 
@@ -7788,7 +8552,7 @@ func _select_music_track(direction: int) -> void:
 
 func _load_persistent_settings() -> void:
 	var config := ConfigFile.new()
-	if config.load(PERSISTENT_SETTINGS_PATH) != OK:
+	if config.load(persistent_settings_path) != OK:
 		interface_locale = "en"
 		interface_locale_was_chosen = false
 		TranslationServer.set_locale(interface_locale)
@@ -7851,11 +8615,7 @@ func _load_persistent_settings() -> void:
 		MenuUiThemeStyle.CLASSIC_EMERALD,
 		MenuUiThemeStyle.NIGHT_CITY_BLUE
 	)
-	menu_button_style = clampi(
-		int(config.get_value("display", "menu_button_style", MenuButtonStyle.LUXURY_BEVELED)),
-		MenuButtonStyle.CLASSIC,
-		MenuButtonStyle.LUXURY_BEVELED
-	)
+	menu_button_style = MenuButtonStyle.LUXURY_BEVELED
 	match_history_mode = clampi(
 		int(config.get_value("game", "history_mode", match_history_mode)),
 		NetworkHost.HistoryMode.FULL,
@@ -7888,10 +8648,10 @@ func _load_persistent_settings() -> void:
 		music_volume_percent = 100
 	var saved_music_track: int = int(config.get_value("audio", "music_track", music_track_index))
 	music_track_index = maxi(0, saved_music_track)
-	music_is_paused = bool(config.get_value("audio", "music_paused", false))
+	music_is_paused = false if mobile_table_layout else bool(config.get_value("audio", "music_paused", false))
 	music_player_hidden = bool(config.get_value("audio", "music_player_hidden", false))
-	music_repeat_enabled = bool(config.get_value("audio", "music_repeat", false))
-	music_shuffle_enabled = bool(config.get_value("audio", "music_shuffle", false))
+	music_repeat_enabled = false if mobile_table_layout else bool(config.get_value("audio", "music_repeat", false))
+	music_shuffle_enabled = false if mobile_table_layout else bool(config.get_value("audio", "music_shuffle", false))
 	custom_music_paths.clear()
 	var saved_custom_music_paths: Variant = config.get_value("audio", "custom_music_paths", PackedStringArray())
 	if saved_custom_music_paths is PackedStringArray or saved_custom_music_paths is Array:
@@ -7912,10 +8672,11 @@ func _load_persistent_settings() -> void:
 		music_track_index = 0
 	_load_local_statistics(config)
 
-	var fullscreen_enabled: bool = bool(config.get_value("display", "fullscreen", false))
-	DisplayServer.window_set_mode(
-		DisplayServer.WINDOW_MODE_FULLSCREEN if fullscreen_enabled else DisplayServer.WINDOW_MODE_MAXIMIZED
-	)
+	if not mobile_table_layout:
+		var fullscreen_enabled: bool = bool(config.get_value("display", "fullscreen", false))
+		DisplayServer.window_set_mode(
+			DisplayServer.WINDOW_MODE_FULLSCREEN if fullscreen_enabled else DisplayServer.WINDOW_MODE_MAXIMIZED
+		)
 
 
 func _save_persistent_settings() -> void:
@@ -7946,7 +8707,6 @@ func _save_persistent_settings() -> void:
 	config.set_value("display", "table_surround_theme", table_surround_theme)
 	config.set_value("display", "menu_background_theme", menu_background_theme)
 	config.set_value("display", "menu_ui_theme", menu_ui_theme)
-	config.set_value("display", "menu_button_style", menu_button_style)
 	config.set_value("audio", "sound_volume", sound_volume_index)
 	config.set_value("audio", "sound_volume_percent", sound_volume_percent)
 	config.set_value("audio", "music_volume", music_volume_index)
@@ -7967,7 +8727,7 @@ func _save_persistent_settings() -> void:
 		"fullscreen",
 		DisplayServer.window_get_mode() == DisplayServer.WINDOW_MODE_FULLSCREEN
 	)
-	config.save(PERSISTENT_SETTINGS_PATH)
+	config.save(persistent_settings_path)
 
 
 func _load_local_statistics(config: ConfigFile) -> void:
@@ -7982,6 +8742,14 @@ func _load_local_statistics(config: ConfigFile) -> void:
 	local_statistics["last_score"] = int(config.get_value("statistics", "last_score", 0))
 	local_statistics["last_exact_orders"] = maxi(0, int(config.get_value("statistics", "last_exact_orders", 0)))
 	local_statistics["last_shared_place"] = bool(config.get_value("statistics", "last_shared_place", false))
+	local_statistics["season_key"] = str(config.get_value("statistics", "season_key", ""))
+	local_statistics["season_games"] = maxi(0, int(config.get_value("statistics", "season_games", 0)))
+	local_statistics["season_wins"] = maxi(0, int(config.get_value("statistics", "season_wins", 0)))
+	local_statistics["season_losses"] = maxi(0, int(config.get_value("statistics", "season_losses", 0)))
+	local_statistics["season_mvp"] = maxi(0, int(config.get_value("statistics", "season_mvp", 0)))
+	local_statistics["season_points"] = maxf(0.0, float(config.get_value("statistics", "season_points", 0.0)))
+	local_statistics["season_total_games"] = maxi(0, int(config.get_value("statistics", "season_total_games", 0)))
+	_ensure_current_season_statistics()
 
 
 func _save_local_statistics(config: ConfigFile) -> void:
@@ -7996,29 +8764,40 @@ func _save_local_statistics(config: ConfigFile) -> void:
 	config.set_value("statistics", "last_score", int(local_statistics["last_score"]))
 	config.set_value("statistics", "last_exact_orders", int(local_statistics["last_exact_orders"]))
 	config.set_value("statistics", "last_shared_place", bool(local_statistics["last_shared_place"]))
+	config.set_value("statistics", "season_key", str(local_statistics["season_key"]))
+	config.set_value("statistics", "season_games", int(local_statistics["season_games"]))
+	config.set_value("statistics", "season_wins", int(local_statistics["season_wins"]))
+	config.set_value("statistics", "season_losses", int(local_statistics["season_losses"]))
+	config.set_value("statistics", "season_mvp", int(local_statistics["season_mvp"]))
+	config.set_value("statistics", "season_points", float(local_statistics["season_points"]))
+	config.set_value("statistics", "season_total_games", int(local_statistics["season_total_games"]))
 
 
 func _has_saved_session() -> bool:
-	return FileAccess.file_exists(SESSION_SAVE_PATH)
+	return FileAccess.file_exists(session_save_path)
 
 
-func _save_current_session() -> void:
+func _save_current_session() -> bool:
 	if is_bug_report_review_mode or game.current_round.state == Round.State.SETUP or _is_full_game_complete():
-		return
+		return false
 
-	var save_file := FileAccess.open(SESSION_SAVE_PATH, FileAccess.WRITE)
+	var save_file := FileAccess.open(session_save_path, FileAccess.WRITE)
 	if save_file == null:
 		push_error("Не удалось открыть файл сохранения партии.")
-		return
+		return false
 
 	var save_data := _create_session_save_data()
 	save_data["bug_report_timeline"] = bug_report_timeline.duplicate(true)
 	save_file.store_var(save_data, false)
+	save_file.flush()
+	var saved_ok := save_file.get_error() == OK
+	save_file.close()
+	return saved_ok
 
 
 func _delete_saved_session() -> void:
 	if _has_saved_session():
-		DirAccess.remove_absolute(ProjectSettings.globalize_path(SESSION_SAVE_PATH))
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(session_save_path))
 
 
 func _create_session_save_data() -> Dictionary:
@@ -8152,7 +8931,7 @@ func _load_saved_session() -> bool:
 	if not _has_saved_session():
 		return false
 
-	var save_file := FileAccess.open(SESSION_SAVE_PATH, FileAccess.READ)
+	var save_file := FileAccess.open(session_save_path, FileAccess.READ)
 	if save_file == null:
 		return false
 
@@ -8211,7 +8990,7 @@ func _restore_session_from_data(save_data: Dictionary, persist_settings: bool) -
 	action_text = str(save_data.get("action_text", "Партия продолжена."))
 	hand_sort_mode = clampi(int(save_data.get("hand_sort_mode", HandSortMode.BY_SUIT)), HandSortMode.BY_SUIT, HandSortMode.TRUMPS_LEFT)
 	is_score_sheet_visible = bool(save_data.get("score_sheet_visible", false))
-	is_round_history_visible = bool(save_data.get("round_history_visible", true))
+	is_round_history_visible = false if mobile_table_layout else bool(save_data.get("round_history_visible", false))
 
 	round_history.clear()
 	var saved_round_history: Array = save_data.get("round_history", [])
@@ -9009,7 +9788,7 @@ func _get_filtered_music_track_indices() -> Array[int]:
 
 
 func _get_available_music_track_count() -> int:
-	return MUSIC_TRACK_COUNT + _get_available_custom_music_paths().size()
+	return MUSIC_TRACK_COUNT if mobile_table_layout else MUSIC_TRACK_COUNT + _get_available_custom_music_paths().size()
 
 
 func _ensure_valid_music_track_index() -> void:
@@ -9154,18 +9933,24 @@ func _create_music_controls_popup() -> void:
 	music_popup_folder_button.add_theme_font_size_override("font_size", 14)
 	music_popup_folder_button.pressed.connect(_on_music_popup_folder_pressed)
 	playlist_actions.add_child(music_popup_folder_button)
+	if mobile_table_layout:
+		music_popup_folder_button.visible = false
 
 	music_popup_clear_button = Button.new()
 	music_popup_clear_button.custom_minimum_size = Vector2(112.0, 32.0)
 	music_popup_clear_button.add_theme_font_size_override("font_size", 14)
 	music_popup_clear_button.pressed.connect(_on_clear_profile_music_pressed)
 	playlist_actions.add_child(music_popup_clear_button)
+	if mobile_table_layout:
+		music_popup_clear_button.visible = false
 
 	music_popup_import_label = Label.new()
 	music_popup_import_label.add_theme_font_size_override("font_size", 14)
 	music_popup_import_label.add_theme_color_override("font_color", Color(0.72, 0.85, 0.76, 1.0))
 	music_popup_import_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	content.add_child(music_popup_import_label)
+	if mobile_table_layout:
+		music_popup_import_label.visible = false
 
 	music_popup_playlist_title = Label.new()
 	music_popup_playlist_title.add_theme_font_size_override("font_size", 16)
@@ -9177,6 +9962,8 @@ func _create_music_controls_popup() -> void:
 	music_popup_search_input.add_theme_font_size_override("font_size", 15)
 	music_popup_search_input.text_changed.connect(_on_music_playlist_search_changed)
 	content.add_child(music_popup_search_input)
+	if mobile_table_layout:
+		music_popup_search_input.visible = false
 
 	var page_controls := HBoxContainer.new()
 	page_controls.add_theme_constant_override("separation", 8)
@@ -9201,6 +9988,8 @@ func _create_music_controls_popup() -> void:
 	music_popup_next_page_button.custom_minimum_size = Vector2(44.0, 30.0)
 	music_popup_next_page_button.pressed.connect(_on_music_playlist_next_page_pressed)
 	page_controls.add_child(music_popup_next_page_button)
+	if mobile_table_layout:
+		page_controls.visible = false
 
 	var playlist_scroll := ScrollContainer.new()
 	playlist_scroll.custom_minimum_size = Vector2(0.0, 240.0)
@@ -9350,7 +10139,7 @@ func _refresh_music_controls_popup() -> void:
 
 func _refresh_music_player() -> void:
 	var is_table_visible := menu_overlay != null and not menu_overlay.visible
-	music_player_panel.visible = is_table_visible and not music_player_hidden
+	music_player_panel.visible = is_table_visible and not music_player_hidden and not mobile_table_layout
 
 	music_track_label.text = "♫ %s · %d%%" % [_get_music_track_label(), music_volume_percent]
 	music_track_label.tooltip_text = _get_full_music_track_label_for_index(music_track_index)
@@ -9359,7 +10148,7 @@ func _refresh_music_player() -> void:
 	music_play_pause_button.disabled = false
 	music_next_button.disabled = false
 	music_playlist_button.disabled = false
-	music_add_button.disabled = false
+	music_add_button.disabled = mobile_table_layout
 
 
 func _reset_game_session() -> void:
@@ -9392,7 +10181,7 @@ func _reset_game_session() -> void:
 	last_announced_round_number = -1
 	is_processing_automatic_actions = false
 	is_score_sheet_visible = false
-	is_round_history_visible = true
+	is_round_history_visible = false
 	hand_sort_mode = HandSortMode.BY_SUIT
 	round_history.clear()
 	recent_actions.clear()
@@ -9476,13 +10265,20 @@ func _start_round() -> void:
 	_advance_automatic_actions()
 
 
+func _is_local_menu_blocking_play() -> bool:
+	return is_instance_valid(menu_overlay) and menu_overlay.visible and not _is_steam_p2p_main_table_active()
+
+
 func _advance_automatic_actions() -> void:
-	if is_bug_report_review_mode or is_processing_automatic_actions:
+	if is_bug_report_review_mode or is_processing_automatic_actions or _is_local_menu_blocking_play():
 		return
 
 	is_processing_automatic_actions = true
 
 	while true:
+		if _is_local_menu_blocking_play():
+			is_processing_automatic_actions = false
+			return
 		if pending_play_presentation:
 			is_trick_presentation_active = true
 			_refresh_ui()
@@ -9535,6 +10331,9 @@ func _advance_automatic_actions() -> void:
 				return
 
 			await get_tree().create_timer(_get_bot_action_delay()).timeout
+			if _is_local_menu_blocking_play():
+				is_processing_automatic_actions = false
+				return
 
 			if not _play_automatic_card():
 				is_processing_automatic_actions = false
@@ -9604,6 +10403,9 @@ func _play_automatic_card() -> bool:
 
 
 func _on_bid_pressed(bid: int) -> void:
+	mobile_bid_selection_open = false
+	if is_instance_valid(mobile_bid_popup):
+		mobile_bid_popup.visible = false
 	if is_bug_report_review_mode:
 		return
 
@@ -9793,6 +10595,14 @@ func _on_music_player_visibility_toggle_pressed() -> void:
 	_build_pause_menu_content()
 
 
+func _on_music_player_display_toggled(should_show: bool) -> void:
+	music_player_hidden = not should_show
+	if music_player_hidden and is_instance_valid(music_controls_popup):
+		music_controls_popup.hide()
+	_save_persistent_settings()
+	_refresh_ui()
+
+
 func _on_round_history_toggle_pressed() -> void:
 	is_round_history_visible = not is_round_history_visible
 	_save_current_session()
@@ -9822,7 +10632,7 @@ func _on_next_round_pressed() -> void:
 		_on_start_next_steam_p2p_round_from_table_pressed()
 		return
 
-	if is_bug_report_review_mode or not _can_start_next_round():
+	if is_bug_report_review_mode or _is_local_menu_blocking_play() or not _can_start_next_round():
 		return
 
 	_reset_network_round_countdown()
@@ -10098,6 +10908,7 @@ func _refresh_ui() -> void:
 	_refresh_round_history_panel()
 	_refresh_round_results()
 	_refresh_bid_controls()
+	_refresh_mobile_action_dock()
 	_refresh_joker_controls()
 	_refresh_hand_sort_controls()
 	_refresh_hand()
@@ -10116,8 +10927,8 @@ func _refresh_ui() -> void:
 
 
 func _position_action_label_for_table_mode(is_network_table: bool) -> void:
-	var top_offset := -262.0 if is_network_table else -274.0
-	var bottom_offset := -220.0 if is_network_table else -232.0
+	var top_offset := -438.0 if mobile_table_layout else (-262.0 if is_network_table else -274.0)
+	var bottom_offset := -396.0 if mobile_table_layout else (-220.0 if is_network_table else -232.0)
 	_set_control_layout(
 		action_label,
 		0.5,
@@ -10260,15 +11071,27 @@ func _set_player_stats_label(
 	var available_width := stats_label.size.x - 10.0
 	if available_width <= 80.0:
 		available_width = 184.0
-	var size_candidates := [
-		Vector2i(17, 23),
-		Vector2i(16, 22),
-		Vector2i(15, 21),
-		Vector2i(14, 20),
-		Vector2i(13, 19),
-		Vector2i(12, 18),
-		Vector2i(11, 17)
-	]
+	var size_candidates := (
+		[
+			Vector2i(20, 27),
+			Vector2i(19, 26),
+			Vector2i(18, 25),
+			Vector2i(17, 24),
+			Vector2i(16, 23),
+			Vector2i(15, 22),
+			Vector2i(14, 21)
+		]
+		if mobile_table_layout
+		else [
+			Vector2i(17, 23),
+			Vector2i(16, 22),
+			Vector2i(15, 21),
+			Vector2i(14, 20),
+			Vector2i(13, 19),
+			Vector2i(12, 18),
+			Vector2i(11, 17)
+		]
+	)
 	# Казахские подписи заметно длиннее остальных; сразу начинаем с компактной
 	# пары, а затем всё равно проверяем фактическую ширину RichTextLabel.
 	var first_candidate := 3 if interface_locale == "kz" else 0
@@ -10368,7 +11191,7 @@ func _apply_player_score_tween_value(value: float, player_slot: int, score_delta
 		if not score_prefix.is_empty()
 		else tr("PLAYER_SCORE_CHANGE") % [roundi(value), _format_score(score_delta)]
 	)
-	score_label.add_theme_font_size_override("font_size", 16 if not score_prefix.is_empty() else 21)
+	score_label.add_theme_font_size_override("font_size", (19 if not score_prefix.is_empty() else 23) if mobile_table_layout else (16 if not score_prefix.is_empty() else 21))
 	score_label.add_theme_color_override(
 		"font_color",
 		Color(0.38, 0.94, 0.55, 1.0) if score_delta > 0 else Color(1.0, 0.36, 0.31, 1.0)
@@ -10384,7 +11207,7 @@ func _finish_player_score_tween(player_slot: int, target_score: int, score_prefi
 
 func _apply_static_player_score_style(score_label: Label, score: int, score_prefix: String = "") -> void:
 	score_label.text = "%s · %d" % [score_prefix, score] if not score_prefix.is_empty() else tr("PLAYER_SCORE") % score
-	score_label.add_theme_font_size_override("font_size", 16 if not score_prefix.is_empty() else 19)
+	score_label.add_theme_font_size_override("font_size", (19 if not score_prefix.is_empty() else 22) if mobile_table_layout else (16 if not score_prefix.is_empty() else 19))
 	score_label.add_theme_color_override(
 		"font_color",
 		Color(0.97, 0.84, 0.38, 1.0) if score >= 0 else Color(0.96, 0.42, 0.34, 1.0)
@@ -10547,7 +11370,7 @@ func _create_player_avatar_badges() -> void:
 		avatar_label.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 		avatar_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		avatar_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-		avatar_label.add_theme_font_size_override("font_size", 30)
+		avatar_label.add_theme_font_size_override("font_size", 36 if mobile_table_layout else 30)
 		avatar_label.add_theme_color_override("font_color", Color(0.98, 0.9, 0.6, 1.0))
 		avatar_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		avatar_content.add_child(avatar_label)
@@ -10574,24 +11397,21 @@ func _create_player_avatar_badges() -> void:
 		turn_label.text = tr("TURN_BADGE")
 		turn_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		turn_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-		turn_label.add_theme_font_size_override("font_size", 17)
+		turn_label.add_theme_font_size_override("font_size", 19 if mobile_table_layout else 17)
 		turn_label.add_theme_color_override("font_color", Color(1.0, 0.88, 0.34, 1.0))
 		turn_label.add_theme_color_override("font_outline_color", Color(0.04, 0.03, 0.01, 1.0))
 		turn_label.add_theme_constant_override("outline_size", 6)
 		turn_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		avatar_content.add_child(turn_label)
 
-		var soundpad_indicator := Label.new()
+		var soundpad_indicator := TextureRect.new()
 		soundpad_indicator.name = "AvatarSoundpadIndicator"
 		soundpad_indicator.visible = false
 		soundpad_indicator.z_index = 7
-		soundpad_indicator.text = "🔊"
+		soundpad_indicator.texture = load("res://Assets/UI/soundbar_speaker.svg")
+		soundpad_indicator.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		soundpad_indicator.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 		soundpad_indicator.tooltip_text = tr("PLAYER_IS_PLAYING_SOUND")
-		soundpad_indicator.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		soundpad_indicator.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-		soundpad_indicator.add_theme_font_size_override("font_size", 22)
-		soundpad_indicator.add_theme_color_override("font_outline_color", Color(0.02, 0.04, 0.03, 0.95))
-		soundpad_indicator.add_theme_constant_override("outline_size", 5)
 		soundpad_indicator.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		_set_control_layout(soundpad_indicator, 0.5, 0.5, 0.5, 0.5, -18.0, -18.0, 18.0, 18.0)
 		avatar_content.add_child(soundpad_indicator)
@@ -10686,7 +11506,7 @@ func _refresh_player_avatar_badges() -> void:
 			and game.current_round.state != Round.State.FINISHED
 		)
 		_set_avatar_turn_active(player_index, is_current)
-		avatar_badges[player_index].tooltip_text = "Аватар: %s" % game.players[player_index].display_name
+		avatar_badges[player_index].tooltip_text = tr("Аватар: %s") % game.players[player_index].display_name
 		var avatar_texture: Texture2D = _get_player_avatar_texture(player_index)
 		avatar_images[player_index].texture = avatar_texture
 		avatar_labels[player_index].visible = avatar_texture == null
@@ -10696,15 +11516,16 @@ func _refresh_player_avatar_badges() -> void:
 			avatar_mute_buttons[player_index].set_meta("network_player_index", player_index)
 			avatar_mute_buttons[player_index].text = "🔇" if is_muted else "🔊"
 			avatar_mute_buttons[player_index].tooltip_text = (
-				"Включить звуки саундпада этого игрока"
+				tr("Включить звуки саундпада этого игрока")
 				if is_muted
-				else "Отключить звуки саундпада этого игрока"
+				else tr("Отключить звуки саундпада этого игрока")
 			)
 		if player_index < avatar_gift_buttons.size():
 			avatar_gift_buttons[player_index].set_meta("network_player_index", player_index)
 			_set_avatar_action_tray_visible(
 				player_index,
 				player_index != HUMAN_PLAYER_INDEX
+				and not mobile_table_layout
 				and avatar_mute_hovered_slots.has(player_index)
 				and _can_show_reaction_controls(),
 			)
@@ -10720,13 +11541,14 @@ func _refresh_avatar_mute_buttons(snapshot: Dictionary, viewer_index: int) -> vo
 		mute_button.set_meta("network_player_index", player_index)
 		mute_button.text = "🔇" if is_muted else "🔊"
 		mute_button.tooltip_text = (
-			"Включить саундпад этого игрока только у себя"
+			tr("Включить саундпад этого игрока только у себя")
 			if is_muted
-			else "Отключить саундпад этого игрока только у себя"
+			else tr("Отключить саундпад этого игрока только у себя")
 		)
 		var should_show_actions := (
 			_is_steam_p2p_main_table_active()
 			and not is_self
+			and not mobile_table_layout
 			and avatar_mute_hovered_slots.has(relative_slot)
 		)
 		if relative_slot < avatar_gift_buttons.size():
@@ -10738,9 +11560,9 @@ func _refresh_avatar_mute_buttons(snapshot: Dictionary, viewer_index: int) -> vo
 			var player_data: Dictionary = players_by_index.get(player_index, {})
 			var player_name := str(player_data.get("display_name", "Игрок"))
 			avatar_badges[relative_slot].tooltip_text = (
-				"%s · саундпад отключён у тебя"
+				tr("%s · саундпад отключён у тебя")
 				if is_muted
-				else "%s · наведи для управления саундпадом"
+				else tr("%s · наведи для управления саундпадом")
 			) % player_name
 
 
@@ -10826,19 +11648,21 @@ func _set_avatar_action_tray_visible(relative_slot: int, should_show: bool, inst
 			previous_tween.kill()
 		avatar_action_tray_tweens.erase(relative_slot)
 
+	var shown_y := 150.0 if mobile_table_layout else -50.0
+	var hidden_y := 126.0 if mobile_table_layout else -8.0
 	if should_show:
 		tray.visible = true
 		avatar_gift_buttons[relative_slot].visible = true
 		avatar_mute_buttons[relative_slot].visible = true
 		if instant:
-			tray.position.y = -50.0
+			tray.position.y = shown_y
 			tray.modulate.a = 1.0
 			return
 		if not was_requested:
-			tray.position.y = -8.0
+			tray.position.y = hidden_y
 			tray.modulate.a = 0.0
 		var show_tween := create_tween().set_parallel(true)
-		show_tween.tween_property(tray, "position:y", -50.0, 0.2).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+		show_tween.tween_property(tray, "position:y", shown_y, 0.2).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 		show_tween.tween_property(tray, "modulate:a", 1.0, 0.14)
 		avatar_action_tray_tweens[relative_slot] = show_tween
 		return
@@ -10847,11 +11671,11 @@ func _set_avatar_action_tray_visible(relative_slot: int, should_show: bool, inst
 		tray.visible = false
 		avatar_gift_buttons[relative_slot].visible = false
 		avatar_mute_buttons[relative_slot].visible = false
-		tray.position.y = -8.0
+		tray.position.y = hidden_y
 		tray.modulate.a = 0.0
 		return
 	var hide_tween := create_tween().set_parallel(true)
-	hide_tween.tween_property(tray, "position:y", -8.0, 0.14).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+	hide_tween.tween_property(tray, "position:y", hidden_y, 0.14).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
 	hide_tween.tween_property(tray, "modulate:a", 0.0, 0.1)
 	hide_tween.set_parallel(false)
 	hide_tween.tween_callback(_finish_avatar_action_tray_hide.bind(relative_slot))
@@ -10908,6 +11732,17 @@ func _create_avatar_turn_glow_material() -> ShaderMaterial:
 
 
 func _place_player_avatar_badge(badge: PanelContainer, player_index: int) -> void:
+	if mobile_table_layout:
+		match player_index:
+			HUMAN_PLAYER_INDEX:
+				_set_control_layout(badge, 0.5, 1.0, 0.5, 1.0, -204.0, -382.0, -68.0, -246.0)
+			1:
+				_set_control_layout(badge, 0.0, 0.0, 0.0, 0.0, 98.0, 358.0, 234.0, 494.0)
+			2:
+				_set_control_layout(badge, 0.5, 0.0, 0.5, 0.0, -204.0, 86.0, -68.0, 222.0)
+			3:
+				_set_control_layout(badge, 1.0, 0.0, 1.0, 0.0, -234.0, 358.0, -98.0, 494.0)
+		return
 	match player_index:
 		HUMAN_PLAYER_INDEX:
 			_set_control_layout(badge, 0.5, 1.0, 0.5, 1.0, -218.0, -402.0, -114.0, -298.0)
@@ -11195,7 +12030,7 @@ func _refresh_score_sheet() -> void:
 	if is_instance_valid(score_sheet_close_button):
 		score_sheet_close_button.visible = is_score_sheet_visible
 		score_sheet_close_button.disabled = false
-	score_sheet_toggle_button.text = tr("SCORE_SHEET_ICON")
+	score_sheet_toggle_button.text = _get_score_sheet_button_text()
 	score_sheet_toggle_button.disabled = false
 	score_sheet_title.text = tr("SCORE_SHEET_TITLE") % [round_history.size(), TOTAL_ROUND_COUNT]
 	final_results_label.visible = _is_full_game_complete()
@@ -11463,6 +12298,22 @@ func _add_score_sheet_cell(
 	minimum_width := 82.0,
 	is_total_row := false
 ) -> void:
+	var suit_icon_path := _get_suit_icon_path(text)
+	if not suit_icon_path.is_empty():
+		var icon_cell := CenterContainer.new()
+		icon_cell.custom_minimum_size = Vector2(minimum_width, 42.0)
+		icon_cell.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		icon_cell.modulate.a = 0.58 if is_future_round else 1.0
+		var suit_icon := TextureRect.new()
+		suit_icon.custom_minimum_size = Vector2(24.0, 24.0)
+		suit_icon.texture = load(suit_icon_path)
+		suit_icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		suit_icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		suit_icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		icon_cell.add_child(suit_icon)
+		parent.add_child(icon_cell)
+		return
+
 	var cell := Label.new()
 	cell.custom_minimum_size = Vector2(minimum_width, 48.0 if is_header or is_total_row else 42.0)
 	cell.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -11471,7 +12322,6 @@ func _add_score_sheet_cell(
 	cell.autowrap_mode = 2
 	cell.text = text
 	cell.add_theme_font_size_override("font_size", 14 if is_header else 13)
-
 	if is_header:
 		cell.add_theme_color_override("font_color", Color(0.97, 0.86, 0.55))
 	elif is_total_row:
@@ -11666,6 +12516,20 @@ func _record_completed_game_statistics() -> void:
 	var place: int = clampi(int(standing["place"]), 1, PLAYER_NAMES.size())
 	var score: int = int(standing["score"])
 	local_statistics["completed_games"] = int(local_statistics["completed_games"]) + 1
+	_ensure_current_season_statistics()
+	local_statistics["season_games"] = int(local_statistics["season_games"]) + 1
+	local_statistics["season_total_games"] = int(local_statistics["season_total_games"]) + 1
+	if place == 1:
+		local_statistics["season_wins"] = int(local_statistics["season_wins"]) + 1
+		local_statistics["season_points"] = float(local_statistics["season_points"]) + 3.0
+	else:
+		local_statistics["season_losses"] = int(local_statistics["season_losses"]) + 1
+		local_statistics["season_points"] = float(local_statistics["season_points"]) + 1.0
+
+	var expected_player_id := _get_local_player_team_id(HUMAN_PLAYER_INDEX) if _is_local_team_match() else HUMAN_PLAYER_INDEX
+	if _get_unique_game_mvp_player_id() == expected_player_id:
+		local_statistics["season_mvp"] = int(local_statistics["season_mvp"]) + 1
+		local_statistics["season_points"] = float(local_statistics["season_points"]) + 0.5
 
 	match place:
 		1:
@@ -11686,6 +12550,22 @@ func _record_completed_game_statistics() -> void:
 	local_statistics["last_exact_orders"] = int(standing["exact_orders"])
 	local_statistics["last_shared_place"] = bool(standing["shares_place"])
 	_save_persistent_settings()
+
+
+func _get_unique_game_mvp_player_id() -> int:
+	var standings := _get_final_standings()
+	var best_exact_orders := -1
+	var best_player_id := -1
+	var has_tie := false
+	for current_standing in standings:
+		var exact_orders := int(current_standing.get("exact_orders", 0))
+		if exact_orders > best_exact_orders:
+			best_exact_orders = exact_orders
+			best_player_id = int(current_standing.get("player_id", -1))
+			has_tie = false
+		elif exact_orders == best_exact_orders:
+			has_tie = true
+	return -1 if has_tie else best_player_id
 
 
 func _get_place_text(place: int, shares_place := false) -> String:
@@ -11828,6 +12708,17 @@ func _sync_local_round_countdown() -> void:
 
 func _fit_round_results_panel(plain_text: String) -> void:
 	var result_lines := plain_text.split("\n", false)
+	if mobile_table_layout:
+		round_results_label.fit_content = false
+		round_results_label.scroll_active = false
+		round_results_label.get_v_scroll_bar().value = 0.0
+		round_results_label.custom_minimum_size.y = 0.0
+		var parent := round_results_panel.get_parent_control()
+		var panel_width := minf(800.0, parent.size.x - 64.0)
+		var panel_height := 110.0 + maxi(1, result_lines.size()) * 38.0
+		_set_control_layout(round_results_panel, 0.5, 0.0, 0.5, 0.0, -panel_width * 0.5, 270.0, panel_width * 0.5, 270.0 + panel_height)
+		_queue_round_results_action_layout()
+		return
 	var content_font: Font = round_results_label.get_theme_font("normal_font")
 	var widest_line := 0.0
 	for result_line in result_lines:
@@ -11878,23 +12769,36 @@ func _queue_round_results_action_layout() -> void:
 func _position_round_results_actions() -> void:
 	if not is_instance_valid(round_results_panel) or not is_instance_valid(next_round_button):
 		return
-	var gap := 14.0
+	var gap := 18.0 if mobile_table_layout else 14.0
 	var button_height := maxf(48.0, next_round_button.get_combined_minimum_size().y)
 	# fit_content may briefly measure a hidden label at width 1. Once wrapping
 	# settles, shrink to the actual minimum too; never keep that stale height.
 	var panel_height := round_results_panel.get_combined_minimum_size().y
 	round_results_panel.size.y = panel_height
-	var button_top_limit := 522.0
+	var button_top_limit := 650.0 if mobile_table_layout else 522.0
 	if not player_panels.is_empty():
 		var player_top := player_panels[0].global_position.y - round_results_panel.get_parent_control().global_position.y
 		if player_top > 0.0:
 			button_top_limit = minf(button_top_limit, player_top - gap - button_height)
-	# Grow the results UPWARDS so additional team rows do not cover the next
-	# button or push it down over the local player's avatar.
-	var results_top := maxf(72.0, minf(ROUND_RESULTS_PANEL_TOP, button_top_limit - gap - panel_height))
+	var results_top_limit := 72.0
+	if mobile_table_layout and player_panels.size() > 2:
+		results_top_limit = player_panels[2].get_global_rect().end.y - round_results_panel.get_parent_control().global_position.y + gap
+		var available_height := maxf(160.0, button_top_limit - gap - results_top_limit)
+		# Measure the wrapped content, not a previous constrained minimum, so
+		# a short summary shrinks again after a long/team summary.
+		var chrome_height := panel_height - round_results_label.get_combined_minimum_size().y
+		var content_height := maxf(48.0, round_results_label.get_content_height())
+		var label_height := minf(content_height, maxf(48.0, available_height - chrome_height))
+		round_results_label.scroll_active = content_height > label_height
+		round_results_label.custom_minimum_size.y = label_height
+		panel_height = chrome_height + label_height
+		round_results_panel.size.y = panel_height
+	# Grow upwards within the free space between the upper and local player.
+	var results_top := maxf(results_top_limit, minf(ROUND_RESULTS_PANEL_TOP, button_top_limit - gap - panel_height))
 	round_results_panel.position.y = results_top
 	var button_top := results_top + round_results_panel.size.y + gap
-	_set_control_layout(next_round_button, 0.5, 0.0, 0.5, 0.0, -150.0, button_top, 150.0, button_top + button_height)
+	var button_half_width := 230.0 if mobile_table_layout else 150.0
+	_set_control_layout(next_round_button, 0.5, 0.0, 0.5, 0.0, -button_half_width, button_top, button_half_width, button_top + button_height)
 
 
 func _get_local_round_result_bbcode() -> String:
@@ -11932,6 +12836,23 @@ func _scroll_round_history_to_bottom() -> void:
 	round_history_scroll.scroll_vertical = int(scroll_bar.max_value)
 
 
+func _configure_bid_controls_layout(option_count: int) -> void:
+	if mobile_table_layout:
+		bid_controls.columns = 3
+		return
+	# Desktop stays a compact horizontal strip; large hands use two balanced rows.
+	bid_controls.columns = maxi(1, option_count if option_count <= 7 else ceili(option_count / 2.0))
+	var width := bid_controls.columns * 100.0 + maxi(0, bid_controls.columns - 1) * 8.0
+	bid_controls.anchor_left = 0.5
+	bid_controls.anchor_right = 0.5
+	bid_controls.offset_left = -width / 2.0
+	bid_controls.offset_right = width / 2.0
+	var rows := maxi(1, ceili(float(option_count) / bid_controls.columns))
+	var height := rows * 36.0 + (rows - 1) * 8.0
+	bid_controls.offset_top = -194.0 - height
+	bid_controls.offset_bottom = -194.0
+
+
 func _refresh_bid_controls() -> void:
 	_clear_children(bid_controls)
 
@@ -11946,11 +12867,15 @@ func _refresh_bid_controls() -> void:
 	):
 		return
 
+	_configure_bid_controls_layout(game.current_round.cards_per_player + 1)
 	for bid in game.current_round.cards_per_player + 1:
 		var bid_button := Button.new()
-		bid_button.text = tr("BID_BUTTON") % bid
-		bid_button.custom_minimum_size = Vector2(100.0, 36.0)
-		_apply_compact_table_action_button_style(bid_button, 36.0)
+		bid_button.text = str(bid) if mobile_table_layout else tr("BID_BUTTON") % bid
+		var bid_button_size := Vector2(112.0, 48.0) if mobile_table_layout else Vector2(100.0, 36.0)
+		bid_button.custom_minimum_size = bid_button_size
+		_apply_compact_table_action_button_style(bid_button, bid_button_size.y)
+		if mobile_table_layout:
+			bid_button.add_theme_font_size_override("font_size", 17)
 		bid_button.disabled = not game.current_round.can_place_bid(HUMAN_PLAYER_INDEX, bid)
 		bid_button.pressed.connect(_on_bid_pressed.bind(bid))
 		bid_controls.add_child(bid_button)
@@ -12010,11 +12935,12 @@ func _refresh_joker_controls() -> void:
 	if game.active_trick == null:
 		if pending_joker_suit < 0:
 			for suit in Card.Suit.values():
-				_add_joker_suit_button(tr("JOKER_DECLARE_SUIT") % _get_suit_symbol(suit), suit)
+				var suit_label := _get_localized_suit_name(suit) if mobile_table_layout else _get_suit_symbol(suit)
+				_add_joker_suit_button(tr("JOKER_DECLARE_SUIT") % suit_label, suit)
 			_add_joker_cancel_button()
 			return
 
-		var suit_symbol := _get_suit_symbol(pending_joker_suit)
+		var suit_symbol := _get_localized_suit_name(pending_joker_suit) if mobile_table_layout else _get_suit_symbol(pending_joker_suit)
 		_add_joker_choice_button("%s: %s" % [suit_symbol, tr("JOKER_TAKES")], Trick.JokerMode.JOKER_WINS, pending_joker_suit)
 		_add_joker_choice_button(tr("JOKER_HIGH_TAKES") % suit_symbol, Trick.JokerMode.HIGHEST_DECLARED_CARD_WINS, pending_joker_suit)
 		_add_joker_choice_button(tr("JOKER_LOW_TAKES") % suit_symbol, Trick.JokerMode.LOWEST_DECLARED_CARD_WINS, pending_joker_suit)
@@ -12033,6 +12959,19 @@ func _refresh_joker_controls() -> void:
 func _place_joker_controls() -> void:
 	var is_leading_joker_choice := pending_joker_card != null and game.active_trick == null
 
+	if mobile_table_layout:
+		# Выбор Джокера показываем в свободной центральной зоне стола.
+		# Так он не пересекает ни верхнего/левого игрока, ни локальную панель.
+		if is_leading_joker_choice and pending_joker_suit < 0:
+			joker_controls.columns = 3
+			_set_control_layout(joker_controls, 0.5, 0.0, 0.5, 0.0, -400.0, 300.0, 400.0, 430.0)
+		elif is_leading_joker_choice:
+			joker_controls.columns = 2
+			_set_control_layout(joker_controls, 0.5, 0.0, 0.5, 0.0, -400.0, 300.0, 400.0, 630.0)
+		else:
+			joker_controls.columns = 3
+			_set_control_layout(joker_controls, 0.5, 0.0, 0.5, 0.0, -510.0, 550.0, 510.0, 616.0)
+		return
 	if is_leading_joker_choice:
 		joker_controls.columns = 1
 		_set_control_layout(joker_controls, 0.0, 1.0, 0.0, 1.0, 64.0, -510.0, 444.0, -128.0)
@@ -12063,6 +13002,8 @@ func _refresh_hand() -> void:
 		var card: Card = displayed_cards[display_index]
 		var card_view := CardView.new()
 		card_view.set_card(card)
+		if mobile_table_layout:
+			card_view.set_card_size(Vector2(132.0, 194.0))
 		card_view.set_hand_presentation(display_index, displayed_cards.size())
 		var card_is_available := _is_card_available_to_human(card)
 		var card_is_interactive := (
@@ -12086,11 +13027,14 @@ func _refresh_hand() -> void:
 			card_view.set_status(tr("HAND_PREMOVE_CONFIRM"))
 		card_view.card_pressed.connect(_on_card_pressed)
 		hand_container.add_child(card_view)
+		_configure_mobile_hand_card(card_view)
 
 
 func _refresh_hand_sort_controls() -> void:
 	hand_sort_by_suit_button.disabled = is_bug_report_review_mode or is_processing_automatic_actions or hand_sort_mode == HandSortMode.BY_SUIT
 	hand_sort_trumps_left_button.disabled = is_bug_report_review_mode or is_processing_automatic_actions or hand_sort_mode == HandSortMode.TRUMPS_LEFT
+	if is_instance_valid(mobile_sort_button):
+		mobile_sort_button.disabled = is_bug_report_review_mode or is_processing_automatic_actions
 
 
 func _sort_cards_for_display(
@@ -12191,7 +13135,7 @@ func _create_player_panels() -> void:
 
 		var name_label := Label.new()
 		name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		name_label.add_theme_font_size_override("font_size", 19)
+		name_label.add_theme_font_size_override("font_size", 22 if mobile_table_layout else 19)
 		name_label.add_theme_color_override("font_color", Color(0.95, 0.97, 0.93, 1.0))
 		content.add_child(name_label)
 
@@ -12200,14 +13144,14 @@ func _create_player_panels() -> void:
 		stats_label.fit_content = true
 		stats_label.scroll_active = false
 		stats_label.autowrap_mode = TextServer.AUTOWRAP_OFF
-		stats_label.custom_minimum_size = Vector2(0.0, 32.0)
-		stats_label.add_theme_font_size_override("normal_font_size", 17)
+		stats_label.custom_minimum_size = Vector2(0.0, 38.0 if mobile_table_layout else 32.0)
+		stats_label.add_theme_font_size_override("normal_font_size", 19 if mobile_table_layout else 17)
 		stats_label.add_theme_color_override("font_color", Color(0.82, 0.88, 0.82, 1.0))
 		content.add_child(stats_label)
 
 		var score_label := Label.new()
 		score_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		score_label.add_theme_font_size_override("font_size", 19)
+		score_label.add_theme_font_size_override("font_size", 21 if mobile_table_layout else 19)
 		score_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 		score_label.add_theme_color_override("font_color", Color(0.97, 0.84, 0.38, 1.0))
 		content.add_child(score_label)
@@ -12221,7 +13165,7 @@ func _create_player_panels() -> void:
 func _create_trick_slots() -> void:
 	for player_index in PLAYER_NAMES.size():
 		var card_view := CardView.new()
-		card_view.set_card_size(Vector2(108.0, 132.0))
+		card_view.set_card_size(Vector2(112.0, 154.0) if mobile_table_layout else Vector2(108.0, 132.0))
 		card_view.set_interactive(false, false)
 		card_view.set_table_presentation(player_index)
 		_place_trick_slot(card_view, player_index)
@@ -12238,8 +13182,8 @@ func _create_bot_card_backs() -> void:
 
 		for card_index in 3:
 			var card_back := PanelContainer.new()
-			card_back.position = Vector2(float(card_index * 14), 0.0)
-			card_back.size = Vector2(38.0, 54.0)
+			card_back.position = Vector2(float(card_index * (18 if mobile_table_layout else 14)), 0.0)
+			card_back.size = Vector2(48.0, 68.0) if mobile_table_layout else Vector2(38.0, 54.0)
 			card_back.mouse_filter = Control.MOUSE_FILTER_IGNORE
 			card_back.add_theme_stylebox_override("panel", card_back_style)
 
@@ -12258,6 +13202,26 @@ func _create_bot_card_backs() -> void:
 
 
 func _place_bot_card_back_holder(holder: Control, player_index: int) -> void:
+	if mobile_table_layout:
+		match player_index:
+			1:
+				_set_control_layout(holder, 0.0, 0.0, 0.0, 0.0, 536.0, 390.0, 656.0, 464.0)
+			2:
+				_set_control_layout(holder, 0.5, 0.0, 0.5, 0.0, 232.0, 120.0, 352.0, 194.0)
+			3:
+				_set_control_layout(holder, 1.0, 0.0, 1.0, 0.0, -620.0, 390.0, -536.0, 464.0)
+		# Keep the nearest back four pixels from the player, even as cards
+		# disappear. The right-hand fan grows leftwards from its fixed edge.
+		for card_index in holder.get_child_count():
+			var card_back := holder.get_child(card_index) as Control
+			if card_back == null:
+				continue
+			var card_offset := float(card_index * 18)
+			if player_index == 3:
+				_set_control_layout(card_back, 1.0, 0.0, 1.0, 0.0, -48.0 - card_offset, 0.0, -card_offset, 68.0)
+			else:
+				_set_control_layout(card_back, 0.0, 0.0, 0.0, 0.0, card_offset, 0.0, card_offset + 48.0, 68.0)
+		return
 	match player_index:
 		1:
 			_set_control_layout(holder, 0.0, 0.0, 0.0, 0.0, 440.0, 462.0, 532.0, 518.0)
@@ -12283,8 +13247,8 @@ func _refresh_bot_card_backs() -> void:
 func _create_deck_visual() -> void:
 	for card_index in 3:
 		var card_back := PanelContainer.new()
-		card_back.position = Vector2(float(card_index * 8), 8.0)
-		card_back.size = Vector2(58.0, 78.0)
+		card_back.position = Vector2(float(card_index * (10 if mobile_table_layout else 8)), 8.0)
+		card_back.size = Vector2(72.0, 100.0) if mobile_table_layout else Vector2(58.0, 78.0)
 		card_back.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		card_back.add_theme_stylebox_override("panel", card_back_style)
 
@@ -12300,8 +13264,8 @@ func _create_deck_visual() -> void:
 		deck_back_panels.append(card_back)
 
 	deck_trump_panel = PanelContainer.new()
-	deck_trump_panel.position = Vector2(54.0, 20.0)
-	deck_trump_panel.size = Vector2(64.0, 96.0)
+	deck_trump_panel.position = Vector2(70.0, 20.0) if mobile_table_layout else Vector2(54.0, 20.0)
+	deck_trump_panel.size = Vector2(82.0, 118.0) if mobile_table_layout else Vector2(64.0, 96.0)
 	deck_trump_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	deck_trump_panel.add_theme_stylebox_override("panel", deck_trump_card_style)
 
@@ -12326,12 +13290,12 @@ func _create_deck_visual() -> void:
 	deck_visual.add_child(deck_trump_panel)
 
 	deck_caption_label = Label.new()
-	deck_caption_label.position = Vector2(-48.0, 120.0)
-	deck_caption_label.size = Vector2(220.0, 24.0)
+	deck_caption_label.position = Vector2(-66.0, 146.0) if mobile_table_layout else Vector2(-48.0, 120.0)
+	deck_caption_label.size = Vector2(286.0, 30.0) if mobile_table_layout else Vector2(220.0, 24.0)
 	deck_caption_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	deck_caption_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	deck_caption_label.add_theme_color_override("font_color", Color(0.85, 0.95, 0.88, 1.0))
-	deck_caption_label.add_theme_font_size_override("font_size", 13)
+	deck_caption_label.add_theme_font_size_override("font_size", 16 if mobile_table_layout else 13)
 	deck_visual.add_child(deck_caption_label)
 
 
@@ -12378,26 +13342,24 @@ func _refresh_deck_visual() -> void:
 
 
 func _show_open_trump_card_frame() -> void:
-	deck_trump_panel.position = Vector2(54.0, 20.0)
-	deck_trump_panel.size = Vector2(64.0, 96.0)
+	deck_trump_panel.position = Vector2(70.0, 20.0) if mobile_table_layout else Vector2(54.0, 20.0)
+	deck_trump_panel.size = Vector2(82.0, 118.0) if mobile_table_layout else Vector2(64.0, 96.0)
 	deck_trump_panel.add_theme_stylebox_override("panel", deck_trump_card_style)
 	deck_trump_label.remove_theme_constant_override("outline_size")
 	deck_trump_label.remove_theme_color_override("font_outline_color")
 
 
 func _show_scheduled_trump_suit_marker(trump: int) -> void:
-	deck_trump_panel.position = Vector2(54.0, 34.0)
-	deck_trump_panel.size = Vector2(64.0, 64.0)
+	deck_trump_panel.position = Vector2(74.0, 38.0) if mobile_table_layout else Vector2(54.0, 34.0)
+	deck_trump_panel.size = Vector2(78.0, 78.0) if mobile_table_layout else Vector2(64.0, 64.0)
 	deck_trump_panel.add_theme_stylebox_override("panel", StyleBoxEmpty.new())
-	deck_trump_artwork.texture = null
-	deck_trump_artwork.visible = false
-	deck_trump_label.visible = true
-	deck_trump_label.text = (
-		"—"
-		if trump == Round.TrumpSuit.NONE or trump == Round.TrumpSuit.RANDOM
-		else _get_trump_name_from_suit(trump)
-	)
-	deck_trump_label.add_theme_font_size_override("font_size", 48)
+	var suit_icon_path := _get_suit_icon_path(_get_trump_name_from_suit(trump))
+	deck_trump_artwork.texture = load(suit_icon_path) if not suit_icon_path.is_empty() else null
+	deck_trump_artwork.visible = not suit_icon_path.is_empty()
+	deck_trump_label.visible = suit_icon_path.is_empty()
+	deck_trump_label.add_theme_font_override("font", ThemeDB.fallback_font)
+	deck_trump_label.text = "—"
+	deck_trump_label.add_theme_font_size_override("font_size", 56 if mobile_table_layout else 48)
 	deck_trump_label.add_theme_color_override(
 		"font_color",
 		Color(0.92, 0.1, 0.08, 1.0)
@@ -12441,17 +13403,18 @@ func _create_social_controls_container() -> void:
 	social_controls_container.alignment = BoxContainer.ALIGNMENT_CENTER
 	social_controls_container.add_theme_constant_override("separation", 2)
 	social_controls_container.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	social_controls_container.z_index = 30
+	social_controls_container.z_as_relative = false
+	social_controls_container.z_index = 91
 	_set_control_layout(
 		social_controls_container,
 		0.5,
 		1.0,
 		0.5,
 		1.0,
-		112.0,
-		-405.0,
-		148.0,
-		-299.0
+		238.0 if mobile_table_layout else 112.0,
+		-462.0 if mobile_table_layout else -405.0,
+		350.0 if mobile_table_layout else 148.0,
+		-334.0 if mobile_table_layout else -299.0
 	)
 	players_container.add_child(social_controls_container)
 
@@ -12459,13 +13422,13 @@ func _create_social_controls_container() -> void:
 func _create_chat_controls() -> void:
 	chat_toggle_button = Button.new()
 	chat_toggle_button.name = "ChatToggleButton"
-	chat_toggle_button.text = "💬"
+	chat_toggle_button.text = "Чат" if mobile_table_layout else "💬"
 	chat_toggle_button.tooltip_text = tr("CHAT_OPEN")
 	chat_toggle_button.visible = false
 	chat_toggle_button.z_index = 30
 	chat_toggle_button.mouse_filter = Control.MOUSE_FILTER_STOP
-	chat_toggle_button.custom_minimum_size = Vector2(36.0, 34.0)
-	chat_toggle_button.add_theme_font_size_override("font_size", 19)
+	chat_toggle_button.custom_minimum_size = Vector2(112.0, 42.0) if mobile_table_layout else Vector2(36.0, 34.0)
+	chat_toggle_button.add_theme_font_size_override("font_size", 15 if mobile_table_layout else 19)
 	_apply_bare_social_icon_button_style(chat_toggle_button)
 	chat_toggle_button.pressed.connect(_on_chat_toggle_pressed)
 	social_controls_container.add_child(chat_toggle_button)
@@ -12495,7 +13458,8 @@ func _create_chat_controls() -> void:
 	chat_panel = PanelContainer.new()
 	chat_panel.name = "NetworkChatPanel"
 	chat_panel.visible = false
-	chat_panel.z_index = 33
+	chat_panel.z_as_relative = false
+	chat_panel.z_index = 93
 	chat_panel.mouse_filter = Control.MOUSE_FILTER_STOP
 	var chat_style := _create_flat_style(Color(0.965, 0.95, 0.89, 0.985), Color(0.45, 0.31, 0.12, 0.92), 2, 10, 4)
 	chat_style.content_margin_left = 12.0
@@ -12738,7 +13702,7 @@ func _refresh_chat_controls() -> void:
 		chat_panel.visible = false
 		_hide_chat_notification()
 	network_chat_was_available = can_show
-	chat_toggle_button.text = "💬" if chat_unread_count <= 0 else "💬 %d" % chat_unread_count
+	chat_toggle_button.text = "Чат" if mobile_table_layout else "💬" if chat_unread_count <= 0 else "💬 %d" % chat_unread_count
 	chat_toggle_button.tooltip_text = (
 		"Чат стола · новых сообщений: %d" % chat_unread_count
 		if chat_unread_count > 0
@@ -12772,9 +13736,20 @@ func _create_social_emoji_shine_material() -> ShaderMaterial:
 
 
 func _apply_bare_social_icon_button_style(button: Button) -> void:
-	button.flat = true
-	for state_name in [&"normal", &"hover", &"pressed", &"focus", &"disabled"]:
-		button.add_theme_stylebox_override(state_name, StyleBoxEmpty.new())
+	# Text and texture icons must share the same centre in the social stack.
+	button.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	button.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	if mobile_table_layout:
+		button.flat = false
+		button.add_theme_stylebox_override("normal", _create_flat_style(Color(0.025, 0.11, 0.075, 0.98), Color(0.72, 0.5, 0.16, 0.95), 2, 8, 2))
+		button.add_theme_stylebox_override("hover", _create_flat_style(Color(0.055, 0.2, 0.14, 1.0), Color(0.95, 0.72, 0.26, 1.0), 2, 8, 4))
+		button.add_theme_stylebox_override("pressed", _create_flat_style(Color(0.02, 0.075, 0.05, 1.0), Color(0.95, 0.72, 0.26, 1.0), 2, 8, 1))
+		button.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+		button.add_theme_stylebox_override("disabled", _create_flat_style(Color(0.02, 0.06, 0.045, 0.8), Color(0.35, 0.3, 0.2, 0.7), 1, 8, 0))
+	else:
+		button.flat = true
+		for state_name in [&"normal", &"hover", &"pressed", &"focus", &"disabled"]:
+			button.add_theme_stylebox_override(state_name, StyleBoxEmpty.new())
 	button.add_theme_color_override("icon_normal_color", Color.WHITE)
 	button.add_theme_color_override("icon_hover_color", Color(1.15, 1.15, 1.08))
 	button.add_theme_color_override("icon_pressed_color", Color(0.9, 0.82, 0.68))
@@ -12793,26 +13768,27 @@ func _on_bare_social_icon_hover(button: Button, hovered: bool) -> void:
 
 func _create_reaction_controls() -> void:
 	reaction_toggle_button = Button.new()
-	reaction_toggle_button.text = "☺"
-	reaction_toggle_button.tooltip_text = "Реакции за столом"
+	reaction_toggle_button.text = tr("Смайлы") if mobile_table_layout else "☺"
+	reaction_toggle_button.tooltip_text = tr("Реакции за столом")
 	reaction_toggle_button.visible = false
 	reaction_toggle_button.z_index = 30
 	reaction_toggle_button.mouse_filter = Control.MOUSE_FILTER_STOP
-	reaction_toggle_button.custom_minimum_size = Vector2(36.0, 34.0)
-	reaction_toggle_button.add_theme_font_size_override("font_size", 21)
+	reaction_toggle_button.custom_minimum_size = Vector2(112.0, 42.0) if mobile_table_layout else Vector2(36.0, 34.0)
+	reaction_toggle_button.add_theme_font_size_override("font_size", 15 if mobile_table_layout else 21)
 	_apply_bare_social_icon_button_style(reaction_toggle_button)
 	reaction_toggle_button.pressed.connect(_on_reaction_toggle_pressed)
 	social_controls_container.add_child(reaction_toggle_button)
 
 	reaction_picker = PanelContainer.new()
 	reaction_picker.visible = false
-	reaction_picker.z_index = 30
+	reaction_picker.z_as_relative = false
+	reaction_picker.z_index = 93
 	reaction_picker.mouse_filter = Control.MOUSE_FILTER_STOP
 	reaction_picker.add_theme_stylebox_override(
 		"panel",
 		_create_flat_style(Color(0.012, 0.075, 0.045, 0.96), Color(0.64, 0.47, 0.14, 0.96), 2, 10, 5)
 	)
-	_set_control_layout(reaction_picker, 0.5, 1.0, 0.5, 1.0, 168.0, -454.0, 492.0, -256.0)
+	_set_control_layout(reaction_picker, 0.5, 1.0, 0.5, 1.0, 360.0 if mobile_table_layout else 168.0, -454.0, 760.0 if mobile_table_layout else 492.0, -240.0 if mobile_table_layout else -256.0)
 
 	var reaction_grid := GridContainer.new()
 	reaction_grid.columns = 5
@@ -12849,7 +13825,8 @@ func _create_reaction_controls() -> void:
 		reaction_button.text = reaction if reaction_texture == null else ""
 		reaction_button.icon = reaction_texture
 		reaction_button.expand_icon = reaction_texture != null
-		reaction_button.tooltip_text = str(reaction_tooltips.get(reaction, "Отправить реакцию"))
+		reaction_button.set_meta("social_tooltip_key", str(reaction_tooltips.get(reaction, "Отправить реакцию")))
+		reaction_button.tooltip_text = tr(str(reaction_button.get_meta("social_tooltip_key")))
 		reaction_button.custom_minimum_size = Vector2(56.0, 42.0)
 		reaction_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		reaction_button.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -12976,19 +13953,48 @@ func _hide_reaction_bubble() -> void:
 
 
 func _can_show_reaction_controls() -> bool:
+	if is_instance_valid(first_turn_roll_panel) and first_turn_roll_panel.visible:
+		return false
 	if _is_steam_p2p_main_table_active():
 		var snapshot := _get_network_main_snapshot()
 		var round_data: Dictionary = snapshot.get("round", {})
 		return (
 			not snapshot.is_empty()
-			and int(round_data.get("state", Round.State.SETUP)) != Round.State.SETUP
+			and (mobile_table_layout or int(round_data.get("state", Round.State.SETUP)) != Round.State.SETUP)
+			and not is_score_sheet_visible
 			and (menu_overlay == null or not menu_overlay.visible)
 		)
 	return (
 		not is_bug_report_review_mode
-		and game.current_round.state != Round.State.SETUP
+		and (mobile_table_layout or game.current_round.state != Round.State.SETUP)
+		and not is_score_sheet_visible
 		and (menu_overlay == null or not menu_overlay.visible)
 	)
+
+
+func _refresh_social_overlay_visibility() -> void:
+	if not is_instance_valid(social_controls_container):
+		return
+	var overlay_blocks_social := (
+		is_score_sheet_visible
+			or (is_instance_valid(first_turn_roll_panel) and first_turn_roll_panel.visible)
+		or (is_instance_valid(menu_overlay) and menu_overlay.visible)
+	)
+	if overlay_blocks_social:
+		social_controls_container.visible = false
+		if is_instance_valid(reaction_picker):
+			reaction_picker.visible = false
+		if is_instance_valid(sticker_picker):
+			_close_sticker_picker()
+		if is_instance_valid(soundpad_picker):
+			soundpad_picker.visible = false
+		if is_instance_valid(chat_panel):
+			chat_panel.visible = false
+		return
+	call_deferred("_refresh_reaction_controls")
+	call_deferred("_refresh_sticker_controls")
+	call_deferred("_refresh_soundpad_controls")
+	call_deferred("_refresh_chat_controls")
 
 
 func _refresh_reaction_controls() -> void:
@@ -12996,6 +14002,8 @@ func _refresh_reaction_controls() -> void:
 		return
 
 	var can_show_controls := _can_show_reaction_controls()
+	if is_instance_valid(social_controls_container):
+		social_controls_container.visible = can_show_controls
 	reaction_toggle_button.visible = can_show_controls
 	if not can_show_controls:
 		reaction_picker.visible = false
@@ -13004,13 +14012,13 @@ func _refresh_reaction_controls() -> void:
 
 func _create_sticker_controls() -> void:
 	sticker_toggle_button = Button.new()
-	sticker_toggle_button.text = "🎁"
-	sticker_toggle_button.tooltip_text = "Стикеры игрокам"
+	sticker_toggle_button.text = tr("Подарок") if mobile_table_layout else "🎁"
+	sticker_toggle_button.tooltip_text = tr("Стикеры игрокам")
 	sticker_toggle_button.visible = false
 	sticker_toggle_button.z_index = 30
 	sticker_toggle_button.mouse_filter = Control.MOUSE_FILTER_STOP
-	sticker_toggle_button.custom_minimum_size = Vector2(64.0, 50.0)
-	sticker_toggle_button.add_theme_font_size_override("font_size", 16)
+	sticker_toggle_button.custom_minimum_size = Vector2(112.0, 42.0) if mobile_table_layout else Vector2(36.0, 34.0)
+	sticker_toggle_button.add_theme_font_size_override("font_size", 15 if mobile_table_layout else 16)
 	sticker_toggle_button.add_theme_stylebox_override(
 		"normal",
 		_create_flat_style(Color(0.08, 0.085, 0.15, 0.98), Color(0.65, 0.54, 0.92, 1.0), 2, 8, 3)
@@ -13020,7 +14028,8 @@ func _create_sticker_controls() -> void:
 
 	sticker_picker = PanelContainer.new()
 	sticker_picker.visible = false
-	sticker_picker.z_index = 31
+	sticker_picker.z_as_relative = false
+	sticker_picker.z_index = 93
 	sticker_picker.mouse_filter = Control.MOUSE_FILTER_STOP
 	sticker_picker.add_theme_stylebox_override(
 		"panel",
@@ -13028,7 +14037,7 @@ func _create_sticker_controls() -> void:
 	)
 	sticker_picker.gui_input.connect(_on_sticker_picker_gui_input)
 	sticker_picker.mouse_entered.connect(_restart_sticker_picker_auto_close)
-	_set_control_layout(sticker_picker, 0.5, 1.0, 0.5, 1.0, 168.0, -401.0, 510.0, -309.0)
+	_set_control_layout(sticker_picker, 0.5, 1.0, 0.5, 1.0, 400.0 if mobile_table_layout else 168.0, -412.0 if mobile_table_layout else -401.0, 760.0 if mobile_table_layout else 510.0, -300.0 if mobile_table_layout else -309.0)
 
 	sticker_picker_auto_close_timer = Timer.new()
 	sticker_picker_auto_close_timer.one_shot = true
@@ -13045,22 +14054,22 @@ func _create_sticker_controls() -> void:
 	sticker_layout.add_child(sticker_header)
 
 	var sticker_header_spacer := Control.new()
-	sticker_header_spacer.custom_minimum_size = Vector2(32.0, 26.0)
+	sticker_header_spacer.custom_minimum_size = Vector2(36.0, 32.0) if mobile_table_layout else Vector2(32.0, 26.0)
 	sticker_header.add_child(sticker_header_spacer)
 
 	sticker_picker_title = Label.new()
 	sticker_picker_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	sticker_picker_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	sticker_picker_title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	sticker_picker_title.add_theme_font_size_override("font_size", 15)
+	sticker_picker_title.add_theme_font_size_override("font_size", 19 if mobile_table_layout else 15)
 	sticker_picker_title.add_theme_color_override("font_color", Color(0.94, 0.91, 1.0, 1.0))
 	sticker_header.add_child(sticker_picker_title)
 
 	sticker_picker_close_button = Button.new()
 	sticker_picker_close_button.text = "×"
-	sticker_picker_close_button.tooltip_text = "Закрыть"
-	sticker_picker_close_button.custom_minimum_size = Vector2(32.0, 26.0)
-	sticker_picker_close_button.add_theme_font_size_override("font_size", 18)
+	sticker_picker_close_button.tooltip_text = tr("Закрыть")
+	sticker_picker_close_button.custom_minimum_size = Vector2(36.0, 32.0) if mobile_table_layout else Vector2(32.0, 26.0)
+	sticker_picker_close_button.add_theme_font_size_override("font_size", 21 if mobile_table_layout else 18)
 	sticker_picker_close_button.pressed.connect(_close_sticker_picker)
 	sticker_header.add_child(sticker_picker_close_button)
 
@@ -13161,8 +14170,8 @@ func _close_sticker_picker() -> void:
 
 func _build_sticker_target_picker() -> void:
 	_clear_children(sticker_picker_content)
-	sticker_picker_title.text = "Кому отправить стикер?"
-	_set_control_layout(sticker_picker, 0.5, 1.0, 0.5, 1.0, 168.0, -401.0, 510.0, -309.0)
+	sticker_picker_title.text = tr("Кому отправить подарок?")
+	_set_control_layout(sticker_picker, 0.5, 1.0, 0.5, 1.0, 400.0 if mobile_table_layout else 168.0, -412.0 if mobile_table_layout else -401.0, 760.0 if mobile_table_layout else 510.0, -300.0 if mobile_table_layout else -309.0)
 
 	var target_row := HBoxContainer.new()
 	target_row.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -13181,9 +14190,9 @@ func _build_sticker_target_picker() -> void:
 		if player_names_by_index.has(player_index):
 			target_name = str((player_names_by_index[player_index] as Dictionary).get("display_name", target_name))
 		var target_button := Button.new()
-		target_button.text = target_name.left(8)
-		target_button.custom_minimum_size = Vector2(80.0, 38.0)
-		target_button.add_theme_font_size_override("font_size", 14)
+		target_button.text = target_name.left(10)
+		target_button.custom_minimum_size = Vector2(104.0, 48.0) if mobile_table_layout else Vector2(80.0, 38.0)
+		target_button.add_theme_font_size_override("font_size", 18 if mobile_table_layout else 14)
 		target_button.pressed.connect(_on_sticker_target_selected.bind(player_index))
 		target_row.add_child(target_button)
 
@@ -13207,8 +14216,8 @@ func _build_sticker_choice_picker() -> void:
 		var players_by_index := _get_network_players_by_index(_get_network_main_snapshot())
 		if players_by_index.has(sticker_selected_target_index):
 			target_name = str((players_by_index[sticker_selected_target_index] as Dictionary).get("display_name", target_name))
-	sticker_picker_title.text = "Что отправить %s?" % target_name.left(12)
-	_set_control_layout(sticker_picker, 0.5, 1.0, 0.5, 1.0, 168.0, -430.0, 494.0, -280.0)
+	sticker_picker_title.text = tr("Что подарить %s?") % target_name.left(12)
+	_set_control_layout(sticker_picker, 0.5, 1.0, 0.5, 1.0, 360.0 if mobile_table_layout else 168.0, -438.0 if mobile_table_layout else -430.0, 760.0 if mobile_table_layout else 494.0, -286.0 if mobile_table_layout else -280.0)
 
 	var sticker_scroll := ScrollContainer.new()
 	sticker_scroll.custom_minimum_size = Vector2(0.0, 88.0)
@@ -13234,7 +14243,7 @@ func _build_sticker_choice_picker() -> void:
 		sticker_button.text = str(sticker.get("symbol", "")) if sticker_texture == null else ""
 		sticker_button.icon = sticker_texture
 		sticker_button.expand_icon = sticker_texture != null
-		sticker_button.tooltip_text = str(sticker.get("tooltip", "Отправить стикер"))
+		sticker_button.tooltip_text = str(sticker.get("tooltip", tr("Отправить стикер")))
 		sticker_button.custom_minimum_size = Vector2(58.0, 42.0)
 		sticker_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		sticker_button.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -13260,6 +14269,7 @@ func _get_builtin_stickers() -> Array[Dictionary]:
 		{"symbol": "💩", "tooltip": "Сюрприз"}
 	]
 	for sticker in stickers:
+		sticker["tooltip"] = tr(str(sticker.get("tooltip", "Отправить стикер")))
 		sticker["texture"] = _get_social_emoji_texture(str(sticker.get("symbol", "")))
 	return stickers
 
@@ -13297,7 +14307,7 @@ func _get_builtin_sticker_by_symbol(symbol: String) -> Dictionary:
 	for sticker in _get_builtin_stickers():
 		if str(sticker.get("symbol", "")) == symbol:
 			return sticker
-	return {"symbol": symbol, "tooltip": "Подарок"}
+	return {"symbol": symbol, "tooltip": tr("Подарок")}
 
 
 func _on_sticker_selected(sticker: Dictionary) -> void:
@@ -13398,8 +14408,8 @@ func _refresh_sticker_controls() -> void:
 		return
 
 	var can_show_controls := _can_show_reaction_controls()
-	# Подарок выбирается прямо с аватарки получателя.
-	sticker_toggle_button.visible = false
+	# На телефоне оставляем и быстрый общий вход, и подарок у аватара получателя.
+	sticker_toggle_button.visible = mobile_table_layout and can_show_controls
 	if not can_show_controls:
 		_close_sticker_picker()
 		_hide_all_sticker_flyers()
@@ -13409,26 +14419,29 @@ func _create_soundpad_controls() -> void:
 	soundpad_sounds = _load_soundpad_sounds()
 
 	soundpad_toggle_button = Button.new()
-	soundpad_toggle_button.text = "🔊"
-	soundpad_toggle_button.tooltip_text = "Саундпад"
+	soundpad_toggle_button.text = tr("Саундбар") if mobile_table_layout else ""
+	soundpad_toggle_button.icon = null if mobile_table_layout else load("res://Assets/UI/soundbar_speaker.svg")
+	soundpad_toggle_button.expand_icon = false
+	soundpad_toggle_button.tooltip_text = tr("Саундбар")
 	soundpad_toggle_button.visible = false
 	soundpad_toggle_button.z_index = 30
 	soundpad_toggle_button.mouse_filter = Control.MOUSE_FILTER_STOP
-	soundpad_toggle_button.custom_minimum_size = Vector2(36.0, 34.0)
-	soundpad_toggle_button.add_theme_font_size_override("font_size", 19)
+	soundpad_toggle_button.custom_minimum_size = Vector2(112.0, 42.0) if mobile_table_layout else Vector2(36.0, 34.0)
+	soundpad_toggle_button.add_theme_font_size_override("font_size", 15 if mobile_table_layout else 19)
 	_apply_bare_social_icon_button_style(soundpad_toggle_button)
 	soundpad_toggle_button.pressed.connect(_on_soundpad_toggle_pressed)
 	social_controls_container.add_child(soundpad_toggle_button)
 
 	soundpad_picker = PanelContainer.new()
 	soundpad_picker.visible = false
-	soundpad_picker.z_index = 31
+	soundpad_picker.z_as_relative = false
+	soundpad_picker.z_index = 93
 	soundpad_picker.mouse_filter = Control.MOUSE_FILTER_STOP
 	soundpad_picker.add_theme_stylebox_override(
 		"panel",
 		_create_flat_style(Color(0.09, 0.035, 0.09, 0.97), Color(0.89, 0.51, 0.82, 0.96), 2, 10, 5)
 	)
-	_set_control_layout(soundpad_picker, 0.5, 1.0, 0.5, 1.0, 168.0, -451.0, 486.0, -259.0)
+	_set_control_layout(soundpad_picker, 0.5, 1.0, 0.5, 1.0, 360.0 if mobile_table_layout else 168.0, -451.0, 760.0 if mobile_table_layout else 486.0, -240.0 if mobile_table_layout else -259.0)
 
 	var soundpad_layout := VBoxContainer.new()
 	soundpad_layout.add_theme_constant_override("separation", 6)
@@ -13440,7 +14453,7 @@ func _create_soundpad_controls() -> void:
 
 	soundpad_picker_back_button = Button.new()
 	soundpad_picker_back_button.text = "←"
-	soundpad_picker_back_button.tooltip_text = "Выбрать другой язык"
+	soundpad_picker_back_button.tooltip_text = tr("Выбрать другую категорию")
 	soundpad_picker_back_button.custom_minimum_size = Vector2(32.0, 26.0)
 	soundpad_picker_back_button.add_theme_font_size_override("font_size", 18)
 	soundpad_picker_back_button.visible = false
@@ -13448,9 +14461,10 @@ func _create_soundpad_controls() -> void:
 	soundpad_header.add_child(soundpad_picker_back_button)
 
 	soundpad_picker_title = Label.new()
-	soundpad_picker_title.text = "Саундпад"
+	soundpad_picker_title.text = tr("Саундбар")
 	soundpad_picker_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	soundpad_picker_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	soundpad_picker_title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	soundpad_picker_title.add_theme_font_size_override("font_size", 16)
 	soundpad_picker_title.add_theme_color_override("font_color", Color(1.0, 0.89, 0.97, 1.0))
 	soundpad_header.add_child(soundpad_picker_title)
@@ -13471,12 +14485,13 @@ func _create_soundpad_controls() -> void:
 	)
 	_set_control_layout(soundpad_bubble, 0.5, 1.0, 0.5, 1.0, -190.0, -430.0, -136.0, -376.0)
 
-	soundpad_bubble_label = Label.new()
-	soundpad_bubble_label.text = "🔊"
-	soundpad_bubble_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	soundpad_bubble_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	soundpad_bubble_label.add_theme_font_size_override("font_size", 26)
-	soundpad_bubble.add_child(soundpad_bubble_label)
+	soundpad_bubble_icon = TextureRect.new()
+	soundpad_bubble_icon.texture = load("res://Assets/UI/soundbar_speaker.svg")
+	soundpad_bubble_icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	soundpad_bubble_icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	soundpad_bubble_icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	soundpad_bubble_icon.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	soundpad_bubble.add_child(soundpad_bubble_icon)
 	players_container.add_child(soundpad_bubble)
 
 
@@ -13492,13 +14507,14 @@ func _on_soundpad_toggle_pressed() -> void:
 
 
 func _build_soundpad_category_picker() -> void:
+	soundpad_selected_category_id = ""
 	_clear_children(soundpad_picker_content)
 	soundpad_picker_back_button.visible = false
 
 	if soundpad_sounds.is_empty():
-		soundpad_picker_title.text = "Саундпад пока пуст"
+		soundpad_picker_title.text = tr("Саундбар пока пуст")
 		var empty_label := Label.new()
-		empty_label.text = "Добавь OGG, WAV или MP3 в папку языка внутри Assets/Soundboard и перезапусти игру."
+		empty_label.text = tr("Нет доступных звуков.")
 		empty_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		empty_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		empty_label.add_theme_font_size_override("font_size", 14)
@@ -13506,7 +14522,7 @@ func _build_soundpad_category_picker() -> void:
 		_resize_soundpad_picker(76.0)
 		return
 
-	soundpad_picker_title.text = "Саундпад · выбери язык"
+	soundpad_picker_title.text = tr("Саундбар · выбери категорию")
 	var soundpad_grid := GridContainer.new()
 	soundpad_grid.columns = 2
 	soundpad_grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -13517,8 +14533,9 @@ func _build_soundpad_category_picker() -> void:
 	for category in categories:
 		var category_id := str(category.get("id", "root"))
 		var category_button := Button.new()
-		category_button.text = str(category.get("label", "Общее"))
-		category_button.tooltip_text = "%d звуков" % int(category.get("count", 0))
+		category_button.text = str(category.get("label", tr("Общее")))
+		category_button.tooltip_text = tr("%d звуков") % int(category.get("count", 0))
+		category_button.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		category_button.custom_minimum_size = Vector2(148.0, 40.0)
 		category_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		category_button.add_theme_font_size_override("font_size", 14)
@@ -13538,7 +14555,7 @@ func _on_soundpad_category_selected(category_id: String) -> void:
 func _build_soundpad_sound_picker() -> void:
 	_clear_children(soundpad_picker_content)
 	soundpad_picker_back_button.visible = true
-	soundpad_picker_title.text = "Саундпад · %s" % _get_soundpad_category_label(soundpad_selected_category_id)
+	soundpad_picker_title.text = tr("Саундбар · %s") % _get_soundpad_category_label(soundpad_selected_category_id)
 
 	var soundpad_scroll := ScrollContainer.new()
 	soundpad_scroll.custom_minimum_size = Vector2(0.0, 134.0)
@@ -13557,8 +14574,10 @@ func _build_soundpad_sound_picker() -> void:
 			continue
 
 		var sound_button := Button.new()
-		var sound_title := str(sound_data.get("title", "Звук"))
-		sound_button.text = "🔊 %s" % _shorten_soundpad_title(sound_title)
+		var sound_title := _get_soundpad_display_title(sound_data)
+		sound_button.text = _shorten_soundpad_title(sound_title)
+		sound_button.icon = load("res://Assets/UI/soundbar_speaker.svg")
+		sound_button.expand_icon = false
 		sound_button.tooltip_text = sound_title
 		sound_button.custom_minimum_size = Vector2(148.0, 40.0)
 		sound_button.add_theme_font_size_override("font_size", 14)
@@ -13572,15 +14591,16 @@ func _resize_soundpad_picker(content_height: float) -> void:
 	var picker_width := 318.0
 	var picker_height := 32.0 + content_height
 	var picker_center_y := -355.0
+	var picker_left := 360.0 if mobile_table_layout else 168.0
 	_set_control_layout(
 		soundpad_picker,
 		0.5,
 		1.0,
 		0.5,
 		1.0,
-		168.0,
+		picker_left,
 		picker_center_y - picker_height * 0.5,
-		168.0 + picker_width,
+		picker_left + (400.0 if mobile_table_layout else picker_width),
 		picker_center_y + picker_height * 0.5
 	)
 
@@ -13768,8 +14788,14 @@ func _get_soundpad_categories() -> Array[Dictionary]:
 
 func _get_soundpad_category_label(category_id: String) -> String:
 	match category_id:
+		"bright female":
+			return tr("Bright Female")
+		"mature female":
+			return tr("Mature Female")
+		"custom":
+			return tr("Custom")
 		"root":
-			return "Общее"
+			return tr("Общее")
 		"ua":
 			return "Українська"
 		"pl":
@@ -13783,7 +14809,7 @@ func _get_soundpad_category_label(category_id: String) -> String:
 		"by":
 			return "Беларуская"
 		"other":
-			return "Другие"
+			return tr("Другие")
 
 	return category_id.replace("_", " ").capitalize()
 
@@ -13808,6 +14834,41 @@ func _get_soundpad_category_order(category_id: String) -> int:
 			return 7
 
 	return 8
+
+
+func _get_soundpad_display_title(sound_data: Dictionary) -> String:
+	# Localize known bundled effects only; paths and custom recording titles
+	# remain unchanged because the network uses the original path as the ID.
+	match str(sound_data.get("path", "")):
+		"res://Assets/PublicSoundboard/solo-clap.wav":
+			return tr("SOUND_CLAP")
+		"res://Assets/PublicSoundboard/wolf-whistle.wav":
+			return tr("SOUND_WHISTLE")
+	return str(sound_data.get("title", tr("Звук")))
+
+
+func _relocalize_social_controls() -> void:
+	if is_instance_valid(reaction_picker):
+		for button in reaction_picker.get_child(0).get_children():
+			if button is Button and button.has_meta("social_tooltip_key"):
+				button.tooltip_text = tr(str(button.get_meta("social_tooltip_key")))
+	for button in avatar_gift_buttons:
+		button.tooltip_text = tr("PLAYER_SEND_GIFT")
+	if is_instance_valid(sticker_picker_close_button):
+		sticker_picker_close_button.tooltip_text = tr("Закрыть")
+	if is_instance_valid(sticker_picker) and sticker_picker.visible:
+		if sticker_selected_target_index >= 0:
+			_build_sticker_choice_picker()
+		else:
+			_build_sticker_target_picker()
+	if is_instance_valid(soundpad_picker_back_button):
+		soundpad_picker_back_button.tooltip_text = tr("Выбрать другую категорию")
+	if is_instance_valid(soundpad_picker) and soundpad_picker.visible:
+		if soundpad_selected_category_id.is_empty():
+			_build_soundpad_category_picker()
+		else:
+			_build_soundpad_sound_picker()
+	_refresh_social_action_buttons()
 
 
 func _shorten_soundpad_title(title: String) -> String:
@@ -13867,7 +14928,7 @@ func _refresh_soundpad_controls() -> void:
 	if not is_instance_valid(soundpad_toggle_button) or not is_instance_valid(soundpad_picker):
 		return
 
-	var can_show_controls := _can_show_reaction_controls() and not soundpad_sounds.is_empty()
+	var can_show_controls := _can_show_reaction_controls()
 	soundpad_toggle_button.visible = can_show_controls
 	if not can_show_controls:
 		soundpad_picker.visible = false
@@ -13911,10 +14972,10 @@ func _get_social_action_status_text(action_name: String, action: SocialAction) -
 	var cooldown_remaining := _get_social_action_cooldown_remaining(action)
 	if cooldown_remaining > 0.0:
 		var total_seconds := ceili(cooldown_remaining)
-		return "%s: перезарядка %d:%02d" % [action_name, total_seconds / 60, total_seconds % 60]
+		return tr("%s: перезарядка %d:%02d") % [tr(action_name), total_seconds / 60, total_seconds % 60]
 
-	return "%s: осталось %d из %d" % [
-		action_name,
+	return tr("%s: осталось %d из %d") % [
+		tr(action_name),
 		_get_social_action_uses_remaining(action),
 		SOCIAL_ACTION_USE_LIMIT
 	]
@@ -13924,7 +14985,7 @@ func _refresh_social_action_buttons() -> void:
 	if is_instance_valid(reaction_toggle_button):
 		var reaction_ready := _is_social_action_ready(SocialAction.REACTION)
 		reaction_toggle_button.disabled = not reaction_ready
-		reaction_toggle_button.text = "☺"
+		reaction_toggle_button.text = tr("Смайлы") if mobile_table_layout else "☺"
 		reaction_toggle_button.modulate = Color.WHITE if reaction_ready else Color(1.0, 1.0, 1.0, 0.34)
 		reaction_toggle_button.tooltip_text = _get_social_action_status_text("Эмоции", SocialAction.REACTION)
 		if not reaction_ready and is_instance_valid(reaction_picker):
@@ -13933,7 +14994,7 @@ func _refresh_social_action_buttons() -> void:
 	if is_instance_valid(sticker_toggle_button):
 		var sticker_ready := _is_social_action_ready(SocialAction.STICKER)
 		sticker_toggle_button.disabled = not sticker_ready
-		sticker_toggle_button.text = "🎁"
+		sticker_toggle_button.text = tr("Подарок") if mobile_table_layout else "🎁"
 		sticker_toggle_button.modulate = Color.WHITE if sticker_ready else Color(1.0, 1.0, 1.0, 0.34)
 		sticker_toggle_button.tooltip_text = _get_social_action_status_text("Стикеры", SocialAction.STICKER)
 		if not sticker_ready and is_instance_valid(sticker_picker):
@@ -13942,12 +15003,13 @@ func _refresh_social_action_buttons() -> void:
 	if is_instance_valid(soundpad_toggle_button):
 		var soundpad_ready := _is_social_action_ready(SocialAction.SOUNDPAD)
 		soundpad_toggle_button.disabled = not soundpad_ready
-		soundpad_toggle_button.text = "🔊"
+		soundpad_toggle_button.text = tr("Саундбар") if mobile_table_layout else ""
+		soundpad_toggle_button.icon = null if mobile_table_layout else load("res://Assets/UI/soundbar_speaker.svg")
 		soundpad_toggle_button.modulate = Color.WHITE if soundpad_ready else Color(1.0, 1.0, 1.0, 0.34)
 		soundpad_toggle_button.tooltip_text = (
-			"Саундпад: добавь звуки в Assets/Soundboard"
+			tr("Саундбар пока пуст")
 			if soundpad_sounds.is_empty()
-			else _get_social_action_status_text("Саундпад", SocialAction.SOUNDPAD)
+			else _get_social_action_status_text(tr("Саундбар"), SocialAction.SOUNDPAD)
 		)
 		if not soundpad_ready and is_instance_valid(soundpad_picker):
 			soundpad_picker.visible = false
@@ -13983,6 +15045,28 @@ func _refresh_table_markers() -> void:
 
 
 func _place_table_marker(marker: PanelContainer, player_index: int, is_dealer: bool) -> void:
+	if mobile_table_layout:
+		if is_dealer:
+			match player_index:
+				HUMAN_PLAYER_INDEX:
+					_set_control_layout(marker, 0.5, 1.0, 0.5, 1.0, -252.0, -368.0, -210.0, -326.0)
+				1:
+					_set_control_layout(marker, 0.0, 0.0, 0.0, 0.0, 510.0, 292.0, 552.0, 334.0)
+				2:
+					_set_control_layout(marker, 0.5, 0.0, 0.5, 0.0, 214.0, 94.0, 256.0, 136.0)
+				3:
+					_set_control_layout(marker, 1.0, 0.0, 1.0, 0.0, -552.0, 292.0, -510.0, 334.0)
+		else:
+			match player_index:
+				HUMAN_PLAYER_INDEX:
+					_set_control_layout(marker, 0.5, 1.0, 0.5, 1.0, -300.0, -330.0, -218.0, -298.0)
+				1:
+					_set_control_layout(marker, 0.0, 0.0, 0.0, 0.0, 125.0, 502.0, 207.0, 534.0)
+				2:
+					_set_control_layout(marker, 0.5, 0.0, 0.5, 0.0, -177.0, 230.0, -95.0, 262.0)
+				3:
+					_set_control_layout(marker, 1.0, 0.0, 1.0, 0.0, -207.0, 502.0, -125.0, 534.0)
+		return
 	if is_dealer:
 		match player_index:
 			HUMAN_PLAYER_INDEX:
@@ -14007,6 +15091,17 @@ func _place_table_marker(marker: PanelContainer, player_index: int, is_dealer: b
 
 
 func _place_player_panel(panel: PanelContainer, player_index: int) -> void:
+	if mobile_table_layout:
+		match player_index:
+			HUMAN_PLAYER_INDEX:
+				_set_control_layout(panel, 0.5, 1.0, 0.5, 1.0, -62.0, -379.0, 228.0, -249.0)
+			1:
+				_set_control_layout(panel, 0.0, 0.0, 0.0, 0.0, 242.0, 361.0, 532.0, 491.0)
+			2:
+				_set_control_layout(panel, 0.5, 0.0, 0.5, 0.0, -62.0, 89.0, 228.0, 219.0)
+			3:
+				_set_control_layout(panel, 1.0, 0.0, 1.0, 0.0, -532.0, 361.0, -242.0, 491.0)
+		return
 	match player_index:
 		HUMAN_PLAYER_INDEX:
 			_set_control_layout(panel, 0.5, 1.0, 0.5, 1.0, -107.0, -397.0, 105.0, -307.0)
@@ -14019,6 +15114,17 @@ func _place_player_panel(panel: PanelContainer, player_index: int) -> void:
 
 
 func _place_trick_slot(panel: Control, player_index: int) -> void:
+	if mobile_table_layout:
+		match player_index:
+			HUMAN_PLAYER_INDEX:
+				_set_control_layout(panel, 0.5, 0.0, 0.5, 0.0, -20.0, 432.0, 92.0, 586.0)
+			1:
+				_set_control_layout(panel, 0.5, 0.0, 0.5, 0.0, -300.0, 326.0, -188.0, 480.0)
+			2:
+				_set_control_layout(panel, 0.5, 0.0, 0.5, 0.0, -92.0, 246.0, 20.0, 400.0)
+			3:
+				_set_control_layout(panel, 0.5, 0.0, 0.5, 0.0, 188.0, 326.0, 300.0, 480.0)
+		return
 	match player_index:
 		HUMAN_PLAYER_INDEX:
 			_set_control_layout(panel, 0.5, 0.0, 0.5, 0.0, -54.0, 430.0, 54.0, 562.0)
@@ -14054,8 +15160,16 @@ func _set_control_layout(
 func _add_joker_suit_button(label: String, suit: int) -> void:
 	var suit_button := Button.new()
 	suit_button.text = label
-	suit_button.custom_minimum_size = Vector2(0.0, 44.0)
+	suit_button.custom_minimum_size = Vector2(0.0, 58.0 if mobile_table_layout else 44.0)
+	suit_button.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	suit_button.add_theme_font_size_override("font_size", 16 if mobile_table_layout else 14)
 	suit_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	if mobile_table_layout and suit >= 0:
+		var suit_icon_path := _get_suit_icon_path(_get_suit_symbol(suit))
+		if not suit_icon_path.is_empty():
+			suit_button.icon = load(suit_icon_path)
+			suit_button.expand_icon = true
+			suit_button.add_theme_constant_override("icon_max_width", 28)
 	_apply_table_action_button_style(suit_button)
 	suit_button.disabled = is_bug_report_review_mode
 	suit_button.mouse_filter = Control.MOUSE_FILTER_IGNORE if is_bug_report_review_mode else Control.MOUSE_FILTER_STOP
@@ -14081,7 +15195,7 @@ func _on_joker_suit_reset() -> void:
 func _add_joker_cancel_button() -> void:
 	var cancel_button := Button.new()
 	cancel_button.text = "← %s" % tr("JOKER_CANCEL")
-	cancel_button.custom_minimum_size = Vector2(0.0, 44.0)
+	cancel_button.custom_minimum_size = Vector2(0.0, 52.0 if mobile_table_layout else 44.0)
 	cancel_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_apply_table_action_button_style(cancel_button)
 	cancel_button.disabled = is_bug_report_review_mode
@@ -14108,7 +15222,9 @@ func _add_joker_choice_button(
 ) -> void:
 	var choice_button := Button.new()
 	choice_button.text = label
-	choice_button.custom_minimum_size = Vector2(0.0, 44.0)
+	choice_button.custom_minimum_size = Vector2(0.0, 58.0 if mobile_table_layout else 44.0)
+	choice_button.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	choice_button.add_theme_font_size_override("font_size", 16 if mobile_table_layout else 14)
 	choice_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_apply_table_action_button_style(choice_button)
 	choice_button.disabled = is_bug_report_review_mode
@@ -14143,6 +15259,8 @@ func _process(delta: float) -> void:
 	steam_bridge.process_callbacks()
 	_update_menu_panel_fit_if_needed()
 	_refresh_social_action_buttons()
+	if _is_local_menu_blocking_play():
+		return
 	_process_turn_reminder(delta)
 	_process_network_round_countdown(delta)
 
@@ -14391,6 +15509,9 @@ func _play_automatic_human_card(
 
 
 func _try_auto_play_last_human_card(continue_automatic_actions := true) -> bool:
+	# Do not take the last card away while the player is selecting/dragging it.
+	if is_instance_valid(mobile_hand_input) and (mobile_hand_input.active_pointer != -1 or not mobile_hand_input.selected_key.is_empty()):
+		return false
 	if (
 		not _is_last_human_card_auto_play_pending()
 		or turn_reminder_elapsed_seconds < LAST_CARD_AUTO_PLAY_DELAY_SECONDS
@@ -14894,8 +16015,8 @@ func _get_unseen_regular_ranks_for_suit(player: Player, suit: int) -> Array[int]
 
 	var unseen_ranks: Array[int] = []
 	for rank in Card.Rank.values():
-		# Семёрка крестей в этой колоде является Джокером, а не обычной картой.
-		if suit == Card.Suit.CLUBS and rank == Card.Rank.SEVEN:
+		# Семёрка пик в этой колоде является Джокером, а не обычной картой.
+		if suit == Card.Suit.SPADES and rank == Card.Rank.SEVEN:
 			continue
 		if not known_ranks.has(rank):
 			unseen_ranks.append(rank)
@@ -15107,6 +16228,30 @@ func _get_joker_declaration_text(
 	return "Условие: %s — обычный розыгрыш" % suit_symbol
 
 
+func _get_localized_suit_name(suit: int) -> String:
+	match suit:
+		Card.Suit.CLUBS:
+			return tr("SUIT_CLUBS")
+		Card.Suit.SPADES:
+			return tr("SUIT_SPADES")
+		Card.Suit.HEARTS:
+			return tr("SUIT_HEARTS")
+		Card.Suit.DIAMONDS:
+			return tr("SUIT_DIAMONDS")
+	return "?"
+
+
+func _get_suit_icon_path(symbol: String) -> String:
+	match symbol:
+		"♣":
+			return "res://Assets/UI/suit_clubs.svg"
+		"♠":
+			return "res://Assets/UI/suit_spades.svg"
+		"♥":
+			return "res://Assets/UI/suit_hearts.svg"
+		"♦":
+			return "res://Assets/UI/suit_diamonds.svg"
+	return ""
 func _get_suit_symbol(suit: int) -> String:
 	match suit:
 		Card.Suit.CLUBS:
@@ -15156,23 +16301,18 @@ func _get_localized_card_name(card: Card) -> String:
 
 
 func _format_suit_symbols_for_dark_ui(plain_text: String) -> String:
-	var safe_text := plain_text.replace("[", "[lb]")
-	safe_text = safe_text.replace("♥", "[color=#ff5148][b]♥[/b][/color]")
-	safe_text = safe_text.replace("♦", "[color=#ff5148][b]♦[/b][/color]")
-	# На тёмном сукне чёрный центр сохраняем читаемым светлой окантовкой.
-	safe_text = safe_text.replace("♣", "[outline_size=2][outline_color=#e9e3cf][color=#101512][b]♣[/b][/color][/outline_color][/outline_size]")
-	safe_text = safe_text.replace("♠", "[outline_size=2][outline_color=#e9e3cf][color=#101512][b]♠[/b][/color][/outline_color][/outline_size]")
-	return safe_text
+	return _replace_suit_symbols_with_icons(plain_text)
 
 
 func _format_suit_symbols_for_light_ui(plain_text: String) -> String:
-	var safe_text := plain_text.replace("[", "[lb]")
-	safe_text = safe_text.replace("♥", "[color=#c91f2a][b]♥[/b][/color]")
-	safe_text = safe_text.replace("♦", "[color=#c91f2a][b]♦[/b][/color]")
-	safe_text = safe_text.replace("♣", "[color=#111411][b]♣[/b][/color]")
-	safe_text = safe_text.replace("♠", "[color=#111411][b]♠[/b][/color]")
-	return safe_text
+	return _replace_suit_symbols_with_icons(plain_text)
 
+
+func _replace_suit_symbols_with_icons(plain_text: String) -> String:
+	var safe_text := plain_text.replace("[", "[lb]")
+	for symbol in ["♣", "♠", "♥", "♦"]:
+		safe_text = safe_text.replace(symbol, "[img=22x22]%s[/img]" % _get_suit_icon_path(symbol))
+	return safe_text
 
 func _get_round_type_display_name(round_type: int) -> String:
 	match round_type:
@@ -15415,8 +16555,8 @@ func _localize_canonical_history_line(line: String) -> String:
 func _run_joker_rule_checks() -> void:
 	var player := Player.new(0, "Проверка")
 	var leader := Player.new(1, "Заход")
-	var joker := _create_card(Card.Suit.CLUBS, Card.Rank.SEVEN, true)
-	var discard_card := _create_card(Card.Suit.SPADES, Card.Rank.SIX)
+	var joker := _create_card(Card.Suit.SPADES, Card.Rank.SEVEN, true)
+	var discard_card := _create_card(Card.Suit.CLUBS, Card.Rank.SIX)
 	var lead_card := _create_card(Card.Suit.DIAMONDS, Card.Rank.TEN)
 
 	player.receive_card(joker)
@@ -15429,15 +16569,15 @@ func _run_joker_rule_checks() -> void:
 	assert(trick.can_play_card(player, discard_card), "Джокер не должен запрещать обычный сброс.")
 	assert(trick.can_play_card(player, joker), "Джокер должен оставаться допустимым специальным ходом.")
 
-	var club_leader := Player.new(1, "Заход в кресту")
-	var club_lead_card := _create_card(Card.Suit.CLUBS, Card.Rank.TEN)
-	club_leader.receive_card(club_lead_card)
+	var joker_suit_leader := Player.new(1, "Заход в пику")
+	var joker_suit_lead_card := _create_card(Card.Suit.SPADES, Card.Rank.TEN)
+	joker_suit_leader.receive_card(joker_suit_lead_card)
 
-	var club_trick := Trick.new()
-	club_trick.setup(1, 2, Round.TrumpSuit.HEARTS)
-	assert(club_trick.play_card(club_leader, club_lead_card), "Проверка: заход в кресту должен быть сыгран.")
-	assert(club_trick.can_play_card(player, discard_card), "Джокер 7♣ не должен считаться крестовой картой.")
-	assert(club_trick.can_play_card(player, joker), "Джокер должен оставаться добровольным ходом.")
+	var joker_suit_trick := Trick.new()
+	joker_suit_trick.setup(1, 2, Round.TrumpSuit.HEARTS)
+	assert(joker_suit_trick.play_card(joker_suit_leader, joker_suit_lead_card), "Проверка: заход в пику должен быть сыгран.")
+	assert(joker_suit_trick.can_play_card(player, discard_card), "Джокер 7♠ не должен считаться обычной пиковой картой.")
+	assert(joker_suit_trick.can_play_card(player, joker), "Джокер должен оставаться добровольным ходом.")
 
 	var actual_club_card := _create_card(Card.Suit.CLUBS, Card.Rank.EIGHT)
 	player.receive_card(actual_club_card)
@@ -15464,7 +16604,7 @@ func _run_joker_rule_checks() -> void:
 	var response_joker_player := Player.new(1, "Сброс Джокера")
 	var response_last_player := Player.new(2, "Старшая карта")
 	var response_lead_card := _create_card(Card.Suit.DIAMONDS, Card.Rank.TEN)
-	var response_joker := _create_card(Card.Suit.CLUBS, Card.Rank.SEVEN, true)
+	var response_joker := _create_card(Card.Suit.SPADES, Card.Rank.SEVEN, true)
 	var response_winning_card := _create_card(Card.Suit.DIAMONDS, Card.Rank.JACK)
 	response_leader.receive_card(response_lead_card)
 	response_joker_player.receive_card(response_joker)
@@ -15478,7 +16618,7 @@ func _run_joker_rule_checks() -> void:
 	assert(response_trick.get_winner_index() == 2, "Сброшенный Джокер не должен менять обычного победителя взятки.")
 
 	var trump_response_player := Player.new(0, "Ответ козырем")
-	var trump_joker := _create_card(Card.Suit.CLUBS, Card.Rank.SEVEN, true)
+	var trump_joker := _create_card(Card.Suit.SPADES, Card.Rank.SEVEN, true)
 	var actual_trump_card := _create_card(Card.Suit.CLUBS, Card.Rank.EIGHT)
 	var trump_leader := Player.new(1, "Заход козырем")
 	var trump_lead_card := _create_card(Card.Suit.CLUBS, Card.Rank.KING)
@@ -15494,7 +16634,7 @@ func _run_joker_rule_checks() -> void:
 
 	var joker_leader := Player.new(0, "Джокер-заход")
 	var forced_player := Player.new(1, "Старшая бубна")
-	var leading_joker := _create_card(Card.Suit.CLUBS, Card.Rank.SEVEN, true)
+	var leading_joker := _create_card(Card.Suit.SPADES, Card.Rank.SEVEN, true)
 	var diamond_queen := _create_card(Card.Suit.DIAMONDS, Card.Rank.QUEEN)
 	var diamond_ace := _create_card(Card.Suit.DIAMONDS, Card.Rank.ACE)
 	joker_leader.receive_card(leading_joker)
@@ -15521,7 +16661,7 @@ func _run_joker_rule_checks() -> void:
 	var heart_ace := _create_card(Card.Suit.HEARTS, Card.Rank.ACE)
 	free_trump_player.receive_card(heart_six)
 	free_trump_player.receive_card(heart_ace)
-	var free_trump_joker := _create_card(Card.Suit.CLUBS, Card.Rank.SEVEN, true)
+	var free_trump_joker := _create_card(Card.Suit.SPADES, Card.Rank.SEVEN, true)
 	var free_trump_leader := Player.new(0, "Джокер-заход")
 	free_trump_leader.receive_card(free_trump_joker)
 
@@ -15542,7 +16682,7 @@ func _run_joker_rule_checks() -> void:
 
 	var alternative_player := Player.new(1, "Козырь или Джокер")
 	var alternative_trump := _create_card(Card.Suit.HEARTS, Card.Rank.TEN)
-	var alternative_joker := _create_card(Card.Suit.CLUBS, Card.Rank.SEVEN, true)
+	var alternative_joker := _create_card(Card.Suit.SPADES, Card.Rank.SEVEN, true)
 	var alternative_leader := Player.new(0, "Заход в пику")
 	var alternative_lead := _create_card(Card.Suit.SPADES, Card.Rank.NINE)
 	alternative_player.receive_card(alternative_trump)
@@ -15555,7 +16695,7 @@ func _run_joker_rule_checks() -> void:
 	assert(alternative_trick.can_play_card(alternative_player, alternative_joker), "При отсутствии масти Джокер должен оставаться альтернативой козырю.")
 
 	var fallback_leader := Player.new(0, "Джокер-заход")
-	var fallback_joker := _create_card(Card.Suit.CLUBS, Card.Rank.SEVEN, true)
+	var fallback_joker := _create_card(Card.Suit.SPADES, Card.Rank.SEVEN, true)
 	var fallback_first := Player.new(1, "Сброс 1")
 	var fallback_second := Player.new(2, "Сброс 2")
 	var fallback_third := Player.new(3, "Сброс 3")
@@ -15573,7 +16713,7 @@ func _run_joker_rule_checks() -> void:
 	assert(fallback_trick.get_winner_index() == 0, "Если нет заказанной масти и козыря, Джокер должен забрать взятку.")
 
 	var spade_leader := Player.new(0, "Джокер-заход")
-	var spade_joker := _create_card(Card.Suit.CLUBS, Card.Rank.SEVEN, true)
+	var spade_joker := _create_card(Card.Suit.SPADES, Card.Rank.SEVEN, true)
 	var spade_player := Player.new(1, "Шестёрка пик")
 	var spade_discard_one := Player.new(2, "Сброс 1")
 	var spade_discard_two := Player.new(3, "Сброс 2")
@@ -16050,7 +17190,7 @@ func _run_network_joker_command_check() -> void:
 	var leader_index := test_game.current_round.current_player_index
 	for player in test_game.players:
 		player.hand.clear()
-	test_game.players[leader_index].receive_card(_create_card(Card.Suit.CLUBS, Card.Rank.SEVEN, true))
+	test_game.players[leader_index].receive_card(_create_card(Card.Suit.SPADES, Card.Rank.SEVEN, true))
 	test_game.players[(leader_index + 1) % 4].receive_card(_create_card(Card.Suit.HEARTS, Card.Rank.SIX))
 	test_game.players[(leader_index + 2) % 4].receive_card(_create_card(Card.Suit.DIAMONDS, Card.Rank.SIX))
 	test_game.players[(leader_index + 3) % 4].receive_card(_create_card(Card.Suit.SPADES, Card.Rank.SIX))
@@ -16133,7 +17273,7 @@ func _run_network_no_trump_check() -> void:
 	for player in test_game.players:
 		player.hand.clear()
 	test_game.players[leader_index].receive_card(_create_card(Card.Suit.CLUBS, Card.Rank.SIX))
-	test_game.players[joker_player_index].receive_card(_create_card(Card.Suit.CLUBS, Card.Rank.SEVEN, true))
+	test_game.players[joker_player_index].receive_card(_create_card(Card.Suit.SPADES, Card.Rank.SEVEN, true))
 	test_game.players[joker_player_index].receive_card(_create_card(Card.Suit.CLUBS, Card.Rank.ACE))
 	test_game.players[(leader_index + 2) % 4].receive_card(_create_card(Card.Suit.HEARTS, Card.Rank.SIX))
 	test_game.players[(leader_index + 3) % 4].receive_card(_create_card(Card.Suit.DIAMONDS, Card.Rank.SIX))
