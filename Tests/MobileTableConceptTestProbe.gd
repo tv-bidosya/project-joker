@@ -42,7 +42,13 @@ func _run() -> void:
 		var dealer_rect: Rect2 = scene.dealer_marker.get_global_rect()
 		var avatar_rect: Rect2 = scene.avatar_badges[slot].get_global_rect()
 		assert(is_equal_approx(avatar_rect.position.x - lead_rect.end.x, 12.0), "Lead marker must sit just left of the avatar")
-		assert(is_equal_approx(lead_rect.position.x - dealer_rect.end.x, 12.0), "Dealer marker must sit further left without overlapping the lead marker")
+		if slot == 0:
+			assert(is_equal_approx(avatar_rect.position.x - dealer_rect.end.x, 12.0), "Local dealer marker must take the old lead position beside the avatar")
+			assert(lead_rect.position.y >= dealer_rect.end.y + 32.0, "Local lead marker must move below the dealer marker")
+			assert(lead_rect.end.y <= scene.hand_container.get_global_rect().position.y - 12.0, "Local lead marker must clear the hand")
+			assert(not lead_rect.intersects(avatar_rect) and not lead_rect.intersects(scene.player_panels[0].get_global_rect()))
+		else:
+			assert(is_equal_approx(lead_rect.position.x - dealer_rect.end.x, 12.0), "Dealer marker must sit further left without overlapping the lead marker")
 	var deck_rect: Rect2 = scene.deck_visual.get_global_rect()
 	print("DECK ", deck_rect, " scale=", scene.deck_visual.scale)
 	assert(scene.deck_visual.scale.is_equal_approx(Vector2(1.25, 1.25)))

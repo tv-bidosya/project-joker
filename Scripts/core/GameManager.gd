@@ -16164,7 +16164,7 @@ func _place_table_marker(marker: PanelContainer, player_index: int, is_dealer: b
 		var middle := viewport_size.x * 0.5
 		if is_dealer:
 			var dealer_boxes := [
-				Rect2(middle - 464, viewport_size.y - 478, 64, 64),
+				Rect2(middle - 288, viewport_size.y - 478, 64, 64),
 				Rect2(PhoneTable.SAFE_LEFT + 330, 544, 64, 64),
 				Rect2(middle - 464, 112, 64, 64),
 				Rect2(viewport_size.x - 404, 544, 64, 64)
@@ -16174,7 +16174,7 @@ func _place_table_marker(marker: PanelContainer, player_index: int, is_dealer: b
 			dealer_label.add_theme_font_size_override("font_size", 28)
 		else:
 			var lead_boxes := [
-				Rect2(middle - 388, viewport_size.y - 478, 164, 64),
+				Rect2(middle - 388, viewport_size.y - 376, 164, 64),
 				Rect2(PhoneTable.SAFE_LEFT + 154, 544, 164, 64),
 				Rect2(middle - 388, 112, 164, 64),
 				Rect2(viewport_size.x - 328, 544, 164, 64)
