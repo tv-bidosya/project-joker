@@ -155,6 +155,23 @@ func get_lobby_seats() -> Array[Dictionary]:
 	return lobby_seats.duplicate(true)
 
 
+func is_match_paused_for_reconnect() -> bool:
+	return not get_reconnecting_player_indices().is_empty()
+
+
+func get_reconnecting_player_indices() -> Array[int]:
+	var result: Array[int] = []
+	for player_index_variant in client_snapshot.get("reconnecting_player_indices", []):
+		result.append(int(player_index_variant))
+	return result
+
+
+func get_temporary_bot_player_indices() -> Array[int]:
+	var result: Array[int] = []
+	for player_index_variant in client_snapshot.get("temporary_bot_player_indices", []):
+		result.append(int(player_index_variant))
+	return result
+
 func get_client_private_hand_text() -> String:
 	if not client_snapshot_is_safe:
 		return ""
@@ -459,7 +476,8 @@ func _handle_command_result(message: Dictionary) -> void:
 	else:
 		client_command_in_flight = false
 		client_expected_revision = -1
-		client_last_command_message = tr("Сервер отклонил действие: %s.") % str(message.get("reason", "unknown"))
+		var reason := str(message.get("reason", "unknown"))
+		client_last_command_message = tr("Игра ждёт переподключения игрока.") if reason == "player_reconnecting" else tr("Сервер отклонил действие: %s.") % reason
 	_set_status(_get_lobby_status())
 
 

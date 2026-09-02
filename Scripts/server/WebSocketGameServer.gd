@@ -14,6 +14,7 @@ const MAX_ROOMS := 100
 const TOTAL_ROUND_COUNT := 32
 const NEXT_ROUND_DELAY_MSEC := 8000
 const BOT_ACTION_DELAY_MSEC := 650
+const RECONNECT_GRACE_MSEC := 5000
 const MATCH_MODE_CLASSIC := "classic"
 const MATCH_MODE_TEAMS_2V2 := "teams_2v2"
 const BOT_NAMES := ["Rhysand", "Azriel", "Cassian"]
@@ -191,6 +192,8 @@ func _handle_create_lobby(sender_peer_id: int, message: Dictionary) -> void:
 		"fill_empty_seats_with_bots": bool(message.get("fill_empty_seats_with_bots", false)),
 		"bot_difficulty": clampi(int(message.get("bot_difficulty", 1)), 0, 2),
 		"bot_players": {},
+		"temporary_bot_players": {},
+		"reconnecting_since_msec": {},
 		"bot_action_at_msec": 0,
 		"created_msec": Time.get_ticks_msec(),
 		"last_active_msec": Time.get_ticks_msec(),
@@ -270,7 +273,12 @@ func _join_peer_to_room(sender_peer_id: int, room: Dictionary, display_name: Str
 		return false
 	peer_by_player[player_index] = sender_peer_id
 	player_by_peer[sender_peer_id] = player_index
-	if not bool(room.get("round_started", false)):
+	if bool(room.get("round_started", false)):
+		(room.get("reconnecting_since_msec", {}) as Dictionary).erase(player_index)
+		if (room.get("temporary_bot_players", {}) as Dictionary).has(player_index):
+			(room.get("temporary_bot_players", {}) as Dictionary).erase(player_index)
+			(room.get("bot_players", {}) as Dictionary).erase(player_index)
+	else:
 		(room.get("confirmed_players", {}) as Dictionary).erase(player_index)
 	_room_id_by_peer[sender_peer_id] = room_id
 	room["last_active_msec"] = Time.get_ticks_msec()
@@ -279,6 +287,8 @@ func _join_peer_to_room(sender_peer_id: int, room: Dictionary, display_name: Str
 		match_host.game.players[player_index].display_name = display_name
 	_send_seat_assigned(sender_peer_id, room, player_index)
 	_broadcast_room_state(room)
+	if bool(room.get("round_started", false)):
+		_broadcast_player_snapshots(room)
 	return true
 
 
@@ -377,6 +387,9 @@ func _handle_match_command(sender_peer_id: int, message: Dictionary) -> void:
 		_send(sender_peer_id, {"type": "command_result", "accepted": false, "reason": "not_in_room"})
 		return
 	var player_index := int((room.get("player_by_peer", {}) as Dictionary).get(sender_peer_id, -1))
+	if not (room.get("reconnecting_since_msec", {}) as Dictionary).is_empty():
+		_send(sender_peer_id, {"type": "command_result", "accepted": false, "reason": "player_reconnecting"})
+		return
 	if player_index < 0 or not (room.get("confirmed_players", {}) as Dictionary).has(player_index) or not bool(room.get("round_started", false)):
 		_send(sender_peer_id, {"type": "command_result", "accepted": false, "reason": "seat_not_ready"})
 		return
@@ -469,6 +482,7 @@ func _process_rooms() -> void:
 		if player_by_peer.is_empty() and now - int(room.get("last_active_msec", now)) >= EMPTY_MATCH_TTL_MSEC:
 			rooms_to_remove.append(room_id)
 			continue
+		_process_reconnect_timeouts(room, now)
 		_process_room_bot(room, now)
 		var next_round_at := int(room.get("next_round_at_msec", 0))
 		var bot_count := (room.get("bot_players", {}) as Dictionary).size()
@@ -478,10 +492,32 @@ func _process_rooms() -> void:
 		_remove_room(room_id)
 
 
+func _process_reconnect_timeouts(room: Dictionary, now_msec: int) -> void:
+	if not bool(room.get("round_started", false)):
+		return
+	var reconnecting: Dictionary = room.get("reconnecting_since_msec", {})
+	var expired: Array[int] = []
+	for player_index_variant in reconnecting.keys():
+		var player_index := int(player_index_variant)
+		if now_msec - int(reconnecting[player_index]) >= RECONNECT_GRACE_MSEC:
+			expired.append(player_index)
+	for player_index in expired:
+		reconnecting.erase(player_index)
+		(room.get("temporary_bot_players", {}) as Dictionary)[player_index] = true
+		(room.get("bot_players", {}) as Dictionary)[player_index] = true
+		room["bot_action_at_msec"] = now_msec + BOT_ACTION_DELAY_MSEC
+	if not expired.is_empty():
+		room["last_active_msec"] = now_msec
+		_broadcast_room_state(room)
+		_broadcast_player_snapshots(room)
+		_broadcast_directory_state()
+
 func _process_room_bot(room: Dictionary, now_msec: int) -> void:
 	if not bool(room.get("round_started", false)):
 		return
 	var bot_players: Dictionary = room.get("bot_players", {})
+	if not (room.get("reconnecting_since_msec", {}) as Dictionary).is_empty():
+		return
 	if bot_players.is_empty() or now_msec < int(room.get("bot_action_at_msec", 0)):
 		return
 	var match_host: LocalMatchHost = room.get("match_host")
@@ -495,7 +531,8 @@ func _process_room_bot(room: Dictionary, now_msec: int) -> void:
 		active_player_index = match_host.game.active_trick.current_player_index if match_host.game.active_trick != null else round.lead_player_index
 	if active_player_index < 0 or not bot_players.has(active_player_index):
 		return
-	var command = ServerBotTurn.create_command(match_host, active_player_index, int(room.get("bot_difficulty", 1)))
+	var effective_difficulty := 2 if (room.get("temporary_bot_players", {}) as Dictionary).has(active_player_index) else int(room.get("bot_difficulty", 1))
+	var command = ServerBotTurn.create_command(match_host, active_player_index, effective_difficulty)
 	if command == null:
 		return
 	var result: Dictionary = match_host.apply_command(command)
@@ -523,7 +560,9 @@ func _leave_current_room(sender_peer_id: int, notify_client: bool) -> void:
 		(room.get("peer_by_player", {}) as Dictionary).erase(player_index)
 		if not bool(room.get("round_started", false)):
 			(room.get("confirmed_players", {}) as Dictionary).erase(player_index)
-		if not bool(room.get("round_started", false)):
+		if bool(room.get("round_started", false)):
+			(room.get("reconnecting_since_msec", {}) as Dictionary)[player_index] = Time.get_ticks_msec()
+		else:
 			var token_by_player: Dictionary = room.get("session_token_by_player", {})
 			var player_by_token: Dictionary = room.get("player_by_session_token", {})
 			var token := str(token_by_player.get(player_index, ""))
@@ -540,6 +579,8 @@ func _leave_current_room(sender_peer_id: int, notify_client: bool) -> void:
 		_remove_room(room_id)
 	else:
 		_broadcast_room_state(room)
+		if bool(room.get("round_started", false)):
+			_broadcast_player_snapshots(room)
 	_broadcast_directory_state()
 
 
@@ -615,6 +656,8 @@ func _send_player_snapshot(room: Dictionary, player_index: int) -> void:
 	snapshot["match_mode"] = str(room.get("match_mode", MATCH_MODE_CLASSIC))
 	snapshot["team_by_player"] = [0, 1, 0, 1] if str(room.get("match_mode", MATCH_MODE_CLASSIC)) == MATCH_MODE_TEAMS_2V2 else []
 	snapshot["team_names"] = ["Команда 1", "Команда 2"]
+	snapshot["reconnecting_player_indices"] = _sorted_player_indices(room.get("reconnecting_since_msec", {}))
+	snapshot["temporary_bot_player_indices"] = _sorted_player_indices(room.get("temporary_bot_players", {}))
 	_send(int(peer_by_player[player_index]), {
 		"type": "player_snapshot",
 		"room_id": int(room.get("room_id", 0)),
@@ -677,6 +720,8 @@ func _create_lobby_seats(room: Dictionary) -> Array[Dictionary]:
 	var ready_players: Dictionary = room.get("confirmed_players", {})
 	var token_by_player: Dictionary = room.get("session_token_by_player", {})
 	var bot_players: Dictionary = room.get("bot_players", {})
+	var temporary_bot_players: Dictionary = room.get("temporary_bot_players", {})
+	var reconnecting: Dictionary = room.get("reconnecting_since_msec", {})
 	var show_bot_placeholders := bool(room.get("fill_empty_seats_with_bots", false))
 	var bot_number := 0
 	for player_index in PLAYER_COUNT:
@@ -694,6 +739,8 @@ func _create_lobby_seats(room: Dictionary) -> Array[Dictionary]:
 			"ready": ready_players.has(player_index) or is_bot,
 			"is_host": player_index == int(room.get("owner_player_index", 0)),
 			"is_bot": is_bot,
+			"is_temporary_bot": temporary_bot_players.has(player_index),
+			"reconnecting": reconnecting.has(player_index),
 			"team_id": player_index % 2 if str(room.get("match_mode", MATCH_MODE_CLASSIC)) == MATCH_MODE_TEAMS_2V2 else -1,
 			"reserved_for_reconnect": bool(room.get("round_started", false)) and token_by_player.has(player_index) and not peer_by_player.has(player_index)
 		})
@@ -730,6 +777,14 @@ func _find_available_player_index(room: Dictionary, requested_player_index: int)
 			return player_index
 	return -1
 
+
+func _sorted_player_indices(data_variant: Variant) -> Array[int]:
+	var result: Array[int] = []
+	if data_variant is Dictionary:
+		for player_index_variant in (data_variant as Dictionary).keys():
+			result.append(int(player_index_variant))
+	result.sort()
+	return result
 
 func _assign_room_owner(room: Dictionary) -> void:
 	var human_players: Array = (room.get("session_token_by_player", {}) as Dictionary).keys()

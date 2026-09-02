@@ -67,20 +67,35 @@ func _run() -> void:
 	assert(active_client.submit_test_bid(available_bids[0]))
 	assert(await _wait_until(func(): return int(server.get_room_debug_state(room_id).get("revision", 0)) == 1 and not active_client.client_command_in_flight), "Remote bid did not round-trip through the authoritative room")
 
-	var reconnect_token: String = clients[3].session_token
-	clients[3].stop()
-	clients[3].queue_free()
+	assert(await _wait_until(func(): return _all_clients_have_safe_snapshots()), "Clients did not receive the post-command snapshots")
+	var disconnected_player_index := int(clients[0].get_test_table_snapshot().get("round", {}).get("current_player_index", -1))
+	var disconnected_client_slot := -1
+	for client_slot in clients.size():
+		if clients[client_slot].client_player_index == disconnected_player_index:
+			disconnected_client_slot = client_slot
+			break
+	assert(disconnected_client_slot >= 0)
+	var observer_client = clients[0] if disconnected_client_slot != 0 else clients[1]
+	var reconnect_token: String = clients[disconnected_client_slot].session_token
+	clients[disconnected_client_slot].stop()
+	clients[disconnected_client_slot].queue_free()
+	clients[disconnected_client_slot] = null
 	await process_frame
-	server.poll()
+	assert(await _wait_until(func(): return disconnected_player_index in observer_client.get_reconnecting_player_indices()), "The room did not pause for the disconnected player")
+	assert(observer_client.is_match_paused_for_reconnect())
+	assert(await _wait_until(func(): return disconnected_player_index in observer_client.get_temporary_bot_player_indices(), 12.0), "A temporary bot did not take over after the reconnect grace period")
+	assert(not observer_client.is_match_paused_for_reconnect())
 	var reconnecting_client = RemoteMatch.new()
 	root.add_child(reconnecting_client)
-	clients[3] = reconnecting_client
-	assert(reconnecting_client.start_client("127.0.0.1", TEST_PORT, "Client 4 reconnected", reconnect_token, room_id))
+	clients[disconnected_client_slot] = reconnecting_client
+	assert(reconnecting_client.start_client("127.0.0.1", TEST_PORT, "Client %d reconnected" % (disconnected_player_index + 1), reconnect_token, room_id))
 	assert(await _wait_until(func(): return reconnecting_client.is_directory_connected()), "Reconnect client did not reach directory")
 	assert(reconnecting_client.join_lobby(room_id, ""), "Reconnect token should bypass the private-room password")
 	assert(await _wait_until(func(): return reconnecting_client.client_snapshot_is_safe), "Reconnect client did not recover its private snapshot")
+	assert(await _wait_until(func(): return disconnected_player_index not in observer_client.get_temporary_bot_player_indices()), "The temporary bot did not yield the seat back to the player")
 	assert(reconnecting_client.current_room_id == room_id)
 	assert(reconnecting_client.session_token == reconnect_token)
+	assert(reconnecting_client.client_player_index == disconnected_player_index)
 	print("REMOTE_ENET_MATCH_TEST_PASS")
 	_cleanup()
 	quit()

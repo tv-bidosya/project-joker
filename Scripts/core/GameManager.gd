@@ -2995,6 +2995,8 @@ func _add_remote_room_seat_tile(parent: Container, seat: Dictionary) -> void:
 	var is_you: bool = remote_enet_match != null and player_index == remote_enet_match.client_player_index
 	var is_ready := bool(seat.get("ready", seat.get("confirmed", false)))
 	var is_connected := bool(seat.get("connected", false))
+	var is_reconnecting := bool(seat.get("reconnecting", false))
+	var is_temporary_bot := bool(seat.get("is_temporary_bot", false))
 	var card := PanelContainer.new()
 	card.custom_minimum_size = Vector2(360.0, 112.0)
 	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -3022,7 +3024,11 @@ func _add_remote_room_seat_tile(parent: Container, seat: Dictionary) -> void:
 	name_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	content.add_child(name_label)
 	var state_label := Label.new()
-	if bool(seat.get("reserved_for_reconnect", false)):
+	if is_reconnecting:
+		state_label.text = tr("Переподключается · игра временно приостановлена")
+	elif is_temporary_bot:
+		state_label.text = tr("Временный бот играет · место сохранено")
+	elif bool(seat.get("reserved_for_reconnect", false)):
 		state_label.text = tr("Ждём переподключения")
 	elif is_ready:
 		state_label.text = tr("✓ Готов")
@@ -3063,7 +3069,11 @@ func _get_remote_enet_seats_text() -> String:
 		var player_index := int(seat.get("player_index", -1))
 		var player_name := str(seat.get("display_name", tr("Игрок %d") % (player_index + 1)))
 		var seat_state := tr("готов") if bool(seat.get("ready", seat.get("confirmed", false))) else tr("подключён") if bool(seat.get("connected", false)) else tr("свободно")
-		if bool(seat.get("reserved_for_reconnect", false)):
+		if bool(seat.get("reconnecting", false)):
+			seat_state = tr("переподключается")
+		elif bool(seat.get("is_temporary_bot", false)):
+			seat_state = tr("временный бот")
+		elif bool(seat.get("reserved_for_reconnect", false)):
 			seat_state = tr("ждём переподключения")
 		var your_mark := " · " + tr("это ты") if player_index == remote_enet_match.client_player_index else ""
 		lines.append("%s %d · %s · %s%s" % [tr("Место"), player_index + 1, player_name, seat_state, your_mark])
