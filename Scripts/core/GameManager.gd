@@ -696,6 +696,12 @@ var remote_enet_lobby_is_open := false
 var remote_room_name_edit: LineEdit
 var remote_room_private_toggle: CheckButton
 var remote_room_password_edit: LineEdit
+var remote_room_match_mode_selector: OptionButton
+var remote_room_fill_bots_toggle: CheckButton
+var remote_room_bot_difficulty_selector: OptionButton
+var remote_lobby_match_mode_selector: OptionButton
+var remote_lobby_fill_bots_toggle: CheckButton
+var remote_lobby_bot_difficulty_selector: OptionButton
 var remote_join_password_edit: LineEdit
 var remote_join_pending_room_id := 0
 var remote_enet_table_presentation := false
@@ -2833,6 +2839,31 @@ func _show_remote_create_lobby_menu() -> void:
 	remote_room_password_edit.custom_minimum_size = Vector2(0.0, 52.0)
 	remote_room_password_edit.add_theme_font_size_override("font_size", 20)
 	menu_content.add_child(remote_room_password_edit)
+	_add_menu_label("Режим партии", 17)
+	remote_room_match_mode_selector = OptionButton.new()
+	remote_room_match_mode_selector.name = "RemoteRoomMatchModeSelector"
+	remote_room_match_mode_selector.add_item(tr("Классическая · каждый за себя"), 0)
+	remote_room_match_mode_selector.add_item(tr("Командная 2×2 · партнёры напротив"), 1)
+	remote_room_match_mode_selector.custom_minimum_size = Vector2(0.0, 52.0)
+	remote_room_match_mode_selector.add_theme_font_size_override("font_size", 19)
+	menu_content.add_child(remote_room_match_mode_selector)
+	remote_room_fill_bots_toggle = CheckButton.new()
+	remote_room_fill_bots_toggle.name = "RemoteRoomFillBotsToggle"
+	remote_room_fill_bots_toggle.text = tr("Заполнить свободные места ботами")
+	remote_room_fill_bots_toggle.button_pressed = true
+	remote_room_fill_bots_toggle.custom_minimum_size = Vector2(0.0, 52.0)
+	remote_room_fill_bots_toggle.add_theme_font_size_override("font_size", 19)
+	menu_content.add_child(remote_room_fill_bots_toggle)
+	_add_menu_label("Сложность ботов", 17)
+	remote_room_bot_difficulty_selector = OptionButton.new()
+	remote_room_bot_difficulty_selector.name = "RemoteRoomBotDifficultySelector"
+	remote_room_bot_difficulty_selector.add_item(tr("Лёгкая"), 0)
+	remote_room_bot_difficulty_selector.add_item(tr("Обычная"), 1)
+	remote_room_bot_difficulty_selector.add_item(tr("Сложная"), 2)
+	remote_room_bot_difficulty_selector.select(1)
+	remote_room_bot_difficulty_selector.custom_minimum_size = Vector2(0.0, 52.0)
+	remote_room_bot_difficulty_selector.add_theme_font_size_override("font_size", 19)
+	menu_content.add_child(remote_room_bot_difficulty_selector)
 	_add_menu_label("Открытые и закрытые комнаты видны в списке. У закрытой комнаты отображается замок.", 14, Color(0.72, 0.85, 0.76, 1.0))
 	_add_menu_spacer(10.0)
 	var actions := _create_online_action_grid()
@@ -2856,9 +2887,12 @@ func _on_create_remote_lobby_pressed() -> void:
 	if is_private and password.is_empty():
 		remote_room_password_edit.placeholder_text = tr("Введите пароль")
 		return
+	var match_mode := SteamBridge.MATCH_MODE_TEAMS_2V2 if is_instance_valid(remote_room_match_mode_selector) and remote_room_match_mode_selector.get_selected_id() == 1 else SteamBridge.MATCH_MODE_CLASSIC
+	var fill_with_bots := is_instance_valid(remote_room_fill_bots_toggle) and remote_room_fill_bots_toggle.button_pressed
+	var bot_difficulty := remote_room_bot_difficulty_selector.get_selected_id() if is_instance_valid(remote_room_bot_difficulty_selector) else 1
 	remote_enet_lobby_is_open = true
 	remote_enet_table_presentation = true
-	if remote_enet_match.create_lobby(room_name, is_private, password):
+	if remote_enet_match.create_lobby(room_name, is_private, password, match_mode, fill_with_bots, bot_difficulty):
 		_show_remote_enet_lobby()
 
 
@@ -2872,23 +2906,154 @@ func _show_remote_enet_lobby() -> void:
 	_refresh_menu_presentation(true)
 	var room_title: String = str(remote_enet_match.current_room_name) if remote_enet_match != null and not remote_enet_match.current_room_name.is_empty() else tr("Интернет-комната")
 	var privacy_text := tr("закрытая") if remote_enet_match != null and remote_enet_match.current_room_is_private else tr("открытая")
-	_add_menu_title(room_title, tr("Сервер Project Joker · %s комната") % privacy_text)
-	_add_menu_spacer(10.0)
+	_add_menu_title(room_title, tr("Сервер Project Joker · %s комната · код %d") % [privacy_text, remote_enet_match.current_room_id if remote_enet_match != null else 0])
+	_add_menu_spacer(8.0)
 	var status: String = tr("Подключение к комнате…") if remote_enet_match == null else str(remote_enet_match.status_text)
 	_add_menu_label(status, 18, Color(0.82, 0.94, 0.76, 1.0))
 	_add_menu_spacer(8.0)
-	_add_menu_label(_get_remote_enet_seats_text(), 17, Color(0.95, 0.89, 0.7, 1.0))
+
+	var seat_grid := GridContainer.new()
+	seat_grid.name = "RemoteLobbySeatGrid"
+	seat_grid.columns = 2
+	seat_grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	seat_grid.add_theme_constant_override("h_separation", 12)
+	seat_grid.add_theme_constant_override("v_separation", 12)
+	menu_content.add_child(seat_grid)
+	if remote_enet_match != null:
+		for seat in remote_enet_match.lobby_seats:
+			_add_remote_room_seat_tile(seat_grid, seat)
+
+	_add_menu_spacer(12.0)
+	if remote_enet_match != null and not remote_enet_match.lobby_round_started:
+		if remote_enet_match.is_host():
+			_add_menu_label("Настройки владельца", 19, Color(0.97, 0.86, 0.55, 1.0))
+			var settings_grid := GridContainer.new()
+			settings_grid.columns = 3
+			settings_grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			settings_grid.add_theme_constant_override("h_separation", 12)
+			settings_grid.add_theme_constant_override("v_separation", 8)
+			menu_content.add_child(settings_grid)
+			remote_lobby_match_mode_selector = OptionButton.new()
+			remote_lobby_match_mode_selector.name = "RemoteLobbyMatchModeSelector"
+			remote_lobby_match_mode_selector.add_item(tr("Классическая"), 0)
+			remote_lobby_match_mode_selector.add_item(tr("Командная 2×2"), 1)
+			remote_lobby_match_mode_selector.select(1 if remote_enet_match.current_room_match_mode == SteamBridge.MATCH_MODE_TEAMS_2V2 else 0)
+			remote_lobby_match_mode_selector.custom_minimum_size = Vector2(260.0, 58.0)
+			remote_lobby_match_mode_selector.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			remote_lobby_match_mode_selector.add_theme_font_size_override("font_size", 18)
+			settings_grid.add_child(remote_lobby_match_mode_selector)
+			remote_lobby_fill_bots_toggle = CheckButton.new()
+			remote_lobby_fill_bots_toggle.name = "RemoteLobbyFillBotsToggle"
+			remote_lobby_fill_bots_toggle.text = tr("Заполнить ботами")
+			remote_lobby_fill_bots_toggle.button_pressed = remote_enet_match.current_room_fill_empty_seats_with_bots
+			remote_lobby_fill_bots_toggle.custom_minimum_size = Vector2(260.0, 58.0)
+			remote_lobby_fill_bots_toggle.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			remote_lobby_fill_bots_toggle.add_theme_font_size_override("font_size", 18)
+			settings_grid.add_child(remote_lobby_fill_bots_toggle)
+			remote_lobby_bot_difficulty_selector = OptionButton.new()
+			remote_lobby_bot_difficulty_selector.name = "RemoteLobbyBotDifficultySelector"
+			remote_lobby_bot_difficulty_selector.add_item(tr("Боты: лёгкие"), 0)
+			remote_lobby_bot_difficulty_selector.add_item(tr("Боты: обычные"), 1)
+			remote_lobby_bot_difficulty_selector.add_item(tr("Боты: сложные"), 2)
+			remote_lobby_bot_difficulty_selector.select(remote_enet_match.current_room_bot_difficulty)
+			remote_lobby_bot_difficulty_selector.custom_minimum_size = Vector2(260.0, 58.0)
+			remote_lobby_bot_difficulty_selector.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			remote_lobby_bot_difficulty_selector.add_theme_font_size_override("font_size", 18)
+			settings_grid.add_child(remote_lobby_bot_difficulty_selector)
+			remote_lobby_match_mode_selector.item_selected.connect(_on_remote_lobby_settings_changed.unbind(1))
+			remote_lobby_fill_bots_toggle.toggled.connect(_on_remote_lobby_settings_changed.unbind(1))
+			remote_lobby_bot_difficulty_selector.item_selected.connect(_on_remote_lobby_settings_changed.unbind(1))
+		else:
+			var mode_text := tr("Командная 2×2") if remote_enet_match.current_room_match_mode == SteamBridge.MATCH_MODE_TEAMS_2V2 else tr("Классическая")
+			var bots_text := tr("с ботами на свободных местах") if remote_enet_match.current_room_fill_empty_seats_with_bots else tr("только четыре игрока")
+			_add_menu_label(tr("Режим: %s · %s") % [mode_text, bots_text], 17, Color(0.95, 0.89, 0.7, 1.0))
+
 	_add_menu_spacer(12.0)
 	var has_table: bool = remote_enet_match != null and not remote_enet_match.get_test_table_snapshot().is_empty()
 	var actions := _create_online_action_grid()
-	var open_table_button := _add_online_action_tile(actions, "Открыть игровой стол", _on_open_network_table_pressed, true)
-	open_table_button.disabled = not has_table
+	if remote_enet_match != null and remote_enet_match.lobby_round_started:
+		var open_table_button := _add_online_action_tile(actions, "Открыть игровой стол", _on_open_network_table_pressed, true)
+		open_table_button.disabled = not has_table
+	elif remote_enet_match != null and remote_enet_match.is_in_room():
+		var ready_text := tr("Отменить готовность") if remote_enet_match.client_ready else tr("Я готов")
+		var ready_button := _add_online_action_tile(actions, ready_text, _on_remote_ready_pressed, not remote_enet_match.client_ready)
+		ready_button.disabled = not remote_enet_match.client_seat_confirmed
+		if remote_enet_match.is_host():
+			var start_button := _add_online_action_tile(actions, "Начать матч", _on_remote_start_match_pressed, true)
+			start_button.disabled = not remote_enet_match.can_start_match()
 	if remote_enet_match != null and remote_enet_match.is_in_room():
 		_add_online_action_tile(actions, "Скопировать код комнаты", _on_copy_remote_room_code_pressed)
 		_add_online_action_tile(actions, "Покинуть комнату", _on_leave_remote_lobby_pressed)
 	_add_online_action_tile(actions, "Назад к списку комнат", _leave_remote_enet_lobby)
 	_add_online_action_tile(actions, "Отключиться от сервера", _on_disconnect_remote_enet_pressed)
 
+
+func _add_remote_room_seat_tile(parent: Container, seat: Dictionary) -> void:
+	var player_index := int(seat.get("player_index", -1))
+	var is_bot := bool(seat.get("is_bot", false))
+	var is_host_seat := bool(seat.get("is_host", false))
+	var is_you: bool = remote_enet_match != null and player_index == remote_enet_match.client_player_index
+	var is_ready := bool(seat.get("ready", seat.get("confirmed", false)))
+	var is_connected := bool(seat.get("connected", false))
+	var card := PanelContainer.new()
+	card.custom_minimum_size = Vector2(360.0, 112.0)
+	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var border_color := Color(0.95, 0.72, 0.22, 1.0) if is_you else Color(0.3, 0.58, 0.4, 1.0)
+	card.add_theme_stylebox_override("panel", _create_flat_style(Color(0.015, 0.095, 0.064, 0.98), border_color, 2, 12, 12))
+	parent.add_child(card)
+	var content := VBoxContainer.new()
+	content.add_theme_constant_override("separation", 4)
+	card.add_child(content)
+	var name_label := Label.new()
+	var player_name := str(seat.get("display_name", tr("Свободное место")))
+	var marks: Array[String] = []
+	if is_host_seat:
+		marks.append(tr("владелец"))
+	if is_you:
+		marks.append(tr("это ты"))
+	if is_bot:
+		marks.append(tr("бот"))
+	name_label.text = tr("Место %d · %s") % [player_index + 1, player_name]
+	if not marks.is_empty():
+		name_label.text += " · " + ", ".join(marks)
+	name_label.add_theme_font_override("font", menu_heading_font)
+	name_label.add_theme_font_size_override("font_size", 18)
+	name_label.add_theme_color_override("font_color", Color(0.98, 0.84, 0.52, 1.0))
+	name_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	content.add_child(name_label)
+	var state_label := Label.new()
+	if bool(seat.get("reserved_for_reconnect", false)):
+		state_label.text = tr("Ждём переподключения")
+	elif is_ready:
+		state_label.text = tr("✓ Готов")
+	elif is_connected:
+		state_label.text = tr("Подключён · ещё не готов")
+	else:
+		state_label.text = tr("Свободно")
+	if int(seat.get("team_id", -1)) >= 0:
+		state_label.text += " · " + tr("Команда %d") % (int(seat.get("team_id", 0)) + 1)
+	state_label.add_theme_font_size_override("font_size", 16)
+	state_label.add_theme_color_override("font_color", Color(0.65, 0.94, 0.68, 1.0) if is_ready else Color(0.78, 0.82, 0.74, 1.0))
+	content.add_child(state_label)
+
+
+func _on_remote_ready_pressed() -> void:
+	if remote_enet_match != null:
+		remote_enet_match.set_ready(not remote_enet_match.client_ready)
+
+
+func _on_remote_start_match_pressed() -> void:
+	if remote_enet_match != null:
+		remote_enet_match.start_match()
+
+
+func _on_remote_lobby_settings_changed() -> void:
+	if remote_enet_match == null or not remote_enet_match.is_host():
+		return
+	var match_mode := SteamBridge.MATCH_MODE_TEAMS_2V2 if is_instance_valid(remote_lobby_match_mode_selector) and remote_lobby_match_mode_selector.get_selected_id() == 1 else SteamBridge.MATCH_MODE_CLASSIC
+	var fill_with_bots := is_instance_valid(remote_lobby_fill_bots_toggle) and remote_lobby_fill_bots_toggle.button_pressed
+	var bot_difficulty := remote_lobby_bot_difficulty_selector.get_selected_id() if is_instance_valid(remote_lobby_bot_difficulty_selector) else 1
+	remote_enet_match.update_room_settings(match_mode, fill_with_bots, bot_difficulty)
 
 func _get_remote_enet_seats_text() -> String:
 	if remote_enet_match == null or remote_enet_match.lobby_seats.is_empty():
@@ -2897,13 +3062,13 @@ func _get_remote_enet_seats_text() -> String:
 	for seat in remote_enet_match.lobby_seats:
 		var player_index := int(seat.get("player_index", -1))
 		var player_name := str(seat.get("display_name", tr("Игрок %d") % (player_index + 1)))
-		var seat_state := tr("готов") if bool(seat.get("confirmed", false)) else tr("подключается") if bool(seat.get("connected", false)) else tr("свободно")
+		var seat_state := tr("готов") if bool(seat.get("ready", seat.get("confirmed", false))) else tr("подключён") if bool(seat.get("connected", false)) else tr("свободно")
 		if bool(seat.get("reserved_for_reconnect", false)):
 			seat_state = tr("ждём переподключения")
 		var your_mark := " · " + tr("это ты") if player_index == remote_enet_match.client_player_index else ""
 		lines.append("%s %d · %s · %s%s" % [tr("Место"), player_index + 1, player_name, seat_state, your_mark])
-	return "\n".join(lines)
-
+	return "
+".join(lines)
 
 func _on_leave_remote_lobby_pressed() -> void:
 	if remote_enet_match != null:

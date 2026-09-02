@@ -13,7 +13,7 @@ signal room_left
 
 const DEFAULT_HOST := "130.61.155.173"
 const DEFAULT_PORT := 8765
-const PROTOCOL_VERSION := 2
+const PROTOCOL_VERSION := 3
 const PLAYER_COUNT := 4
 const REQUEST_RETRY_SECONDS := 1.0
 const NetworkSnapshot = preload("res://Scripts/core/MatchStateSnapshot.gd")
@@ -30,6 +30,10 @@ var saved_room_id := 0
 var current_room_id := 0
 var current_room_name := ""
 var current_room_is_private := false
+var current_room_owner_player_index := -1
+var current_room_match_mode := "classic"
+var current_room_fill_empty_seats_with_bots := false
+var current_room_bot_difficulty := 1
 var directory_ready := false
 var lobbies: Array[Dictionary] = []
 var client_snapshot: Dictionary = {}
@@ -37,6 +41,7 @@ var client_snapshot_is_safe := false
 var client_private_hand_size := 0
 var client_player_index := -1
 var client_seat_confirmed := false
+var client_ready := false
 var client_command_in_flight := false
 var client_expected_revision := -1
 var client_last_command_message := ""
@@ -93,11 +98,16 @@ func _clear_current_room(clear_saved_credentials: bool) -> void:
 	current_room_id = 0
 	current_room_name = ""
 	current_room_is_private = false
+	current_room_owner_player_index = -1
+	current_room_match_mode = "classic"
+	current_room_fill_empty_seats_with_bots = false
+	current_room_bot_difficulty = 1
 	client_snapshot.clear()
 	client_snapshot_is_safe = false
 	client_private_hand_size = 0
 	client_player_index = -1
 	client_seat_confirmed = false
+	client_ready = false
 	client_command_in_flight = false
 	client_expected_revision = -1
 	client_last_command_message = ""
@@ -122,7 +132,7 @@ func is_in_room() -> bool:
 
 
 func is_host() -> bool:
-	return false
+	return is_in_room() and client_player_index == current_room_owner_player_index
 
 
 func is_client() -> bool:
@@ -181,7 +191,7 @@ func request_lobby_list() -> bool:
 	return _send_message({"type": "directory_request", "protocol_version": PROTOCOL_VERSION}, 1)
 
 
-func create_lobby(room_name: String, is_private: bool, password: String = "") -> bool:
+func create_lobby(room_name: String, is_private: bool, password: String = "", match_mode: String = "classic", fill_empty_seats_with_bots: bool = false, bot_difficulty: int = 1) -> bool:
 	if not is_directory_connected() or is_in_room():
 		return false
 	var clean_name := room_name.replace("\n", " ").replace("\r", " ").strip_edges().left(28)
@@ -195,7 +205,10 @@ func create_lobby(room_name: String, is_private: bool, password: String = "") ->
 		"room_name": clean_name,
 		"is_private": is_private,
 		"password_hash": password_hash,
-		"display_name": display_name
+		"display_name": display_name,
+		"match_mode": "teams_2v2" if match_mode == "teams_2v2" else "classic",
+		"fill_empty_seats_with_bots": fill_empty_seats_with_bots,
+		"bot_difficulty": clampi(bot_difficulty, 0, 2)
 	}, 1)
 	if was_sent:
 		_set_status(tr("Создаю интернет-комнату…"))
@@ -229,6 +242,48 @@ func leave_lobby() -> bool:
 	_set_status(tr("Покидаю комнату…"))
 	return true
 
+
+func set_ready(ready: bool) -> bool:
+	if peer == null or not is_in_room() or lobby_round_started or not client_seat_confirmed:
+		return false
+	var sent := _send_message({"type": "set_ready", "ready": ready}, 1)
+	if sent:
+		_set_status(tr("Обновляю готовность…"))
+	return sent
+
+
+func update_room_settings(match_mode: String, fill_empty_seats_with_bots: bool, bot_difficulty: int) -> bool:
+	if peer == null or not is_host() or lobby_round_started:
+		return false
+	return _send_message({
+		"type": "update_room_settings",
+		"match_mode": "teams_2v2" if match_mode == "teams_2v2" else "classic",
+		"fill_empty_seats_with_bots": fill_empty_seats_with_bots,
+		"bot_difficulty": clampi(bot_difficulty, 0, 2)
+	}, 1)
+
+
+func start_match() -> bool:
+	if peer == null or not is_host() or lobby_round_started:
+		return false
+	var sent := _send_message({"type": "start_match"}, 1)
+	if sent:
+		_set_status(tr("Запускаю матч…"))
+	return sent
+
+
+func can_start_match() -> bool:
+	if not is_host() or lobby_round_started:
+		return false
+	var human_count := 0
+	for seat in lobby_seats:
+		if bool(seat.get("is_bot", false)):
+			continue
+		if bool(seat.get("connected", false)):
+			human_count += 1
+			if not bool(seat.get("ready", seat.get("confirmed", false))):
+				return false
+	return human_count > 0 and (current_room_fill_empty_seats_with_bots or human_count == PLAYER_COUNT)
 
 func _process(delta: float) -> void:
 	if peer == null:
@@ -327,6 +382,7 @@ func _handle_seat_assigned(message: Dictionary) -> void:
 	current_room_id = int(message.get("room_id", 0))
 	current_room_name = str(message.get("room_name", ""))
 	current_room_is_private = bool(message.get("is_private", false))
+	_store_room_settings(message)
 	client_player_index = int(message.get("player_index", -1))
 	if current_room_id <= 0 or client_player_index < 0 or client_player_index >= PLAYER_COUNT:
 		_set_status(tr("Сервер прислал некорректное место."))
@@ -363,11 +419,12 @@ func _store_lobby_state(message: Dictionary) -> void:
 	current_room_id = message_room_id
 	current_room_name = str(message.get("room_name", current_room_name))
 	current_room_is_private = bool(message.get("is_private", current_room_is_private))
+	_store_room_settings(message)
 	lobby_round_started = bool(message.get("round_started", false))
 	_store_lobby_seats(message.get("lobby_seats", []))
 	for seat in lobby_seats:
 		if int(seat.get("player_index", -1)) == client_player_index:
-			client_seat_confirmed = bool(seat.get("confirmed", false))
+			client_ready = bool(seat.get("ready", seat.get("confirmed", false)))
 			break
 	_set_status(_get_lobby_status())
 
@@ -612,6 +669,14 @@ func _is_forced_card_allowed(card_data: Dictionary, hand: Array, lead_suit: int,
 	return forced_card.is_empty() or str(card_data.get("card_key", "")) == str(forced_card.get("card_key", ""))
 
 
+func _store_room_settings(message: Dictionary) -> void:
+	current_room_owner_player_index = int(message.get("owner_player_index", current_room_owner_player_index))
+	current_room_match_mode = str(message.get("match_mode", current_room_match_mode))
+	if current_room_match_mode != "teams_2v2":
+		current_room_match_mode = "classic"
+	current_room_fill_empty_seats_with_bots = bool(message.get("fill_empty_seats_with_bots", current_room_fill_empty_seats_with_bots))
+	current_room_bot_difficulty = clampi(int(message.get("bot_difficulty", current_room_bot_difficulty)), 0, 2)
+
 func _store_lobby_seats(data: Variant) -> void:
 	lobby_seats.clear()
 	if data is Array:
@@ -625,13 +690,15 @@ func _get_lobby_status() -> String:
 		return tr("Ожидание свободного места…")
 	var ready_count := 0
 	for seat in lobby_seats:
-		if bool(seat.get("confirmed", false)):
+		if bool(seat.get("ready", seat.get("confirmed", false))):
 			ready_count += 1
 	var result := tr("Ты на месте %d. Игроков готово: %d/%d.") % [client_player_index + 1, ready_count, PLAYER_COUNT]
 	if lobby_round_started:
 		result += " " + tr("Партия началась.")
+	elif client_ready:
+		result += " " + tr("Ты готов. Владелец запустит матч.")
 	elif client_seat_confirmed:
-		result += " " + tr("Ждём остальных игроков.")
+		result += " " + tr("Отметь готовность, когда закончишь настройку.")
 	if not client_last_command_message.is_empty():
 		result += "\n" + client_last_command_message
 	return result
@@ -653,6 +720,12 @@ func _get_rejection_text(reason: String) -> String:
 			return tr("Для закрытой комнаты нужен пароль.")
 		"room_limit_reached":
 			return tr("На сервере временно достигнут лимит комнат.")
+		"host_only":
+			return tr("Это действие доступно только владельцу комнаты.")
+		"players_not_ready":
+			return tr("Не все игроки отметили готовность.")
+		"not_enough_players":
+			return tr("Нужно четыре игрока или заполнение свободных мест ботами.")
 	return tr("Сервер отклонил подключение: %s") % reason
 
 

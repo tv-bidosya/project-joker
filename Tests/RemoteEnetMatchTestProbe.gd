@@ -32,12 +32,20 @@ func _run() -> void:
 	stale_client.queue_free()
 	await process_frame
 
-	assert(clients[0].create_lobby("Automated room", true, "secret"))
+	assert(clients[0].create_lobby("Automated room", true, "secret", "teams_2v2", false, 2))
 	assert(await _wait_until(func(): return clients[0].is_in_room()), "Creator did not enter the room")
 	var room_id: int = clients[0].current_room_id
 	assert(room_id > 0)
 	for client_index in range(1, clients.size()):
 		assert(clients[client_index].join_lobby(room_id, "secret"))
+	assert(await _wait_until(func(): return _all_clients_confirmed()), "RemoteEnetMatch clients did not finish the seat handshake")
+	assert(clients[0].is_host())
+	assert(clients[0].current_room_match_mode == "teams_2v2")
+	for client in clients:
+		assert(client.set_ready(true))
+	assert(await _wait_until(func(): return _all_clients_ready()), "RemoteEnetMatch clients did not become ready")
+	assert(await _wait_until(func(): return clients[0].can_start_match()), "Owner did not receive the final ready state")
+	assert(clients[0].start_match())
 	assert(await _wait_until(func(): return _all_clients_have_safe_snapshots()), "RemoteEnetMatch clients did not reach the first round")
 
 	for client in clients:
@@ -94,6 +102,19 @@ func _all_directories_ready() -> bool:
 			return false
 	return true
 
+
+func _all_clients_confirmed() -> bool:
+	for client in clients:
+		if not client.client_seat_confirmed:
+			return false
+	return true
+
+
+func _all_clients_ready() -> bool:
+	for client in clients:
+		if not client.client_ready:
+			return false
+	return true
 
 func _all_clients_have_safe_snapshots() -> bool:
 	for client in clients:

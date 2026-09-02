@@ -34,7 +34,10 @@ func _run() -> void:
 		"room_name": "Open table",
 		"is_private": false,
 		"password_hash": "",
-		"display_name": "Open host"
+		"display_name": "Open host",
+		"match_mode": "classic",
+		"fill_empty_seats_with_bots": true,
+		"bot_difficulty": 1
 	})
 	assert(await _wait_until(func(): return _has_message_type(0, "seat_assigned")), "Public room creator must receive a seat")
 	var public_seat := _take_message(0, "seat_assigned")
@@ -87,7 +90,15 @@ func _run() -> void:
 		var assigned := _take_message(client_index, "seat_assigned")
 		assert(int(assigned.get("room_id", 0)) == private_room_id)
 		_send_client(client_index, {"type": "seat_ack", "player_index": int(assigned.get("player_index", -1))})
-	assert(await _wait_until(func(): return _clients_have_message([1, 2, 3, 4], "player_snapshot")), "Four confirmations must start only the private room")
+	assert(await _wait_until(func(): return _clients_have_message([1, 2, 3, 4], "seat_confirmed")), "All seats must finish the transport handshake")
+	_send_client(2, {"type": "start_match"})
+	assert(await _wait_until(func(): return _has_rejection(2, "host_only")), "Only the owner may start the match")
+	_send_client(1, {"type": "update_room_settings", "match_mode": "teams_2v2", "fill_empty_seats_with_bots": false, "bot_difficulty": 2})
+	for client_index in [1, 2, 3, 4]:
+		_send_client(client_index, {"type": "set_ready", "ready": true})
+	assert(await _wait_until(func(): return int(server.get_room_debug_state(private_room_id).get("confirmed", 0)) == 4), "All human players must explicitly become ready")
+	_send_client(1, {"type": "start_match"})
+	assert(await _wait_until(func(): return _clients_have_message([1, 2, 3, 4], "player_snapshot")), "Owner start must begin only the ready private room")
 
 	var active_client_index := -1
 	var active_snapshot: Dictionary = {}
@@ -106,6 +117,11 @@ func _run() -> void:
 	_send_client(active_client_index, {"type": "match_command", "command": bid_command.to_dictionary()})
 	assert(await _wait_until(func(): return _has_accepted_command(active_client_index) and int(server.get_room_debug_state(private_room_id).get("revision", 0)) == 1), "Authoritative room must accept a valid bid")
 	assert(not bool(server.get_room_debug_state(public_room_id).get("round_started", true)), "Other room state must remain isolated")
+	_send_client(0, {"type": "seat_ack", "player_index": int(public_seat.get("player_index", -1))})
+	assert(await _wait_until(func(): return _has_message_type(0, "seat_confirmed")), "Bot-room host seat must be confirmed")
+	_send_client(0, {"type": "set_ready", "ready": true})
+	_send_client(0, {"type": "start_match"})
+	assert(await _wait_until(func(): return _has_message_type(0, "player_snapshot") and int(server.get_room_debug_state(public_room_id).get("revision", 0)) > 0), "One human plus server bots must start and make automatic turns")
 	print("WEBSOCKET_GAME_SERVER_TEST_PASS")
 	_cleanup()
 	quit()

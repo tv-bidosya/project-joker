@@ -1,6 +1,6 @@
 extends SceneTree
 
-const ServerProtocolVersion := 2
+const ServerProtocolVersion := 3
 var client: ENetMultiplayerPeer
 var deadline_msec := 0
 var ping_sent := false
