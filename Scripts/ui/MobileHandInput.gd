@@ -13,6 +13,7 @@ var hand: HBoxContainer
 var input_allowed: Callable
 var context_key: Callable
 var drop_area: Callable
+var drop_hint_area: Callable
 var pointer_blockers: Array[Control] = []
 var selected_key := ""
 var active_pointer := NO_POINTER
@@ -40,20 +41,23 @@ func _init() -> void:
 	add_child(drop_panel)
 	drop_label = Label.new()
 	drop_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	drop_label.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
-	drop_label.offset_top = 10.0
-	drop_label.offset_bottom = 48.0
+	drop_label.visible = false
+	drop_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	drop_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	drop_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	drop_label.add_theme_font_size_override("font_size", 23)
+	drop_label.add_theme_font_size_override("font_size", 26)
+	drop_label.add_theme_constant_override("outline_size", 4)
+	drop_label.add_theme_color_override("font_outline_color", Color(0.0, 0.0, 0.0, 0.9))
 	drop_label.add_theme_color_override("font_color", Color(1.0, 0.96, 0.8))
-	drop_panel.add_child(drop_label)
+	add_child(drop_label)
 
 
-func configure(hand_control: HBoxContainer, allowed: Callable, scope: Callable, area: Callable) -> void:
+func configure(hand_control: HBoxContainer, allowed: Callable, scope: Callable, area: Callable, hint_area := Callable()) -> void:
 	hand = hand_control
 	input_allowed = allowed
 	context_key = scope
 	drop_area = area
+	drop_hint_area = hint_area
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
 
@@ -183,7 +187,7 @@ func _release_pointer(point: Vector2, pointer_id: int) -> bool:
 		else:
 			_end_pointer(true)
 	elif point.distance_to(press_position) < DRAG_THRESHOLD and _card_at(point) == view and _usable(view):
-		if pressed_selected:
+		if pressed_selected or view.displayed_card.is_joker:
 			_confirm(view)
 		else:
 			selected_key = _key(view)
@@ -223,13 +227,15 @@ func _end_pointer(animate_return := false) -> void:
 			_clear_return_preview()
 			returning_preview = drag_preview
 			return_tween = create_tween()
-			return_tween.tween_property(returning_preview, "global_position", source.global_position, 0.16)
+			return_tween.tween_property(returning_preview, "global_position", source.global_position, 0.24).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
 			return_tween.tween_callback(_clear_return_preview)
 		else:
 			drag_preview.queue_free()
 	drag_preview = null
 	if is_instance_valid(drop_panel):
 		drop_panel.visible = false
+	if is_instance_valid(drop_label):
+		drop_label.visible = false
 	pressed_view = null
 	active_pointer = NO_POINTER
 	dragging = false
@@ -259,7 +265,11 @@ func _update_drag_feedback() -> void:
 	style.set_border_width_all(3)
 	style.set_corner_radius_all(24)
 	drop_panel.add_theme_stylebox_override("panel", style)
+	var hint_rect: Rect2 = drop_hint_area.call() if drop_hint_area.is_valid() else Rect2(rect.position + Vector2(0, rect.size.y - 64), Vector2(rect.size.x, 64))
+	drop_label.global_position = hint_rect.position
+	drop_label.size = hint_rect.size
 	drop_label.text = tr("MOBILE_CARD_DROP") if available else tr("MOBILE_CARD_UNAVAILABLE")
+	drop_label.visible = true
 	drag_preview.modulate = Color.WHITE if available else Color(1.0, 0.55, 0.5, 0.9)
 	var preview_point := pointer_position - Vector2(drag_preview.size.x * 0.5, drag_preview.size.y * 0.85)
 	var viewport_rect := get_viewport_rect()
@@ -277,6 +287,11 @@ func _card_at(point: Vector2) -> CardView:
 		return null
 	var views := hand.get_children()
 	views.reverse()
+	# The raised card is drawn above its overlapping neighbours.
+	for child in views.duplicate():
+		if child is CardView and child.is_selected:
+			views.erase(child)
+			views.push_front(child)
 	for child in views:
 		var view := child as CardView
 		if not _view_is_current(view):
@@ -310,6 +325,7 @@ func _sync_selection() -> void:
 		if view == null:
 			continue
 		var selected := not selected_key.is_empty() and _key(view) == selected_key and _usable(view)
+		view.z_index = 1 if selected else 0
 		view.set_selected(selected)
 		found = found or selected
 	if not found:

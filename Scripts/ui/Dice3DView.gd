@@ -221,13 +221,13 @@ func _get_result_rotation(value: int) -> Vector3:
 		1:
 			return Vector3(PI * 0.5, 0.18, -0.08)
 		2:
-			return Vector3(-0.16, 0.18, -0.08)
+			return Vector3(-0.16, PI + 0.18, -0.08)
 		3:
 			return Vector3(-0.16, -PI * 0.5 + 0.18, -0.08)
 		4:
 			return Vector3(-0.16, PI * 0.5 + 0.18, -0.08)
 		5:
-			return Vector3(-0.16, PI + 0.18, -0.08)
+			return Vector3(-0.16, 0.18, -0.08)
 		6:
 			return Vector3(-PI * 0.5, 0.18, -0.08)
 	return Vector3.ZERO

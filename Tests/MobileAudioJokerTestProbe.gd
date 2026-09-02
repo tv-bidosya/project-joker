@@ -24,9 +24,10 @@ func _run() -> void:
 		assert(scene.mobile_top_bar.get_global_rect().encloses(button.get_global_rect()), "Top buttons must stay inside the bar")
 		assert(button.get_theme_font_size("font_size") >= 18, "Top action labels must remain readable")
 		for state in ["normal", "hover", "pressed"]:
-			var style: StyleBoxFlat = button.get_theme_stylebox(state) as StyleBoxFlat
-			assert(style != null and style.border_width_top >= 2, "Top actions must be visibly framed buttons")
-			assert(style.bg_color == scene.undo_button.get_theme_stylebox(state).bg_color, "Top and bottom actions must use one style")
+			var style: StyleBox = button.get_theme_stylebox(state)
+			assert(style is StyleBoxTexture, "Top actions must use the framed mobile button texture")
+			var bottom_style: StyleBox = scene.undo_button.get_theme_stylebox(state)
+			assert(bottom_style is StyleBoxTexture and (style as StyleBoxTexture).texture == (bottom_style as StyleBoxTexture).texture, "Top and bottom actions must use one style")
 	print("MOBILE_TOP_ACTIONS_PASS")
 	assert(not scene.music_is_paused, "Mobile music must not inherit the removed player's pause")
 	assert(not scene.music_repeat_enabled and not scene.music_shuffle_enabled, "Mobile music must cycle sequentially")

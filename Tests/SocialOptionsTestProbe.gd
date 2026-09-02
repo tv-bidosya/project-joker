@@ -31,7 +31,7 @@ func _run() -> void:
 	assert(gift_symbols == LocalMatchHostResource.NETWORK_STICKERS, "Client and host social option lists must match")
 	assert(main_scene.FLUENT_EMOJI_TEXTURE_PATHS.size() == 30, "The bundled Fluent Emoji subset must contain ten gifts and twenty reactions")
 	assert(main_scene.reaction_toggle_button.text == "☺", "The table reaction toggle must stay icon-only without a usage counter")
-	assert(main_scene.soundpad_toggle_button.text == "🔊", "The table soundpad toggle must stay icon-only without a usage counter")
+	assert(main_scene.soundpad_toggle_button.text.is_empty() and main_scene.soundpad_toggle_button.icon != null, "The desktop soundbar must use its centered speaker texture without a usage counter")
 	assert(
 		main_scene.FLUENT_EMOJI_LICENSE.LICENSE_TEXT.contains("Copyright (c) Microsoft Corporation."),
 		"The exported project must retain the Fluent Emoji MIT notice"

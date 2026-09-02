@@ -7,6 +7,7 @@ func _init() -> void:
 
 func _run() -> void:
 	var main_scene: Variant = load("res://Scenes/main.tscn").instantiate()
+	main_scene.persistent_settings_writes_enabled = false
 	root.add_child(main_scene)
 	await process_frame
 
@@ -47,16 +48,11 @@ func _run() -> void:
 
 	main_scene._show_new_game_setup()
 	await process_frame
-	assert(main_scene.new_game_name_inputs.size() == 4)
-	var expected_avatar_indices: Array[int] = main_scene.configured_avatar_indices.duplicate()
-	for player_index in expected_avatar_indices.size():
-		var preview: Node = main_scene.menu_content.find_child(
-			"NewGameAvatarPreview%d" % player_index,
-			true,
-			false
-		)
-		assert(preview != null)
-		assert(int(preview.get_meta("avatar_index", -1)) == expected_avatar_indices[player_index])
+	assert(main_scene.new_game_name_inputs.size() == 1, "Only the human profile is editable")
+	assert(main_scene.new_game_bot_avatar_selectors.is_empty(), "No bot customization")
+	var preview: Node = main_scene.menu_content.find_child("NewGameAvatarPreview0", true, false)
+	assert(preview != null)
+	assert(int(preview.get_meta("avatar_index", -1)) == main_scene.configured_avatar_indices[0])
 
 	main_scene._show_tutorial_menu()
 	var tutorial_buttons := _get_button_texts(main_scene.menu_content)
@@ -102,9 +98,7 @@ func _run() -> void:
 	assert(ui_theme_selector.get_item_text(0) == "Классический изумруд")
 	assert(ui_theme_selector.get_item_text(1) == "Ночной город · синий")
 	var button_style_selector := main_scene.menu_content.find_child("MenuButtonStyleSelector", true, false) as OptionButton
-	assert(button_style_selector != null and button_style_selector.item_count == 2)
-	assert(button_style_selector.get_item_text(0) == "Классические кнопки")
-	assert(button_style_selector.get_item_text(1) == "Объёмные кнопки")
+	assert(button_style_selector == null, "Only beveled buttons remain; no style selector")
 	var classic_panel_style := main_scene.menu_panel.get_theme_stylebox("panel") as StyleBoxFlat
 	var classic_panel_color := classic_panel_style.bg_color
 	main_scene._on_menu_ui_theme_selected(1)
@@ -146,27 +140,33 @@ func _run() -> void:
 	assert("Правила игры" in _get_button_texts(main_scene.menu_content))
 
 	main_scene._show_online_hub(0, false)
-	var online_open_buttons := _get_button_texts(main_scene.menu_content)
-	assert("Открытые столы" in online_open_buttons)
-	assert("Создать комнату" in online_open_buttons)
-	assert("Мои игры" in online_open_buttons)
-	assert("Обновить список" in online_open_buttons)
+	var online_room_buttons := _get_button_texts(main_scene.menu_content)
+	assert("Комнаты" in online_room_buttons)
+	assert("Друзья" in online_room_buttons)
+	assert("Моя игра" in online_room_buttons)
+	assert("Подключиться к серверу" in online_room_buttons)
+	assert("Комнаты Steam" not in online_room_buttons)
+	assert("Открытые столы Steam" not in online_room_buttons)
 
 	main_scene._show_online_hub(1, false)
-	var visibility_selector: OptionButton = main_scene.menu_content.find_child(
-		"OnlineLobbyVisibilitySelector",
+	var friend_room_code: LineEdit = main_scene.menu_content.find_child(
+		"OnlineFriendRoomCodeEdit",
 		true,
 		false
-	) as OptionButton
-	assert(visibility_selector != null)
-	assert(visibility_selector.item_count == 3)
-	assert(visibility_selector.get_selected_id() == 1)
+	) as LineEdit
+	var friend_room_password: LineEdit = main_scene.menu_content.find_child(
+		"OnlineFriendRoomPasswordEdit",
+		true,
+		false
+	) as LineEdit
+	assert(friend_room_code != null)
+	assert(friend_room_password != null)
+	assert("Войти по коду" in _get_button_texts(main_scene.menu_content))
 
-	main_scene.active_online_lobby_id = 123456789
-	main_scene.active_online_match_started = true
+	main_scene.remote_enet_saved_lobby_id = 123456789
+	main_scene.remote_enet_session_token = "test-reconnect-token"
 	main_scene._show_online_hub(2, false)
-	assert("Переподключиться к партии" in _get_button_texts(main_scene.menu_content))
-	assert("Убрать из списка" in _get_button_texts(main_scene.menu_content))
+	assert("Подключиться и вернуться" in _get_button_texts(main_scene.menu_content))
 
 	print("MAIN_MENU_STRUCTURE_TEST_PASS")
 	quit()

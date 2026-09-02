@@ -445,7 +445,7 @@ func _apply_visual_pose(animated: bool) -> void:
 	var target_offset := presentation_offset + (Vector2(0.0, -24.0) if is_selected else Vector2.ZERO)
 	var target_scale := Vector2(1.04, 1.04) if is_selected else Vector2.ONE
 	if animated:
-		_animate_visual_pose(target_offset, presentation_rotation, target_scale, 0.16)
+		_animate_visual_pose(target_offset, presentation_rotation, target_scale, 0.24 if mobile_input_managed else 0.16)
 		return
 	if is_instance_valid(visual_tween):
 		visual_tween.kill()
@@ -470,7 +470,7 @@ func _animate_visual_pose(target_offset: Vector2, target_rotation: float, target
 	if is_instance_valid(visual_tween):
 		visual_tween.kill()
 	visual_tween = create_tween().set_parallel(true)
-	visual_tween.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	visual_tween.set_trans(Tween.TRANS_SINE if mobile_input_managed else Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	visual_tween.tween_property(face_panel, "position", target_offset, duration)
 	visual_tween.tween_property(face_panel, "rotation", target_rotation, duration)
 	visual_tween.tween_property(face_panel, "scale", target_scale, duration)

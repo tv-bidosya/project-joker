@@ -21,6 +21,7 @@ const NEXT_ROUND_COUNTDOWN_SYNC_INTERVAL_SECONDS := 1.0
 const BOT_DIFFICULTY_EASY := 0
 const BOT_DIFFICULTY_NORMAL := 1
 const BOT_DIFFICULTY_HARD := 2
+const BOT_NAMES := ["Rhysand", "Azriel", "Cassian"]
 
 
 var steam_bridge: RefCounted
@@ -49,6 +50,7 @@ var _outbound_flush_pending := false
 var _steam_id_by_peer_id: Dictionary = {}
 var _player_index_by_steam_id: Dictionary = {}
 var _reconnecting_player_indices: Dictionary = {}
+
 var _bot_random := RandomNumberGenerator.new()
 var _local_display_name := "Игрок"
 var _local_auto_turn_enabled := false
@@ -656,9 +658,11 @@ func _start_as_host() -> void:
 		return
 
 	var player_names := [_local_display_name, "Игрок 2", "Игрок 3", "Игрок 4"]
+	var available_bot_names := BOT_NAMES.duplicate()
 	for bot_offset in _local_bot_player_indices.size():
 		var player_index := _local_bot_player_indices[bot_offset]
-		player_names[player_index] = "Бот %d" % (bot_offset + 1)
+		player_names[player_index] = available_bot_names.pop_at(_bot_random.randi_range(0, available_bot_names.size() - 1))
+		_avatar_index_by_player[player_index] = _bot_random.randi_range(0, 3)
 	var test_game := Game.new(player_names)
 	match_host = MatchHost.new(test_game)
 	match_host.set_history_mode(_history_mode)
@@ -870,7 +874,6 @@ func _rebuild_host_lobby_seats() -> void:
 		var is_reconnecting := _reconnecting_player_indices.has(player_index)
 		var is_assigned := is_host_player or is_local_bot or _connected_client_peers_by_player.has(player_index) or seat_reserved_for_reconnect
 		var is_confirmed := is_host_player or is_local_bot or _confirmed_client_peers_by_player.has(player_index)
-		var bot_number := _local_bot_player_indices.find(player_index) + 1
 		var stored_player_name: String = (
 			match_host.game.players[player_index].display_name
 			if match_host != null and player_index < match_host.game.players.size()
@@ -879,8 +882,6 @@ func _rebuild_host_lobby_seats() -> void:
 		var display_name: String = (
 			"%s · временный бот" % stored_player_name
 			if is_temporary_bot
-			else "Бот %d" % bot_number
-			if is_local_bot
 			else stored_player_name
 		)
 		var default_bot_avatar_index := player_index % 4 if is_local_bot else 0

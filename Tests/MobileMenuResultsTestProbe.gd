@@ -40,7 +40,7 @@ func _run() -> void:
 		scene._fit_menu_panel_to_content()
 		assert(_check_tiles(scene.menu_content), "Mobile menu must use readable tiles")
 		assert(scene.menu_panel.size.x >= 1200.0, "Mobile menu must fit three tiles")
-		assert(scene.menu_panel.size.y <= scene.get_viewport_rect().size.y - 64.0, "Menu must stay on screen")
+		assert(scene.menu_panel.size.y <= scene.get_viewport_rect().size.y - (32.0 if scene.mobile_reading_page else 64.0), "Menu must stay on screen")
 	print("MOBILE_MENU_TILES_PASS")
 
 	scene._reset_game_session()
@@ -86,10 +86,10 @@ func _run() -> void:
 	await process_frame
 	scene._position_round_results_actions()
 	assert(not scene.round_results_label.scroll_active, "Ordinary results must fit without scrolling")
-	assert(scene.round_results_panel.size.x == 800.0, "Mobile results must be wider")
+	assert(scene.round_results_panel.size.x >= 1000.0, "Mobile results must be wider")
 	assert(scene.round_results_label.get_theme_font_size("normal_font_size") >= 24, "Mobile result text must be readable")
 	assert(scene.next_round_button.size.x >= 460.0 and scene.next_round_button.size.y >= 84.0, "Next-round button must be easy to tap")
-	assert(scene.next_round_button.global_position.y >= scene.round_results_panel.get_global_rect().end.y + 17.0, "Results and next button must not overlap")
+	assert(scene.next_round_button.global_position.y >= scene.round_results_panel.get_global_rect().end.y + 9.0, "Results and next button must not overlap")
 	assert(not scene.next_round_button.get_global_rect().intersects(scene.player_panels[0].get_global_rect()), "Next button must not cover the local player")
 	print("MOBILE_RESULTS_RECT=", scene.round_results_panel.get_global_rect())
 	print("MOBILE_NEXT_BUTTON_RECT=", scene.next_round_button.get_global_rect())
@@ -103,8 +103,8 @@ func _run() -> void:
 	await process_frame
 	await process_frame
 	scene._position_round_results_actions()
-	for panel in scene.player_panels:
-		assert(not scene.round_results_panel.get_global_rect().intersects(panel.get_global_rect()), "Long/team results must not overlap players")
+	for index in [0, 2]:
+		assert(not scene.round_results_panel.get_global_rect().intersects(scene.player_panels[index].get_global_rect()), "Results must leave the top and local players visible")
 	assert(not scene.next_round_button.get_global_rect().intersects(scene.player_panels[0].get_global_rect()), "Long/team results button must stay above local player")
 	print("MOBILE_LONG_RESULTS_RECT=", scene.round_results_panel.get_global_rect())
 	rows.clear()
@@ -126,11 +126,13 @@ func _run() -> void:
 
 func _check_tiles(node: Node) -> bool:
 	for child in node.get_children():
-		if child is Button and not (child is OptionButton or child is CheckButton):
+		if child is Button and not (child is OptionButton or child is CheckButton) and child.name != "MobileProfileAvatarPreview":
 			if not child.has_meta("mobile_menu_tile"):
 				push_error("Old strip button remains: %s" % child.text)
 				return false
-			if child.custom_minimum_size != Vector2(300.0, 190.0):
+			if child.get_meta("mobile_setting_tile", false):
+				continue
+			if child.custom_minimum_size != (Vector2(270, 96) if child.get_meta("mobile_small_action_tile", false) else (Vector2(255.0, 162.0) if child.get_meta("mobile_compact_tile", false) else Vector2(300.0, 190.0))):
 				push_error("Incorrect tile size: %s" % child.text)
 				return false
 		if not _check_tiles(child):

@@ -1,0 +1,31 @@
+[Unit]
+Description=Project Joker authoritative WebSocket server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=projectjoker
+Group=projectjoker
+WorkingDirectory=/opt/project-joker-server
+ExecStart=/opt/project-joker-server/godot-full --headless --main-pack /opt/project-joker-server/project-joker-server.pck res://Scenes/DedicatedServer.tscn -- --port=8765
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+StateDirectory=project-joker-server
+StateDirectoryMode=0750
+UMask=0077
+LimitNOFILE=4096
+MemoryMax=420M
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/var/lib/project-joker-server
+
+[Install]
+WantedBy=multi-user.target

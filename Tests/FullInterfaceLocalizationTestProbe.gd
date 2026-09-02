@@ -47,12 +47,9 @@ func _run() -> void:
 
 	main_scene._show_new_game_setup()
 	var english_setup := _get_visible_texts(main_scene.menu_content)
-	for expected_text in ["New game with bots", "Start game", "Bot difficulty", "History"]:
+	for expected_text in ["New game with bots", "Start game", "Bot difficulty"]:
 		_check(expected_text in english_setup, "Missing English setup text: %s" % expected_text)
-	_check(
-		_contains_fragment(english_setup, "In limited mode, the log shows only"),
-		"English limited-history explanation is missing."
-	)
+	_check(main_scene.menu_content.find_child("NewGameHistoryModeSelector", true, false) == null, "Bot games must always use full history.")
 	_check(not _contains_fragment(english_setup, "В ограниченном режиме"), "Russian history hint remains in English setup.")
 
 	main_scene._show_tutorial_menu()
