@@ -63,10 +63,11 @@ func _run() -> void:
 	scene._refresh_player_avatar_badges()
 	scene._refresh_sticker_controls()
 	await _settle()
-	for button in [scene.undo_button, scene.mobile_sort_button, scene.mobile_bid_menu_button]:
+	for button in [scene.undo_button, scene.mobile_sort_button]:
 		assert(button.size.y >= 64 and button.get_theme_font_size("font_size") >= 28)
 		for card in scene.hand_container.get_children():
 			assert(not button.get_global_rect().intersects(card.get_global_rect()), "Mobile controls must not overlap nine cards")
+	assert(not scene.mobile_bid_menu_button.visible, "The old permanent bid button must stay retired")
 	assert(scene.undo_button.get_global_rect().end.y < scene.mobile_sort_button.get_global_rect().position.y)
 	print("HINT_ACTION_RECTS ", scene.mobile_premove_hint.get_global_rect(), " ", scene.action_label.get_global_rect())
 	assert(scene.mobile_premove_hint.get_global_rect().end.y <= scene.action_label.get_global_rect().position.y)
@@ -89,11 +90,12 @@ func _run() -> void:
 		assert(gift_button.size.x >= 110.0 and gift_button.size.y >= 100.0)
 	scene._close_sticker_picker()
 	for social_button in [scene.reaction_toggle_button, scene.sticker_toggle_button, scene.soundpad_toggle_button]:
-		assert(social_button.size.x >= 110 and social_button.size.x <= 114)
-		assert(social_button.size.y >= 102 and social_button.size.y <= 106)
+		assert(social_button.size.x >= 98 and social_button.size.x <= 102)
+		assert(social_button.size.y >= 92 and social_button.size.y <= 96)
 		assert(social_button.icon_alignment == HORIZONTAL_ALIGNMENT_CENTER)
 		assert(social_button.vertical_icon_alignment == VERTICAL_ALIGNMENT_CENTER)
-		assert(social_button.get_global_rect().end.y < scene.mobile_bid_menu_button.get_global_rect().position.y)
+		assert(social_button.get_global_rect().position.y >= scene.player_panels[3].get_global_rect().end.y)
+		assert(social_button.get_global_rect().end.y <= scene.get_viewport_rect().end.y)
 	scene._build_soundpad_category_picker()
 	scene.soundpad_picker.show()
 	await _settle()
@@ -180,37 +182,56 @@ func _run() -> void:
 			_touch(point, false)
 			break
 	assert(sent.size() == 1 and not scene.reaction_picker.visible, "A short tap sends exactly one reaction")
+	var table_tap: Vector2 = scene.get_viewport_rect().get_center()
+	for popup in [scene.reaction_picker, scene.sticker_picker, scene.soundpad_picker]:
+		popup.show()
+		await process_frame
+		_touch(table_tap, true)
+		await process_frame
+		assert(not popup.visible, "A table tap must close every social picker")
+		_touch(table_tap, false)
 	print("MOBILE_EMOJI_TOUCH_SCROLL_PASS")
 	scene.reaction_picker.hide()
-	var sources := GridContainer.new()
-	scene.add_child(sources)
-	sources.hide()
+	scene._clear_children(scene.bid_controls)
+	await process_frame
 	var selected: Array[int] = []
-	for index in 10:
+	for index in 14:
 		var button := Button.new()
 		button.text = str(index)
 		button.disabled = index == 7
 		button.pressed.connect(func(): selected.append(index))
-		sources.add_child(button)
-	scene.mobile_bid_popup.configure(sources)
-	scene.mobile_bid_popup.show()
-	await create_timer(0.65).timeout
-	assert(scene.mobile_bid_popup.fan_buttons.size() == 10)
-	assert(scene.mobile_bid_menu_button.z_index > scene.mobile_bid_popup.z_index, "Bid button must render in front of the fan")
-	for index in 10:
-		var button: Button = scene.mobile_bid_popup.fan_buttons[index]
+		scene.bid_controls.add_child(button)
+	scene._configure_bid_controls_layout(14)
+	scene._refresh_mobile_action_dock()
+	await _settle()
+	assert(scene.mobile_bid_popup.visible, "Bid choices must open automatically on the table")
+	assert(not scene.mobile_bid_menu_button.visible, "No separate bid opener may cover the table")
+	assert(scene.bid_controls.columns == 7 and scene.bid_controls.get_child_count() == 14)
+	assert(scene.mobile_bid_popup.fan_buttons.size() == 14)
+	assert(scene.get_viewport_rect().encloses(scene.mobile_bid_popup.get_global_rect()))
+	assert(scene.mobile_bid_popup.get_global_rect().end.y <= scene.action_label.get_global_rect().position.y)
+	for index in 14:
+		var button: Button = scene.bid_controls.get_child(index)
 		assert(button.disabled == (index == 7))
-		assert(not button.get_global_rect().intersects(scene.mobile_bid_menu_button.get_global_rect()), "Fan must leave its open/close button usable")
-		assert(not button.get_global_rect().intersects(scene.avatar_badges[3].get_global_rect()), "Fan must stay below the right player")
-		assert(Rect2(Vector2.ZERO, scene.CornerBidFanResource.FAN_SIZE).encloses(Rect2(button.position, button.size)))
-		for other in range(index + 1, 10):
-			var other_button: Button = scene.mobile_bid_popup.fan_buttons[other]
-			assert(not Rect2(button.position, button.size).intersects(Rect2(other_button.position, other_button.size)), "Fan choices must not overlap")
-	scene.mobile_bid_popup.fan_buttons[9].pressed.emit()
-	assert(selected == [9], "Fan action must invoke the original callback")
-	scene.mobile_bid_popup.hide()
-	sources.queue_free()
-	print("MOBILE_EMOJI_BID_FAN_PASS")
+		assert(button.size.x >= 118 and button.size.y >= 70, "Every bid must be a large phone touch target")
+		for other in range(index + 1, 14):
+			var other_button: Button = scene.bid_controls.get_child(other)
+			assert(not button.get_global_rect().intersects(other_button.get_global_rect()), "Bid choices must not overlap")
+	scene.bid_controls.get_child(13).pressed.emit()
+	assert(selected == [13], "Direct table bid must invoke the original callback")
+	scene._clear_children(scene.bid_controls)
+	await process_frame
+	for index in 9:
+		var button := Button.new()
+		button.text = str(index)
+		scene.bid_controls.add_child(button)
+	scene._configure_bid_controls_layout(9)
+	scene._refresh_mobile_action_dock()
+	await _settle()
+	assert(scene.bid_controls.columns == 5, "Nine bids must form balanced rows of five and four")
+	assert(absf(scene.mobile_bid_popup.get_global_rect().get_center().x - scene.get_viewport_rect().get_center().x) <= 1.0)
+	scene._close_mobile_bid_fan()
+	print("MOBILE_TABLE_BID_GRID_PASS")
 	scene.queue_free()
 	await process_frame
 	print("MOBILE_TOUCH_POLISH_TEST_PASS")

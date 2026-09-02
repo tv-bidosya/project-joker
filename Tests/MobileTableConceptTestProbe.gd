@@ -50,7 +50,7 @@ func _run() -> void:
 	print("LEFT ",scene.undo_button.get_global_rect()," ",scene.mobile_sort_button.get_global_rect()," BID ",scene.mobile_bid_menu_button.get_global_rect())
 	for card in scene.hand_container.get_children():
 		assert(card.size == scene.PhoneTable.HAND_CARD)
-		for button in [scene.undo_button,scene.mobile_sort_button,scene.mobile_bid_menu_button]:
+		for button in [scene.undo_button, scene.mobile_sort_button]:
 			assert(not card.get_global_rect().intersects(button.get_global_rect()),"Hand must avoid corner actions")
 	var first: CardView = scene.hand_container.get_child(0)
 	var next: CardView = scene.hand_container.get_child(1)
@@ -92,7 +92,7 @@ func _run() -> void:
 					assert(not scene.trick_card_views[slot].get_global_rect().intersects(scene.trick_card_views[other].get_global_rect()))
 			for card in scene.hand_container.get_children():
 				assert(screen.encloses(card.get_global_rect()))
-				for button in [scene.undo_button, scene.mobile_sort_button, scene.mobile_bid_menu_button]:
+				for button in [scene.undo_button, scene.mobile_sort_button]:
 					assert(not card.get_global_rect().intersects(button.get_global_rect()))
 			assert(scene._get_mobile_card_drop_hint_rect().end.y <= scene.player_panels[0].get_global_rect().position.y, "Drop text must stay above the compact local player panel")
 			assert(scene._get_mobile_card_drop_hint_rect().end.y <= scene.action_label.global_position.y)

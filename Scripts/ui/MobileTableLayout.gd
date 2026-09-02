@@ -138,10 +138,10 @@ static func dock(main: Variant) -> void:
 	rect(main.undo_button, Rect2(SAFE_LEFT, size.y - 238, 264, 100))
 	rect(main.mobile_sort_button, Rect2(SAFE_LEFT, size.y - 126, 264, 100))
 	main.mobile_bid_menu_button.custom_minimum_size = Vector2.ZERO
-	main.mobile_bid_menu_button.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	action_style(main.mobile_bid_menu_button, true)
-	main.mobile_bid_menu_button.add_theme_font_size_override("font_size", 34)
-	rect(main.mobile_bid_menu_button, Rect2(size.x - 356, size.y - 146, 332, 120))
+	main.mobile_bid_menu_button.disabled = true
+	main.mobile_bid_menu_button.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	main.mobile_bid_menu_button.hide()
+	rect(main.mobile_bid_menu_button, Rect2(size.x - 24, size.y - 24, 0, 0))
 
 static func social(main: Variant) -> void:
 	if not main.mobile_table_layout or not is_instance_valid(main.social_controls_container):
@@ -159,14 +159,15 @@ static func social(main: Variant) -> void:
 		button.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		button.vertical_icon_alignment = VERTICAL_ALIGNMENT_CENTER
 		button.alignment = HORIZONTAL_ALIGNMENT_CENTER
-		button.add_theme_constant_override("icon_max_width", 61)
-		button.custom_minimum_size = Vector2(112, 104)
+		button.add_theme_constant_override("icon_max_width", 55)
+		button.custom_minimum_size = Vector2(100, 94)
 		action_style(button)
 	main.social_controls_container.add_theme_constant_override("separation", 7)
 	main.social_controls_container.alignment = BoxContainer.ALIGNMENT_END
-	rect(main.social_controls_container, Rect2(size.x - 136, size.y - 620, 112, 450))
-	rect(main.reaction_picker, Rect2(size.x - 744, size.y - 600, 596, 460))
-	rect(main.soundpad_picker, Rect2(size.x - 728, size.y - 460, 580, 250))
+	# Keep the social rail in the lower-right safe corner, below the side player.
+	rect(main.social_controls_container, Rect2(size.x - 124, size.y - 446, 100, 420))
+	rect(main.reaction_picker, Rect2(size.x - 734, size.y - 600, 596, 460))
+	rect(main.soundpad_picker, Rect2(size.x - 718, size.y - 322, 580, 296))
 
 static func apply(main: Variant) -> void:
 	if not main.mobile_table_layout:

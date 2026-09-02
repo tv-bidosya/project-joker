@@ -182,8 +182,9 @@ func _check_score_sheet_and_roll() -> void:
 	assert(scene.score_sheet_panel.size.x >= scene.size.x - scene.PhoneTable.SAFE_LEFT - 40)
 	assert(scene.score_sheet_close_button.size.x >= 88 and scene.score_sheet_close_button.size.y >= 76)
 	assert(scene.score_sheet_close_button.get_theme_font_size("font_size") >= 48)
-	assert(not scene.mobile_bid_menu_button.visible, "Bid action must be hidden while the modal score sheet is open")
-	assert(scene.score_sheet_panel.z_index > scene.mobile_bid_menu_button.z_index)
+	assert(not scene.mobile_bid_menu_button.visible, "The retired bid opener must stay hidden")
+	assert(not scene.mobile_bid_popup.visible, "Table bids must be hidden while the modal score sheet is open")
+	assert(scene.score_sheet_panel.z_index > scene.mobile_bid_popup.z_index)
 	var first_row := scene.score_sheet_grid.get_child(0) as HBoxContainer
 	var first_cell := first_row.get_child(0) as Label
 	var mode_cell := first_row.get_child(1) as Label
@@ -204,7 +205,9 @@ func _check_score_sheet_and_roll() -> void:
 	assert(score_bar.value < start - 100, "Score sheet must scroll over its counting cells")
 	scene.is_score_sheet_visible = false
 	scene._refresh_score_sheet()
-	assert(scene.mobile_bid_menu_button.visible, "Bid action must return after closing the score sheet")
+	await process_frame
+	assert(not scene.mobile_bid_menu_button.visible, "Closing the score sheet must not restore the old bid opener")
+	assert(scene.mobile_bid_popup.visible == (scene.bid_controls.get_child_count() > 0), "Available bids must return directly on the table")
 	scene.first_turn_roll_panel.show()
 	assert(scene.first_turn_roll_panel.size.x >= 1400 and scene.first_turn_roll_panel.size.y >= 700)
 	assert(scene.first_turn_roll_title.get_theme_font_size("font_size") >= 52)

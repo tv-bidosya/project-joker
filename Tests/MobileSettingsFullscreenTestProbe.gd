@@ -98,7 +98,7 @@ func _run() -> void:
 		for button in [scene.undo_button, scene.mobile_sort_button]:
 			assert(button.size.is_equal_approx(dock_size), "Left buttons must be equal in every language")
 			assert(button.get_theme_font_size("font_size") == 28)
-		assert(scene.mobile_bid_menu_button.get_theme_font_size("font_size") == 34)
+		assert(not scene.mobile_bid_menu_button.visible, "The old permanent bid button must stay hidden")
 	scene._show_settings_menu()
 	var retired_control: Control = scene.menu_content.get_child(0)
 	scene._show_language_settings_menu()

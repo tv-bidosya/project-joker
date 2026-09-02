@@ -1242,19 +1242,24 @@ func _position_mobile_gift_picker() -> void:
 	_set_control_layout(sticker_picker, 0, 0, 0, 0, point.x, point.y, point.x + popup_size.x, point.y + popup_size.y)
 
 
-func _unhandled_input(event: InputEvent) -> void:
+func _input(event: InputEvent) -> void:
 	if not mobile_table_layout:
 		return
-	var release_position := Vector2(-1, -1)
-	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and not event.pressed:
-		release_position = event.position
-	elif event is InputEventScreenTouch and not event.pressed:
-		release_position = event.position
-	if release_position.x < 0:
+	var press_position := Vector2(-1, -1)
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
+		press_position = event.position
+	elif event is InputEventScreenTouch and event.pressed:
+		press_position = event.position
+	if press_position.x < 0:
 		return
+	# Observe the press before GUI controls consume it. Closing a social popup
+	# never marks the event handled, so the same tap can still select/play a card.
 	var kept_open := false
 	for popup in [reaction_picker, sticker_picker, soundpad_picker]:
-		if is_instance_valid(popup) and popup.visible and popup.get_global_rect().has_point(release_position):
+		if is_instance_valid(popup) and popup.visible and popup.get_global_rect().has_point(press_position):
+			kept_open = true
+	for toggle in [reaction_toggle_button, sticker_toggle_button, soundpad_toggle_button, chat_toggle_button]:
+		if is_instance_valid(toggle) and toggle.visible and toggle.get_global_rect().has_point(press_position):
 			kept_open = true
 	if not kept_open:
 		reaction_picker.hide()
@@ -1533,14 +1538,10 @@ func _create_mobile_table_chrome() -> void:
 
 	mobile_bid_menu_button = Button.new()
 	mobile_bid_menu_button.name = "MobileBidMenuButton"
-	mobile_bid_menu_button.z_as_relative = false
-	mobile_bid_menu_button.z_index = 96
-	mobile_bid_menu_button.text = tr("MOBILE_BID_BUTTON")
-	mobile_bid_menu_button.custom_minimum_size = Vector2(160.0, 52.0)
-	mobile_bid_menu_button.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	_apply_compact_table_action_button_style(mobile_bid_menu_button, 52.0)
-	mobile_bid_menu_button.add_theme_font_size_override("font_size", 17)
-	mobile_bid_menu_button.pressed.connect(_on_mobile_bid_menu_pressed)
+	mobile_bid_menu_button.visible = false
+	mobile_bid_menu_button.disabled = true
+	mobile_bid_menu_button.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	mobile_bid_menu_button.custom_minimum_size = Vector2.ZERO
 	dock_row.add_child(mobile_bid_menu_button)
 	undo_button.reparent(dock_row)
 	undo_button.custom_minimum_size = Vector2(240.0, 52.0)
@@ -1549,33 +1550,35 @@ func _create_mobile_table_chrome() -> void:
 	mobile_bid_popup = CornerBidFanResource.new()
 	mobile_bid_popup.name = "MobileBidPopup"
 	mobile_bid_popup.visible = false
-	mobile_bid_popup.z_index = 94
+	mobile_bid_popup.z_as_relative = false
+	mobile_bid_popup.z_index = 96
 	mobile_bid_popup.mouse_filter = Control.MOUSE_FILTER_STOP
-	_set_control_layout(mobile_bid_popup, 0.5, 1.0, 0.5, 1.0, 260.0, -188.0, 660.0, -86.0)
-	var popup_style := _create_flat_style(Color(0.01, 0.065, 0.043, 0.99), Color(0.86, 0.61, 0.18, 0.98), 2, 14, 9)
-	popup_style.content_margin_left = 14.0
-	popup_style.content_margin_right = 14.0
-	popup_style.content_margin_top = 10.0
-	popup_style.content_margin_bottom = 10.0
+	_set_control_layout(mobile_bid_popup, 0.5, 1.0, 0.5, 1.0, -505.0, -680.0, 505.0, -454.0)
+	var popup_style := _create_flat_style(Color(0.008, 0.09, 0.055, 0.985), Color(0.94, 0.69, 0.20, 0.98), 3, 18, 10)
+	popup_style.content_margin_left = 18.0
+	popup_style.content_margin_right = 18.0
+	popup_style.content_margin_top = 12.0
+	popup_style.content_margin_bottom = 14.0
 	mobile_bid_popup.add_theme_stylebox_override("panel", popup_style)
 	add_child(mobile_bid_popup)
 
 	var bid_popup_content := VBoxContainer.new()
-	bid_popup_content.visible = false
-	bid_popup_content.add_theme_constant_override("separation", 6)
+	bid_popup_content.visible = true
+	bid_popup_content.alignment = BoxContainer.ALIGNMENT_CENTER
+	bid_popup_content.add_theme_constant_override("separation", 10)
 	mobile_bid_popup.add_child(bid_popup_content)
 	var bid_title := Label.new()
 	bid_title.name = "BidTitle"
 	bid_title.text = tr("MOBILE_BID_CHOOSE")
 	bid_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	bid_title.add_theme_font_size_override("font_size", 17)
-	bid_title.add_theme_color_override("font_color", Color(0.95, 0.83, 0.48, 1.0))
+	bid_title.add_theme_font_size_override("font_size", 28)
+	bid_title.add_theme_color_override("font_color", Color(1.0, 0.86, 0.48, 1.0))
 	bid_popup_content.add_child(bid_title)
 	bid_controls.reparent(bid_popup_content)
-	bid_controls.columns = 3
+	bid_controls.columns = 7
 	bid_controls.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	bid_controls.add_theme_constant_override("h_separation", 8)
-	bid_controls.add_theme_constant_override("v_separation", 8)
+	bid_controls.add_theme_constant_override("h_separation", 10)
+	bid_controls.add_theme_constant_override("v_separation", 10)
 
 
 func _queue_mobile_top_bar_layout() -> void:
@@ -1618,20 +1621,9 @@ func _on_mobile_sort_pressed() -> void:
 
 
 func _on_mobile_bid_menu_pressed() -> void:
-	if not is_instance_valid(mobile_bid_popup) or not is_instance_valid(mobile_bid_menu_button):
-		return
-	if mobile_bid_menu_button.disabled:
-		return
-	mobile_bid_selection_open = not mobile_bid_selection_open
-	mobile_bid_popup.visible = mobile_bid_selection_open
-	if mobile_bid_selection_open:
-		_close_sticker_picker()
-		reaction_picker.hide()
-		soundpad_picker.hide()
-		_close_mobile_avatar_actions()
-		_close_mobile_player_profile()
-		_position_mobile_bid_popup()
-		call_deferred("_position_mobile_bid_popup")
+	# Kept for compatibility with old saved UI actions. Bids now appear directly
+	# on the table whenever the local player may choose one.
+	_refresh_mobile_action_dock()
 
 
 func _close_mobile_bid_fan() -> void:
@@ -1641,24 +1633,50 @@ func _close_mobile_bid_fan() -> void:
 
 
 func _refresh_mobile_action_dock() -> void:
-	if not mobile_table_layout or not is_instance_valid(mobile_bid_menu_button):
+	if not mobile_table_layout or not is_instance_valid(mobile_bid_popup):
 		return
 	_position_mobile_dock_buttons()
 	var action_count := bid_controls.get_child_count()
-	var has_actions := action_count > 0
-	mobile_bid_menu_button.disabled = not has_actions
+	var has_actions := action_count > 0 and not is_score_sheet_visible
+	if is_instance_valid(mobile_bid_menu_button):
+		mobile_bid_menu_button.hide()
+		mobile_bid_menu_button.disabled = true
+	mobile_bid_selection_open = has_actions
+	var bid_title := mobile_bid_popup.find_child("BidTitle", true, false) as Label
+	if is_instance_valid(bid_title):
+		var only_numeric_buttons := has_actions
+		for child in bid_controls.get_children():
+			if not child is Button or not (child as Button).text.is_valid_int():
+				only_numeric_buttons = false
+				break
+		bid_title.visible = only_numeric_buttons
 	_position_mobile_bid_popup()
-	call_deferred("_position_mobile_bid_popup")
-	if not has_actions:
-		mobile_bid_selection_open = false
-	mobile_bid_popup.visible = has_actions and mobile_bid_selection_open
+	mobile_bid_popup.visible = has_actions
+	if has_actions:
+		_close_sticker_picker()
+		reaction_picker.hide()
+		soundpad_picker.hide()
 
 func _position_mobile_bid_popup() -> void:
-	if not is_instance_valid(mobile_bid_popup) or not is_instance_valid(mobile_bid_menu_button):
+	if not is_instance_valid(mobile_bid_popup):
 		return
-	var fan_size := CornerBidFanResource.FAN_SIZE
-	_set_control_layout(mobile_bid_popup, 1.0, 1.0, 1.0, 1.0, -fan_size.x - 230.0, -fan_size.y - 8.0, -230.0, -8.0)
 	mobile_bid_popup.configure(bid_controls)
+	var viewport_size := get_viewport_rect().size
+	var tray_size := mobile_bid_popup.get_combined_minimum_size()
+	var tray_width := clampf(tray_size.x, 320.0, viewport_size.x - PhoneTable.SAFE_LEFT * 2.0 - 48.0)
+	var tray_height := tray_size.y
+	var bottom_offset := -454.0
+	_set_control_layout(
+		mobile_bid_popup,
+		0.5,
+		1.0,
+		0.5,
+		1.0,
+		-tray_width * 0.5,
+		bottom_offset - tray_height,
+		tray_width * 0.5,
+		bottom_offset
+	)
 
 func _create_table_visual_styles() -> void:
 	_apply_surround_theme_to_rect(background)
@@ -4975,12 +4993,11 @@ func _refresh_network_main_action_controls(snapshot: Dictionary, round_data: Dic
 	_configure_bid_controls_layout(available_bids.size())
 	for bid in available_bids:
 		var bid_button := Button.new()
-		bid_button.text = str(bid) if mobile_table_layout else tr("BID_BUTTON") % bid
-		var bid_button_size := Vector2(112.0, 48.0) if mobile_table_layout else Vector2(100.0, 36.0)
+		bid_button.text = str(bid)
+		var bid_button_size := Vector2(120.0, 72.0) if mobile_table_layout else Vector2(92.0, 46.0)
 		bid_button.custom_minimum_size = bid_button_size
 		_apply_compact_table_action_button_style(bid_button, bid_button_size.y)
-		if mobile_table_layout:
-			bid_button.add_theme_font_size_override("font_size", 17)
+		bid_button.add_theme_font_size_override("font_size", 30 if mobile_table_layout else 18)
 		bid_button.pressed.connect(_on_submit_loopback_test_bid_pressed.bind(bid))
 		bid_controls.add_child(bid_button)
 
@@ -13006,10 +13023,13 @@ func _get_displayed_joker_forced_card_rank() -> Trick.ForcedCardRank:
 
 func _refresh_score_sheet() -> void:
 	score_sheet_panel.visible = is_score_sheet_visible
-	if mobile_table_layout and is_instance_valid(mobile_bid_menu_button):
-		mobile_bid_menu_button.visible = not is_score_sheet_visible
+	if mobile_table_layout:
+		if is_instance_valid(mobile_bid_menu_button):
+			mobile_bid_menu_button.hide()
 		if is_score_sheet_visible:
 			_close_mobile_bid_fan()
+		else:
+			call_deferred("_refresh_mobile_action_dock")
 	if is_instance_valid(score_sheet_backdrop):
 		score_sheet_backdrop.visible = is_score_sheet_visible
 	if is_instance_valid(score_sheet_close_button):
@@ -13839,17 +13859,19 @@ func _scroll_round_history_to_bottom() -> void:
 
 func _configure_bid_controls_layout(option_count: int) -> void:
 	if mobile_table_layout:
-		bid_controls.columns = 3
+		bid_controls.columns = maxi(1, option_count if option_count <= 7 else ceili(option_count / 2.0))
+		bid_controls.add_theme_constant_override("h_separation", 10)
+		bid_controls.add_theme_constant_override("v_separation", 10)
 		return
-	# Desktop stays a compact horizontal strip; large hands use two balanced rows.
+	# Desktop uses the same direct number tiles, in one row up to seven choices.
 	bid_controls.columns = maxi(1, option_count if option_count <= 7 else ceili(option_count / 2.0))
-	var width := bid_controls.columns * 100.0 + maxi(0, bid_controls.columns - 1) * 8.0
+	var width := bid_controls.columns * 92.0 + maxi(0, bid_controls.columns - 1) * 8.0
 	bid_controls.anchor_left = 0.5
 	bid_controls.anchor_right = 0.5
 	bid_controls.offset_left = -width / 2.0
 	bid_controls.offset_right = width / 2.0
 	var rows := maxi(1, ceili(float(option_count) / bid_controls.columns))
-	var height := rows * 36.0 + (rows - 1) * 8.0
+	var height := rows * 46.0 + (rows - 1) * 8.0
 	bid_controls.offset_top = -194.0 - height
 	bid_controls.offset_bottom = -194.0
 
@@ -13871,12 +13893,11 @@ func _refresh_bid_controls() -> void:
 	_configure_bid_controls_layout(game.current_round.cards_per_player + 1)
 	for bid in game.current_round.cards_per_player + 1:
 		var bid_button := Button.new()
-		bid_button.text = str(bid) if mobile_table_layout else tr("BID_BUTTON") % bid
-		var bid_button_size := Vector2(112.0, 48.0) if mobile_table_layout else Vector2(100.0, 36.0)
+		bid_button.text = str(bid)
+		var bid_button_size := Vector2(120.0, 72.0) if mobile_table_layout else Vector2(92.0, 46.0)
 		bid_button.custom_minimum_size = bid_button_size
 		_apply_compact_table_action_button_style(bid_button, bid_button_size.y)
-		if mobile_table_layout:
-			bid_button.add_theme_font_size_override("font_size", 17)
+		bid_button.add_theme_font_size_override("font_size", 30 if mobile_table_layout else 18)
 		bid_button.disabled = not game.current_round.can_place_bid(HUMAN_PLAYER_INDEX, bid)
 		bid_button.pressed.connect(_on_bid_pressed.bind(bid))
 		bid_controls.add_child(bid_button)
