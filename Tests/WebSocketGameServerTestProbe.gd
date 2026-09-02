@@ -98,6 +98,8 @@ func _run() -> void:
 		_send_client(client_index, {"type": "set_ready", "ready": true})
 	assert(await _wait_until(func(): return int(server.get_room_debug_state(private_room_id).get("confirmed", 0)) == 4), "All human players must explicitly become ready")
 	_send_client(1, {"type": "start_match"})
+	assert(await _drive_first_turn_roll(private_room_id, [1, 2, 3, 4]), "Private room must complete the first-turn roll")
+	_send_client(1, {"type": "start_first_round"})
 	assert(await _wait_until(func(): return _clients_have_message([1, 2, 3, 4], "player_snapshot")), "Owner start must begin only the ready private room")
 
 	var active_client_index := -1
@@ -117,11 +119,23 @@ func _run() -> void:
 	_send_client(active_client_index, {"type": "match_command", "command": bid_command.to_dictionary()})
 	assert(await _wait_until(func(): return _has_accepted_command(active_client_index) and int(server.get_room_debug_state(private_room_id).get("revision", 0)) == 1), "Authoritative room must accept a valid bid")
 	assert(not bool(server.get_room_debug_state(public_room_id).get("round_started", true)), "Other room state must remain isolated")
+
+	var private_room: Dictionary = server._rooms[private_room_id]
+	var private_match_host = private_room.get("match_host")
+	private_match_host.game.round_number = Server.TOTAL_ROUND_COUNT
+	private_match_host.game.current_round.state = Round.State.FINISHED
+	_send_client(2, {"type": "return_to_lobby"})
+	assert(await _wait_until(func(): return _has_rejection(2, "host_only")), "Only the owner may return a finished match to the lobby")
+	_send_client(1, {"type": "return_to_lobby"})
+	assert(await _wait_until(func(): return not bool(server.get_room_debug_state(private_room_id).get("round_started", true)) and int(server.get_room_debug_state(private_room_id).get("round_number", -1)) == 0), "Finished room must reset for a rematch")
+
 	_send_client(0, {"type": "seat_ack", "player_index": int(public_seat.get("player_index", -1))})
 	assert(await _wait_until(func(): return _has_message_type(0, "seat_confirmed")), "Bot-room host seat must be confirmed")
 	_send_client(0, {"type": "set_ready", "ready": true})
 	_send_client(0, {"type": "start_match"})
-	assert(await _wait_until(func(): return _has_message_type(0, "player_snapshot") and int(server.get_room_debug_state(public_room_id).get("revision", 0)) > 0), "One human plus server bots must start and make automatic turns")
+	assert(await _drive_first_turn_roll(public_room_id, [0]), "Bot room must complete the first-turn roll")
+	_send_client(0, {"type": "start_first_round"})
+	assert(await _wait_until(func(): return _has_message_type(0, "player_snapshot") and int(server.get_room_debug_state(public_room_id).get("round_number", 0)) == 1), "One human plus server bots must start the first round")
 	print("WEBSOCKET_GAME_SERVER_TEST_PASS")
 	_cleanup()
 	quit()
@@ -146,6 +160,33 @@ func _pump() -> void:
 			var parsed: Variant = JSON.parse_string(client.get_packet().get_string_from_utf8())
 			if parsed is Dictionary:
 				inboxes[client_index].append(parsed)
+
+
+func _drive_first_turn_roll(room_id: int, client_indices: Array, timeout_seconds := 18.0) -> bool:
+	var deadline := Time.get_ticks_msec() + int(timeout_seconds * 1000.0)
+	while Time.get_ticks_msec() < deadline:
+		_pump()
+		var debug_state: Dictionary = server.get_room_debug_state(room_id)
+		if int(debug_state.get("first_turn_roll_phase", -1)) == Server.FirstTurnRollPhase.COMPLETE:
+			return int(debug_state.get("first_turn_roll_winner_index", -1)) >= 0
+		for client_index_variant in client_indices:
+			var client_index := int(client_index_variant)
+			var lobby_state := _peek_latest_message(client_index, "lobby_state")
+			var roll_state: Dictionary = lobby_state.get("first_turn_roll", {})
+			if int(roll_state.get("phase", -1)) != Server.FirstTurnRollPhase.WAITING:
+				continue
+			var player_index := _player_index_for_peer(room_id, client_index)
+			var contenders: Array = roll_state.get("contenders", [])
+			var submitted: Array = roll_state.get("submitted", [])
+			var is_contender := false
+			for contender_variant in contenders:
+				if int(contender_variant) == player_index:
+					is_contender = true
+					break
+			if player_index >= 0 and is_contender and player_index < submitted.size() and not bool(submitted[player_index]):
+				_send_client(client_index, {"type": "first_turn_roll", "roll_round": int(roll_state.get("roll_round", -1))})
+		await process_frame
+	return false
 
 
 func _all_clients_connected() -> bool:
@@ -239,6 +280,14 @@ func _take_latest_message(client_index: int, message_type: String) -> Dictionary
 		var message_variant = inboxes[client_index][message_index]
 		if message_variant is Dictionary and str((message_variant as Dictionary).get("type", "")) == message_type:
 			inboxes[client_index].remove_at(message_index)
+			return message_variant
+	return {}
+
+
+func _peek_latest_message(client_index: int, message_type: String) -> Dictionary:
+	for message_index in range(inboxes[client_index].size() - 1, -1, -1):
+		var message_variant = inboxes[client_index][message_index]
+		if message_variant is Dictionary and str((message_variant as Dictionary).get("type", "")) == message_type:
 			return message_variant
 	return {}
 

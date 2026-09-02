@@ -5,7 +5,7 @@ extends RefCounted
 
 signal status_changed(status: String)
 
-const PROTOCOL_VERSION := 3
+const PROTOCOL_VERSION := 4
 const PLAYER_COUNT := 4
 const DEFAULT_PORT := 8765
 const MAX_PACKET_BYTES := 65536
@@ -15,6 +15,8 @@ const TOTAL_ROUND_COUNT := 32
 const NEXT_ROUND_DELAY_MSEC := 8000
 const BOT_ACTION_DELAY_MSEC := 650
 const RECONNECT_GRACE_MSEC := 5000
+const FIRST_TURN_ROLL_REVEAL_MSEC := 2400
+const FIRST_ROUND_AUTO_START_MSEC := 3200
 const MATCH_MODE_CLASSIC := "classic"
 const MATCH_MODE_TEAMS_2V2 := "teams_2v2"
 const BOT_NAMES := ["Rhysand", "Azriel", "Cassian"]
@@ -31,6 +33,14 @@ var _room_id_by_peer: Dictionary = {}
 var _room_id_by_session_token: Dictionary = {}
 var _known_peer_ids: Dictionary = {}
 var _next_room_id := 1001
+
+
+enum FirstTurnRollPhase {
+	INACTIVE,
+	WAITING,
+	REVEAL,
+	COMPLETE
+}
 
 
 func start(port: int = DEFAULT_PORT, bind_address: String = "*") -> Error:
@@ -119,7 +129,10 @@ func get_room_debug_state(room_id: int) -> Dictionary:
 		"revision": match_host.revision if match_host != null else -1,
 		"connected": (room.get("player_by_peer", {}) as Dictionary).size(),
 		"confirmed": (room.get("confirmed_players", {}) as Dictionary).size(),
-		"round_number": match_host.game.round_number if match_host != null else 0
+		"round_number": match_host.game.round_number if match_host != null else 0,
+		"first_turn_roll_phase": int(room.get("first_turn_roll_phase", FirstTurnRollPhase.INACTIVE)),
+		"first_turn_roll_winner_index": int(room.get("first_turn_roll_winner_index", -1)),
+		"match_finished": _is_match_finished(room)
 	}
 
 
@@ -143,6 +156,12 @@ func _handle_message(sender_peer_id: int, message: Dictionary) -> void:
 			_handle_update_room_settings(sender_peer_id, message)
 		"start_match":
 			_handle_start_match(sender_peer_id)
+		"first_turn_roll":
+			_handle_first_turn_roll(sender_peer_id, message)
+		"start_first_round":
+			_handle_start_first_round(sender_peer_id)
+		"return_to_lobby":
+			_handle_return_to_lobby(sender_peer_id)
 		"match_command":
 			_handle_match_command(sender_peer_id, message)
 		"resync_request":
@@ -200,6 +219,14 @@ func _handle_create_lobby(sender_peer_id: int, message: Dictionary) -> void:
 		"match_host": MatchHost.new(game_state),
 		"round_started": false,
 		"next_round_at_msec": 0,
+		"first_round_at_msec": 0,
+		"first_turn_roll_phase": FirstTurnRollPhase.INACTIVE,
+		"first_turn_roll_round": 0,
+		"first_turn_roll_contenders": [],
+		"first_turn_roll_submitted": [false, false, false, false],
+		"first_turn_roll_values": [-1, -1, -1, -1],
+		"first_turn_roll_winner_index": -1,
+		"first_turn_roll_reveal_at_msec": 0,
 		"peer_by_player": {},
 		"player_by_peer": {},
 		"confirmed_players": {},
@@ -287,7 +314,7 @@ func _join_peer_to_room(sender_peer_id: int, room: Dictionary, display_name: Str
 		match_host.game.players[player_index].display_name = display_name
 	_send_seat_assigned(sender_peer_id, room, player_index)
 	_broadcast_room_state(room)
-	if bool(room.get("round_started", false)):
+	if _has_started_round(room):
 		_broadcast_player_snapshots(room)
 	return true
 
@@ -306,10 +333,11 @@ func _handle_seat_ack(sender_peer_id: int, message: Dictionary) -> void:
 		"room_id": int(room.get("room_id", 0)),
 		"player_index": player_index,
 		"round_started": bool(room.get("round_started", false)),
+		"first_turn_roll": _create_first_turn_roll_state(room),
 		"lobby_seats": _create_lobby_seats(room)
 	})
 	_broadcast_room_state(room)
-	if bool(room.get("round_started", false)):
+	if _has_started_round(room):
 		_send_player_snapshot(room, player_index)
 	_broadcast_directory_state()
 
@@ -379,7 +407,45 @@ func _handle_start_match(sender_peer_id: int) -> void:
 			if match_host != null:
 				match_host.game.players[seat_index].display_name = BOT_NAMES[mini(bot_number, BOT_NAMES.size() - 1)]
 			bot_number += 1
+	_begin_first_turn_roll(room)
+
+
+func _handle_first_turn_roll(sender_peer_id: int, message: Dictionary) -> void:
+	var room := _get_room_for_peer(sender_peer_id)
+	if room.is_empty():
+		return
+	var player_index := int((room.get("player_by_peer", {}) as Dictionary).get(sender_peer_id, -1))
+	if int(message.get("roll_round", -1)) != int(room.get("first_turn_roll_round", 0)) or not _record_first_turn_roll(room, player_index):
+		_reject_room_action(sender_peer_id, "roll_not_available")
+
+
+func _handle_start_first_round(sender_peer_id: int) -> void:
+	var room := _get_room_for_peer(sender_peer_id)
+	if room.is_empty():
+		return
+	var player_index := int((room.get("player_by_peer", {}) as Dictionary).get(sender_peer_id, -1))
+	if player_index != int(room.get("owner_player_index", -1)):
+		_reject_room_action(sender_peer_id, "host_only")
+		return
+	if int(room.get("first_turn_roll_phase", FirstTurnRollPhase.INACTIVE)) != FirstTurnRollPhase.COMPLETE:
+		_reject_room_action(sender_peer_id, "roll_not_complete")
+		return
 	_start_first_round(room)
+
+
+func _handle_return_to_lobby(sender_peer_id: int) -> void:
+	var room := _get_room_for_peer(sender_peer_id)
+	if room.is_empty():
+		return
+	var player_index := int((room.get("player_by_peer", {}) as Dictionary).get(sender_peer_id, -1))
+	if player_index != int(room.get("owner_player_index", -1)):
+		_reject_room_action(sender_peer_id, "host_only")
+		return
+	if not _is_match_finished(room):
+		_reject_room_action(sender_peer_id, "match_not_finished")
+		return
+	_reset_room_for_rematch(room)
+
 
 func _handle_match_command(sender_peer_id: int, message: Dictionary) -> void:
 	var room := _get_room_for_peer(sender_peer_id)
@@ -423,8 +489,124 @@ func _handle_match_command(sender_peer_id: int, message: Dictionary) -> void:
 			room["next_round_at_msec"] = Time.get_ticks_msec() + NEXT_ROUND_DELAY_MSEC
 
 
+func _begin_first_turn_roll(room: Dictionary) -> void:
+	room["round_started"] = true
+	_reset_first_turn_roll_state(room)
+	_start_first_turn_roll_round(room, [0, 1, 2, 3])
+	_broadcast_directory_state()
+
+
+func _start_first_turn_roll_round(room: Dictionary, contenders: Array) -> void:
+	room["first_turn_roll_round"] = int(room.get("first_turn_roll_round", 0)) + 1
+	room["first_turn_roll_phase"] = FirstTurnRollPhase.WAITING
+	room["first_turn_roll_contenders"] = contenders.duplicate()
+	room["first_turn_roll_submitted"] = [false, false, false, false]
+	room["first_turn_roll_values"] = [-1, -1, -1, -1]
+	room["first_turn_roll_reveal_at_msec"] = 0
+	for player_index_variant in (room.get("bot_players", {}) as Dictionary).keys():
+		var player_index := int(player_index_variant)
+		if contenders.has(player_index):
+			_record_first_turn_roll(room, player_index, false)
+	room["last_active_msec"] = Time.get_ticks_msec()
+	_broadcast_room_state(room)
+
+
+func _record_first_turn_roll(room: Dictionary, player_index: int, broadcast_update: bool = true) -> bool:
+	var contenders: Array = room.get("first_turn_roll_contenders", [])
+	var submitted: Array = room.get("first_turn_roll_submitted", [])
+	var values: Array = room.get("first_turn_roll_values", [])
+	if (
+		int(room.get("first_turn_roll_phase", FirstTurnRollPhase.INACTIVE)) != FirstTurnRollPhase.WAITING
+		or not contenders.has(player_index)
+		or player_index < 0
+		or player_index >= submitted.size()
+		or bool(submitted[player_index])
+	):
+		return false
+	submitted[player_index] = true
+	values[player_index] = randi_range(1, 6)
+	if _all_first_turn_roll_contenders_submitted(room):
+		_reveal_first_turn_roll(room)
+	room["last_active_msec"] = Time.get_ticks_msec()
+	if broadcast_update:
+		_broadcast_room_state(room)
+	return true
+
+
+func _all_first_turn_roll_contenders_submitted(room: Dictionary) -> bool:
+	var submitted: Array = room.get("first_turn_roll_submitted", [])
+	for player_index_variant in room.get("first_turn_roll_contenders", []):
+		var player_index := int(player_index_variant)
+		if player_index < 0 or player_index >= submitted.size() or not bool(submitted[player_index]):
+			return false
+	return true
+
+
+func _reveal_first_turn_roll(room: Dictionary) -> void:
+	var highest_value := -1
+	var leaders: Array[int] = []
+	var values: Array = room.get("first_turn_roll_values", [])
+	for player_index_variant in room.get("first_turn_roll_contenders", []):
+		var player_index := int(player_index_variant)
+		var roll_value := int(values[player_index])
+		if roll_value > highest_value:
+			highest_value = roll_value
+			leaders.assign([player_index])
+		elif roll_value == highest_value:
+			leaders.append(player_index)
+	if leaders.size() == 1:
+		var winner_index := leaders[0]
+		room["first_turn_roll_winner_index"] = winner_index
+		room["first_turn_roll_phase"] = FirstTurnRollPhase.COMPLETE
+		room["first_round_at_msec"] = Time.get_ticks_msec() + FIRST_ROUND_AUTO_START_MSEC
+		var match_host: LocalMatchHost = room.get("match_host")
+		if match_host != null:
+			match_host.game.dealer_index = posmod(winner_index - 1, PLAYER_COUNT)
+		return
+	room["first_turn_roll_contenders"] = leaders
+	room["first_turn_roll_phase"] = FirstTurnRollPhase.REVEAL
+	room["first_turn_roll_reveal_at_msec"] = Time.get_ticks_msec() + FIRST_TURN_ROLL_REVEAL_MSEC
+
+
+func _process_first_turn_roll(room: Dictionary, now_msec: int) -> void:
+	var phase := int(room.get("first_turn_roll_phase", FirstTurnRollPhase.INACTIVE))
+	if phase == FirstTurnRollPhase.REVEAL and now_msec >= int(room.get("first_turn_roll_reveal_at_msec", 0)):
+		_start_first_turn_roll_round(room, (room.get("first_turn_roll_contenders", []) as Array).duplicate())
+	elif phase == FirstTurnRollPhase.COMPLETE and int(room.get("first_round_at_msec", 0)) > 0 and now_msec >= int(room.get("first_round_at_msec", 0)):
+		_start_first_round(room)
+
+
+func _create_first_turn_roll_state(room: Dictionary) -> Dictionary:
+	var phase := int(room.get("first_turn_roll_phase", FirstTurnRollPhase.INACTIVE))
+	if phase == FirstTurnRollPhase.INACTIVE:
+		return {}
+	var visible_values := [-1, -1, -1, -1]
+	if phase == FirstTurnRollPhase.REVEAL or phase == FirstTurnRollPhase.COMPLETE:
+		visible_values = (room.get("first_turn_roll_values", []) as Array).duplicate()
+	return {
+		"phase": phase,
+		"roll_round": int(room.get("first_turn_roll_round", 0)),
+		"contenders": (room.get("first_turn_roll_contenders", []) as Array).duplicate(),
+		"submitted": (room.get("first_turn_roll_submitted", []) as Array).duplicate(),
+		"values": visible_values,
+		"winner_player_index": int(room.get("first_turn_roll_winner_index", -1))
+	}
+
+
+func _reset_first_turn_roll_state(room: Dictionary) -> void:
+	room["first_round_at_msec"] = 0
+	room["first_turn_roll_phase"] = FirstTurnRollPhase.INACTIVE
+	room["first_turn_roll_round"] = 0
+	room["first_turn_roll_contenders"] = []
+	room["first_turn_roll_submitted"] = [false, false, false, false]
+	room["first_turn_roll_values"] = [-1, -1, -1, -1]
+	room["first_turn_roll_winner_index"] = -1
+	room["first_turn_roll_reveal_at_msec"] = 0
+
 func _start_first_round(room: Dictionary) -> void:
 	var match_host: LocalMatchHost = room.get("match_host")
+	if match_host == null or match_host.game.round_number > 0 or int(room.get("first_turn_roll_phase", FirstTurnRollPhase.INACTIVE)) != FirstTurnRollPhase.COMPLETE:
+		return
 	var plan := _get_scheduled_round_plan(1)
 	if match_host == null or not match_host.game.start_round(
 		int(plan.get("cards_per_player", 1)),
@@ -437,6 +619,7 @@ func _start_first_round(room: Dictionary) -> void:
 	match_host.record_current_round_started()
 	room["round_started"] = true
 	room["next_round_at_msec"] = 0
+	room["first_round_at_msec"] = 0
 	room["last_active_msec"] = Time.get_ticks_msec()
 	_broadcast_room_state(room)
 	_broadcast_player_snapshots(room)
@@ -463,6 +646,7 @@ func _start_next_round(room: Dictionary) -> bool:
 		return false
 	match_host.record_current_round_started()
 	room["next_round_at_msec"] = 0
+	room["first_round_at_msec"] = 0
 	room["last_active_msec"] = Time.get_ticks_msec()
 	_broadcast_room_state(room)
 	_broadcast_player_snapshots(room)
@@ -483,6 +667,7 @@ func _process_rooms() -> void:
 			rooms_to_remove.append(room_id)
 			continue
 		_process_reconnect_timeouts(room, now)
+		_process_first_turn_roll(room, now)
 		_process_room_bot(room, now)
 		var next_round_at := int(room.get("next_round_at_msec", 0))
 		var bot_count := (room.get("bot_players", {}) as Dictionary).size()
@@ -506,6 +691,8 @@ func _process_reconnect_timeouts(room: Dictionary, now_msec: int) -> void:
 		(room.get("temporary_bot_players", {}) as Dictionary)[player_index] = true
 		(room.get("bot_players", {}) as Dictionary)[player_index] = true
 		room["bot_action_at_msec"] = now_msec + BOT_ACTION_DELAY_MSEC
+		if int(room.get("first_turn_roll_phase", FirstTurnRollPhase.INACTIVE)) == FirstTurnRollPhase.WAITING:
+			_record_first_turn_roll(room, player_index, false)
 	if not expired.is_empty():
 		room["last_active_msec"] = now_msec
 		_broadcast_room_state(room)
@@ -579,10 +766,55 @@ func _leave_current_room(sender_peer_id: int, notify_client: bool) -> void:
 		_remove_room(room_id)
 	else:
 		_broadcast_room_state(room)
-		if bool(room.get("round_started", false)):
+		if _has_started_round(room):
 			_broadcast_player_snapshots(room)
 	_broadcast_directory_state()
 
+
+func _has_started_round(room: Dictionary) -> bool:
+	var match_host: LocalMatchHost = room.get("match_host")
+	return match_host != null and match_host.game.round_number > 0
+
+
+func _is_match_finished(room: Dictionary) -> bool:
+	var match_host: LocalMatchHost = room.get("match_host")
+	return (
+		match_host != null
+		and match_host.game.round_number >= TOTAL_ROUND_COUNT
+		and match_host.game.current_round != null
+		and match_host.game.current_round.state == Round.State.FINISHED
+	)
+
+
+func _reset_room_for_rematch(room: Dictionary) -> void:
+	var old_match_host: LocalMatchHost = room.get("match_host")
+	var player_names: Array[String] = []
+	for player_index in PLAYER_COUNT:
+		player_names.append(old_match_host.game.players[player_index].display_name if old_match_host != null else "Игрок %d" % (player_index + 1))
+	var token_by_player: Dictionary = room.get("session_token_by_player", {})
+	var player_by_token: Dictionary = room.get("player_by_session_token", {})
+	var peer_by_player: Dictionary = room.get("peer_by_player", {})
+	for player_index_variant in token_by_player.keys():
+		var player_index := int(player_index_variant)
+		if peer_by_player.has(player_index):
+			continue
+		var stale_token := str(token_by_player.get(player_index, ""))
+		token_by_player.erase(player_index)
+		player_by_token.erase(stale_token)
+		_room_id_by_session_token.erase(stale_token)
+	(room.get("confirmed_players", {}) as Dictionary).clear()
+	(room.get("bot_players", {}) as Dictionary).clear()
+	(room.get("temporary_bot_players", {}) as Dictionary).clear()
+	(room.get("reconnecting_since_msec", {}) as Dictionary).clear()
+	room["match_host"] = MatchHost.new(Game.new(player_names))
+	room["round_started"] = false
+	room["next_round_at_msec"] = 0
+	room["bot_action_at_msec"] = 0
+	room["last_active_msec"] = Time.get_ticks_msec()
+	_reset_first_turn_roll_state(room)
+	_broadcast_room_state(room)
+	_broadcast_directory_state()
+	_set_status("Комната %d вернулась в лобби для реванша." % int(room.get("room_id", 0)))
 
 func _remove_room(room_id: int) -> void:
 	if not _rooms.has(room_id):
@@ -608,6 +840,7 @@ func _send_seat_assigned(target_peer_id: int, room: Dictionary, player_index: in
 		"session_token": str((room.get("session_token_by_player", {}) as Dictionary).get(player_index, "")),
 		"round_started": bool(room.get("round_started", false)),
 		"round_number": match_host.game.round_number if match_host != null else 0,
+		"first_turn_roll": _create_first_turn_roll_state(room),
 		"owner_player_index": int(room.get("owner_player_index", 0)),
 		"match_mode": str(room.get("match_mode", MATCH_MODE_CLASSIC)),
 		"fill_empty_seats_with_bots": bool(room.get("fill_empty_seats_with_bots", false)),
@@ -625,6 +858,7 @@ func _broadcast_room_state(room: Dictionary) -> void:
 		"is_private": bool(room.get("is_private", false)),
 		"round_started": bool(room.get("round_started", false)),
 		"round_number": match_host.game.round_number if match_host != null else 0,
+		"first_turn_roll": _create_first_turn_roll_state(room),
 		"owner_player_index": int(room.get("owner_player_index", 0)),
 		"match_mode": str(room.get("match_mode", MATCH_MODE_CLASSIC)),
 		"fill_empty_seats_with_bots": bool(room.get("fill_empty_seats_with_bots", false)),

@@ -2969,11 +2969,13 @@ func _show_remote_enet_lobby() -> void:
 			_add_menu_label(tr("Режим: %s · %s") % [mode_text, bots_text], 17, Color(0.95, 0.89, 0.7, 1.0))
 
 	_add_menu_spacer(12.0)
-	var has_table: bool = remote_enet_match != null and not remote_enet_match.get_test_table_snapshot().is_empty()
+	var has_table: bool = remote_enet_match != null and (not remote_enet_match.get_test_table_snapshot().is_empty() or remote_enet_match.is_first_turn_roll_active())
 	var actions := _create_online_action_grid()
 	if remote_enet_match != null and remote_enet_match.lobby_round_started:
 		var open_table_button := _add_online_action_tile(actions, "Открыть игровой стол", _on_open_network_table_pressed, true)
 		open_table_button.disabled = not has_table
+		if remote_enet_match.is_host() and remote_enet_match.is_match_finished():
+			_add_online_action_tile(actions, tr("Реванш · вернуться в комнату"), _on_remote_return_to_lobby_pressed, true)
 	elif remote_enet_match != null and remote_enet_match.is_in_room():
 		var ready_text := tr("Отменить готовность") if remote_enet_match.client_ready else tr("Я готов")
 		var ready_button := _add_online_action_tile(actions, ready_text, _on_remote_ready_pressed, not remote_enet_match.client_ready)
@@ -3051,6 +3053,15 @@ func _on_remote_ready_pressed() -> void:
 func _on_remote_start_match_pressed() -> void:
 	if remote_enet_match != null:
 		remote_enet_match.start_match()
+
+
+func _on_remote_return_to_lobby_pressed() -> void:
+	if remote_enet_match == null or not remote_enet_match.return_finished_match_to_lobby():
+		return
+	if is_instance_valid(network_table_view):
+		network_table_view.visible = false
+	first_turn_roll_panel.visible = false
+	_show_remote_enet_lobby()
 
 
 func _on_remote_lobby_settings_changed() -> void:
@@ -5767,6 +5778,7 @@ func _on_open_network_table_pressed() -> void:
 
 func _on_close_network_table_pressed() -> void:
 	_reset_loopback_network_joker_selection()
+	first_turn_roll_panel.visible = false
 	steam_p2p_main_table_presentation = false
 	if is_instance_valid(network_table_view):
 		network_table_view.visible = false
@@ -6032,6 +6044,9 @@ func _refresh_network_table_view() -> void:
 		network_table_title_label.text = "Сетевой стол · локальный ENet-тест" if loopback_network_is_technical_presentation else "Сетевая партия"
 		network_table_close_button.text = "Вернуться к тесту" if loopback_network_is_technical_presentation else "Вернуться в комнату"
 		network_table_close_button.tooltip_text = "Вернуться к техническому окну локальной сети" if loopback_network_is_technical_presentation else "Вернуться в комнату"
+	first_turn_roll_panel.visible = false
+	if network_match.is_first_turn_roll_active():
+		_refresh_first_turn_roll_panel(network_match.get_first_turn_roll_state(), network_match.lobby_seats)
 	var snapshot: Dictionary = network_match.get_test_table_snapshot()
 	if snapshot.is_empty():
 		network_table_round_label.text = "Ожидание безопасного снимка стола"
@@ -6527,6 +6542,20 @@ func _refresh_network_table_action_controls(snapshot: Dictionary) -> void:
 	_clear_children(network_table_action_controls)
 	if snapshot.is_empty():
 		network_table_action_panel.visible = false
+		return
+	var active_network_match = _get_active_network_match()
+	if remote_enet_table_presentation and active_network_match != null and active_network_match.is_match_finished():
+		network_table_action_panel.visible = true
+		_place_network_table_action_panel(false)
+		var finished_title := Label.new()
+		finished_title.text = tr("Матч завершён")
+		finished_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		finished_title.add_theme_font_size_override("font_size", 18)
+		finished_title.add_theme_color_override("font_color", Color(0.97, 0.84, 0.48, 1.0))
+		network_table_action_controls.add_child(finished_title)
+		if active_network_match.is_host():
+			network_table_action_controls.add_child(_create_network_table_action_button(tr("Реванш · вернуться в комнату"), _on_remote_return_to_lobby_pressed, true))
+		network_table_action_controls.add_child(_create_network_table_action_button(tr("Вернуться в интернет-комнату"), _on_close_network_table_pressed))
 		return
 	network_table_action_panel.visible = true
 	if steam_p2p_match != null and _get_active_network_match() == steam_p2p_match and steam_p2p_match.is_host():
@@ -8970,18 +8999,25 @@ func _begin_local_first_turn_roll() -> void:
 
 
 func _on_first_turn_roll_action_pressed() -> void:
-	if _is_steam_p2p_main_table_active():
+	var remote_roll_table_open := remote_enet_table_presentation and is_instance_valid(network_table_view) and network_table_view.visible
+	if _is_steam_p2p_main_table_active() or remote_roll_table_open:
 		var network_match = _get_active_network_match()
 		if network_match == null:
 			return
 		if network_match.can_start_first_real_round():
 			if network_match.start_first_real_round():
 				first_turn_roll_panel.visible = false
-				_refresh_steam_p2p_status()
+				if remote_roll_table_open:
+					_refresh_network_table_view()
+				else:
+					_refresh_steam_p2p_status()
 			return
 		if network_match.can_submit_first_turn_roll():
 			network_match.submit_first_turn_roll()
-			_refresh_network_main_table()
+			if remote_roll_table_open:
+				_refresh_network_table_view()
+			else:
+				_refresh_network_main_table()
 		return
 
 	if not local_first_turn_roll_active:

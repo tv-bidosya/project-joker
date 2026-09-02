@@ -46,7 +46,13 @@ func _run() -> void:
 	assert(await _wait_until(func(): return _all_clients_ready()), "RemoteEnetMatch clients did not become ready")
 	assert(await _wait_until(func(): return clients[0].can_start_match()), "Owner did not receive the final ready state")
 	assert(clients[0].start_match())
+	assert(await _wait_until(func(): return _all_clients_have_first_turn_roll()), "RemoteEnetMatch clients did not enter the first-turn roll")
+	assert(await _complete_first_turn_roll(), "RemoteEnetMatch clients did not complete the first-turn roll")
+	var first_player_index := int(clients[0].get_first_turn_roll_state().get("winner_player_index", -1))
+	assert(first_player_index >= 0)
+	assert(clients[0].start_first_real_round())
 	assert(await _wait_until(func(): return _all_clients_have_safe_snapshots()), "RemoteEnetMatch clients did not reach the first round")
+	assert(int(clients[0].get_test_table_snapshot().get("dealer_index", -1)) == posmod(first_player_index - 1, Server.PLAYER_COUNT))
 
 	for client in clients:
 		assert(client.client_seat_confirmed)
@@ -96,6 +102,18 @@ func _run() -> void:
 	assert(reconnecting_client.current_room_id == room_id)
 	assert(reconnecting_client.session_token == reconnect_token)
 	assert(reconnecting_client.client_player_index == disconnected_player_index)
+
+	var room: Dictionary = server._rooms[room_id]
+	var match_host = room.get("match_host")
+	match_host.game.round_number = Server.TOTAL_ROUND_COUNT
+	match_host.game.current_round.state = Round.State.FINISHED
+	match_host.completed_round_history.clear()
+	for completed_round_index in Server.TOTAL_ROUND_COUNT:
+		match_host.completed_round_history.append({"round_number": completed_round_index + 1})
+	server._broadcast_player_snapshots(room)
+	assert(await _wait_until(func(): return clients[0].is_match_finished()), "Remote client did not recognize the final match snapshot")
+	assert(clients[0].return_finished_match_to_lobby())
+	assert(await _wait_until(func(): return _all_clients_returned_to_lobby()), "Remote clients did not reset after returning to the lobby")
 	print("REMOTE_ENET_MATCH_TEST_PASS")
 	_cleanup()
 	quit()
@@ -130,6 +148,37 @@ func _all_clients_ready() -> bool:
 		if not client.client_ready:
 			return false
 	return true
+
+
+func _all_clients_have_first_turn_roll() -> bool:
+	for client in clients:
+		if not client.is_first_turn_roll_active():
+			return false
+	return true
+
+
+func _complete_first_turn_roll(timeout_seconds := 18.0) -> bool:
+	var deadline := Time.get_ticks_msec() + int(timeout_seconds * 1000.0)
+	while Time.get_ticks_msec() < deadline:
+		server.poll()
+		var all_complete := true
+		for client in clients:
+			if client.can_submit_first_turn_roll():
+				assert(client.submit_first_turn_roll())
+			if not client.is_first_turn_roll_complete():
+				all_complete = false
+		if all_complete:
+			return true
+		await process_frame
+	return false
+
+
+func _all_clients_returned_to_lobby() -> bool:
+	for client in clients:
+		if client.lobby_round_started or client.client_snapshot_is_safe:
+			return false
+	return true
+
 
 func _all_clients_have_safe_snapshots() -> bool:
 	for client in clients:

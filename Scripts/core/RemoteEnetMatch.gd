@@ -13,12 +13,21 @@ signal room_left
 
 const DEFAULT_HOST := "130.61.155.173"
 const DEFAULT_PORT := 8765
-const PROTOCOL_VERSION := 3
+const PROTOCOL_VERSION := 4
 const PLAYER_COUNT := 4
 const REQUEST_RETRY_SECONDS := 1.0
 const NetworkSnapshot = preload("res://Scripts/core/MatchStateSnapshot.gd")
 const NetworkCommand = preload("res://Scripts/core/MatchCommand.gd")
 const NetworkHost = preload("res://Scripts/core/LocalMatchHost.gd")
+
+
+enum FirstTurnRollPhase {
+	INACTIVE,
+	WAITING,
+	REVEAL,
+	COMPLETE
+}
+
 
 var peer: ENetMultiplayerPeer
 var status_text := "Удалённый сервер не подключён."
@@ -47,6 +56,7 @@ var client_expected_revision := -1
 var client_last_command_message := ""
 var lobby_seats: Array[Dictionary] = []
 var lobby_round_started := false
+var first_turn_roll_state: Dictionary = {}
 var _directory_request_sent := false
 var _request_retry_elapsed := 0.0
 var _rejected := false
@@ -113,6 +123,7 @@ func _clear_current_room(clear_saved_credentials: bool) -> void:
 	client_last_command_message = ""
 	lobby_seats.clear()
 	lobby_round_started = false
+	first_turn_roll_state.clear()
 	if clear_saved_credentials:
 		session_token = ""
 		saved_room_id = 0
@@ -156,7 +167,12 @@ func get_lobby_seats() -> Array[Dictionary]:
 
 
 func is_match_paused_for_reconnect() -> bool:
-	return not get_reconnecting_player_indices().is_empty()
+	if not get_reconnecting_player_indices().is_empty():
+		return true
+	for seat in lobby_seats:
+		if bool(seat.get("reconnecting", false)):
+			return true
+	return false
 
 
 func get_reconnecting_player_indices() -> Array[int]:
@@ -183,23 +199,66 @@ func get_client_private_hand_text() -> String:
 
 
 func is_first_turn_roll_active() -> bool:
-	return false
+	return not first_turn_roll_state.is_empty() and int(first_turn_roll_state.get("phase", FirstTurnRollPhase.INACTIVE)) != FirstTurnRollPhase.INACTIVE and not _has_started_round()
 
 
 func is_first_turn_roll_complete() -> bool:
-	return false
+	return int(first_turn_roll_state.get("phase", FirstTurnRollPhase.INACTIVE)) == FirstTurnRollPhase.COMPLETE and int(first_turn_roll_state.get("winner_player_index", -1)) >= 0
 
 
 func get_first_turn_roll_state() -> Dictionary:
-	return {}
+	return first_turn_roll_state.duplicate(true)
 
 
 func can_submit_first_turn_roll() -> bool:
-	return false
+	if not is_first_turn_roll_active() or is_first_turn_roll_complete() or is_match_paused_for_reconnect():
+		return false
+	var contenders: Array = first_turn_roll_state.get("contenders", [])
+	var submitted: Array = first_turn_roll_state.get("submitted", [])
+	return client_player_index >= 0 and contenders.has(client_player_index) and client_player_index < submitted.size() and not bool(submitted[client_player_index])
 
 
 func submit_first_turn_roll() -> bool:
-	return false
+	if not can_submit_first_turn_roll():
+		return false
+	var sent := _send_message({
+		"type": "first_turn_roll",
+		"roll_round": int(first_turn_roll_state.get("roll_round", -1))
+	}, 1)
+	if sent:
+		var submitted: Array = first_turn_roll_state.get("submitted", []).duplicate()
+		submitted[client_player_index] = true
+		first_turn_roll_state["submitted"] = submitted
+		_set_status(tr("Кубик брошен. Ждём остальных участников…"))
+	return sent
+
+
+func can_start_first_real_round() -> bool:
+	return is_host() and is_first_turn_roll_complete() and not _has_started_round()
+
+
+func start_first_real_round() -> bool:
+	if not can_start_first_real_round():
+		return false
+	return _send_message({"type": "start_first_round"}, 1)
+
+
+func is_match_finished() -> bool:
+	if not client_snapshot_is_safe:
+		return false
+	var completed_rounds: Variant = client_snapshot.get("completed_rounds", [])
+	var round_data: Dictionary = client_snapshot.get("round", {})
+	return completed_rounds is Array and (completed_rounds as Array).size() >= 32 and int(round_data.get("state", Round.State.SETUP)) == Round.State.FINISHED
+
+
+func return_finished_match_to_lobby() -> bool:
+	if not is_host() or not is_match_finished():
+		return false
+	return _send_message({"type": "return_to_lobby"}, 1)
+
+
+func _has_started_round() -> bool:
+	return int(client_snapshot.get("round_number", 0)) > 0
 
 
 func request_lobby_list() -> bool:
@@ -410,6 +469,7 @@ func _handle_seat_assigned(message: Dictionary) -> void:
 		saved_room_id = current_room_id
 		session_token_changed.emit(session_token)
 	lobby_round_started = bool(message.get("round_started", false))
+	_store_first_turn_roll_state(message.get("first_turn_roll", {}))
 	_store_lobby_seats(message.get("lobby_seats", []))
 	client_seat_confirmed = false
 	_rejected = false
@@ -423,6 +483,7 @@ func _handle_seat_confirmed(message: Dictionary) -> void:
 		return
 	client_seat_confirmed = true
 	lobby_round_started = bool(message.get("round_started", false))
+	_store_first_turn_roll_state(message.get("first_turn_roll", {}))
 	_store_lobby_seats(message.get("lobby_seats", []))
 	_set_status(_get_lobby_status())
 	if lobby_round_started:
@@ -433,11 +494,19 @@ func _store_lobby_state(message: Dictionary) -> void:
 	var message_room_id := int(message.get("room_id", current_room_id))
 	if current_room_id > 0 and message_room_id != current_room_id:
 		return
+	var match_was_started := lobby_round_started
 	current_room_id = message_room_id
 	current_room_name = str(message.get("room_name", current_room_name))
 	current_room_is_private = bool(message.get("is_private", current_room_is_private))
 	_store_room_settings(message)
 	lobby_round_started = bool(message.get("round_started", false))
+	_store_first_turn_roll_state(message.get("first_turn_roll", {}))
+	if match_was_started and not lobby_round_started:
+		client_snapshot.clear()
+		client_snapshot_is_safe = false
+		client_private_hand_size = 0
+		client_command_in_flight = false
+		client_expected_revision = -1
 	_store_lobby_seats(message.get("lobby_seats", []))
 	for seat in lobby_seats:
 		if int(seat.get("player_index", -1)) == client_player_index:
@@ -687,6 +756,24 @@ func _is_forced_card_allowed(card_data: Dictionary, hand: Array, lead_suit: int,
 	return forced_card.is_empty() or str(card_data.get("card_key", "")) == str(forced_card.get("card_key", ""))
 
 
+func _store_first_turn_roll_state(data: Variant) -> void:
+	first_turn_roll_state.clear()
+	if not (data is Dictionary):
+		return
+	first_turn_roll_state = (data as Dictionary).duplicate(true)
+	var contenders: Array[int] = []
+	for player_index_variant in first_turn_roll_state.get("contenders", []):
+		contenders.append(int(player_index_variant))
+	first_turn_roll_state["contenders"] = contenders
+	var submitted: Array[bool] = []
+	for submitted_variant in first_turn_roll_state.get("submitted", []):
+		submitted.append(bool(submitted_variant))
+	first_turn_roll_state["submitted"] = submitted
+	var values: Array[int] = []
+	for value_variant in first_turn_roll_state.get("values", []):
+		values.append(int(value_variant))
+	first_turn_roll_state["values"] = values
+
 func _store_room_settings(message: Dictionary) -> void:
 	current_room_owner_player_index = int(message.get("owner_player_index", current_room_owner_player_index))
 	current_room_match_mode = str(message.get("match_mode", current_room_match_mode))
@@ -711,7 +798,9 @@ func _get_lobby_status() -> String:
 		if bool(seat.get("ready", seat.get("confirmed", false))):
 			ready_count += 1
 	var result := tr("Ты на месте %d. Игроков готово: %d/%d.") % [client_player_index + 1, ready_count, PLAYER_COUNT]
-	if lobby_round_started:
+	if is_first_turn_roll_active():
+		result += " " + tr("Розыгрыш первого хода идёт")
+	elif lobby_round_started:
 		result += " " + tr("Партия началась.")
 	elif client_ready:
 		result += " " + tr("Ты готов. Владелец запустит матч.")
@@ -744,6 +833,12 @@ func _get_rejection_text(reason: String) -> String:
 			return tr("Не все игроки отметили готовность.")
 		"not_enough_players":
 			return tr("Нужно четыре игрока или заполнение свободных мест ботами.")
+		"roll_not_available":
+			return tr("Этот бросок кубика уже недоступен.")
+		"roll_not_complete":
+			return tr("Сначала все участники должны бросить кубики.")
+		"match_not_finished":
+			return tr("Вернуться в лобби можно после завершения партии.")
 	return tr("Сервер отклонил подключение: %s") % reason
 
 
