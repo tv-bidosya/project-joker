@@ -10,6 +10,7 @@ const MAX_DEVICE_TOKENS := 8
 const MAX_XP_GRANT_MATCH_IDS := 1000
 const DEFAULT_RATING := 1000
 const MAX_RATING_RESULT_MATCH_IDS := 1000
+const RewardCatalogResource = preload("res://Scripts/core/RewardCatalog.gd")
 
 var storage_path := DEFAULT_STORAGE_PATH
 var last_error := ""
@@ -83,6 +84,7 @@ func create_account_from_verifiers(display_name: String, avatar_index: int, devi
 		"rating": DEFAULT_RATING,
 		"ranked_matches": 0,
 		"rating_result_match_ids": [],
+		"inventory": RewardCatalogResource.create_inventory_for_xp(0),
 		"created_unix": int(Time.get_unix_time_from_system()),
 		"recovery_code_hash": clean_recovery_hash,
 		"device_token_hashes": [clean_token_hash]
@@ -220,18 +222,27 @@ func grant_match_xp(account_id: String, match_id: String, xp_amount: int) -> Dic
 	var previous_grant_ids := grant_ids.duplicate()
 	var previous_xp := int(account.get("xp", 0))
 	var previous_completed := int(account.get("completed_matches", 0))
+	var previous_inventory: Dictionary = (account.get("inventory", {}) as Dictionary).duplicate(true)
 	grant_ids.append(clean_match_id)
 	while grant_ids.size() > MAX_XP_GRANT_MATCH_IDS:
 		grant_ids.pop_front()
 	account["xp"] = previous_xp + xp_amount
 	account["completed_matches"] = previous_completed + 1
 	account["xp_grant_match_ids"] = grant_ids
+	account["inventory"] = RewardCatalogResource.create_inventory_for_xp(int(account["xp"]))
 	if _save() != OK:
 		account["xp"] = previous_xp
 		account["completed_matches"] = previous_completed
 		account["xp_grant_match_ids"] = previous_grant_ids
+		account["inventory"] = previous_inventory
 		return {"ok": false, "error": last_error}
-	return {"ok": true, "awarded": true, "xp_awarded": xp_amount, "account": _create_public_account(account)}
+	return {
+		"ok": true,
+		"awarded": true,
+		"xp_awarded": xp_amount,
+		"newly_unlocked": RewardCatalogResource.get_newly_unlocked(previous_xp, int(account["xp"])),
+		"account": _create_public_account(account)
+	}
 
 
 func apply_ranked_match_result(account_id: String, match_id: String, rating_delta: int) -> Dictionary:
@@ -280,16 +291,18 @@ func _sanitize_loaded_account(account_id: String, source: Dictionary) -> Diction
 			rating_result_match_ids.append(match_id)
 	while rating_result_match_ids.size() > MAX_RATING_RESULT_MATCH_IDS:
 		rating_result_match_ids.pop_front()
+	var sanitized_xp := maxi(0, int(source.get("xp", 0)))
 	return {
 		"account_id": account_id,
 		"display_name": _sanitize_display_name(str(source.get("display_name", "Игрок"))),
 		"avatar_index": maxi(0, int(source.get("avatar_index", 0))),
-		"xp": maxi(0, int(source.get("xp", 0))),
+		"xp": sanitized_xp,
 		"completed_matches": maxi(0, int(source.get("completed_matches", 0))),
 		"xp_grant_match_ids": xp_grant_match_ids,
 		"rating": maxi(0, int(source.get("rating", DEFAULT_RATING))),
 		"ranked_matches": maxi(0, int(source.get("ranked_matches", 0))),
 		"rating_result_match_ids": rating_result_match_ids,
+		"inventory": RewardCatalogResource.create_inventory_for_xp(sanitized_xp),
 		"created_unix": maxi(0, int(source.get("created_unix", 0))),
 		"recovery_code_hash": str(source.get("recovery_code_hash", "")),
 		"device_token_hashes": token_hashes
@@ -305,6 +318,8 @@ func _create_public_account(account: Dictionary) -> Dictionary:
 		"completed_matches": int(account.get("completed_matches", 0)),
 		"rating": int(account.get("rating", DEFAULT_RATING)),
 		"ranked_matches": int(account.get("ranked_matches", 0)),
+		"inventory": (account.get("inventory", RewardCatalogResource.create_inventory_for_xp(int(account.get("xp", 0)))) as Dictionary).duplicate(true),
+		"next_reward": RewardCatalogResource.get_next_reward(int(account.get("xp", 0))),
 		"created_unix": int(account.get("created_unix", 0))
 	}
 

@@ -53,7 +53,11 @@ func _run() -> void:
 	assert(await _wait_until(func(): return _all_message_types_received("account_state")), "All clients must authenticate an account")
 	for client_index in CLIENT_COUNT:
 		var account_state := _take_message(client_index, "account_state")
-		assert(str((account_state.get("account", {}) as Dictionary).get("account_id", "")).begins_with("PJ-"))
+		var public_account: Dictionary = account_state.get("account", {})
+		var inventory: Dictionary = public_account.get("inventory", {})
+		assert(str(public_account.get("account_id", "")).begins_with("PJ-"))
+		assert((inventory.get("gifts", []) as Array).size() == 10)
+		assert(int((public_account.get("next_reward", {}) as Dictionary).get("xp", 0)) == 500)
 		assert(not account_state.has("device_token"))
 		assert(not account_state.has("recovery_code"))
 	for client_index in CLIENT_COUNT:

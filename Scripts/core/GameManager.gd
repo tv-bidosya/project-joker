@@ -7855,8 +7855,31 @@ func _show_account_menu() -> void:
 			Color(0.97, 0.86, 0.55, 1.0)
 		)
 		var current_xp := int(account_state.get("xp", 0))
-		var next_reward_xp := (floori(float(current_xp) / 500.0) + 1) * 500
-		_add_menu_label("До следующей награды: %d XP" % (next_reward_xp - current_xp), 14, Color(0.72, 0.85, 0.76, 1.0))
+		var inventory: Dictionary = account_state.get("inventory", {})
+		_add_menu_label(
+			"Инвентарь: рубашки %d · аватары %d · темы %d" % [
+				(inventory.get("card_backs", []) as Array).size(),
+				(inventory.get("avatars", []) as Array).size(),
+				(inventory.get("table_themes", []) as Array).size()
+			],
+			14,
+			Color(0.72, 0.85, 0.76, 1.0)
+		)
+		_add_menu_label(
+			"Реакции %d · подарки %d · папки звуков %d" % [
+				(inventory.get("reactions", []) as Array).size(),
+				(inventory.get("gifts", []) as Array).size(),
+				(inventory.get("soundbar_folders", []) as Array).size()
+			],
+			14,
+			Color(0.72, 0.85, 0.76, 1.0)
+		)
+		var next_reward: Dictionary = account_state.get("next_reward", {})
+		if not next_reward.is_empty():
+			var next_reward_xp := int(next_reward.get("xp", current_xp))
+			_add_menu_label("До следующего набора наград: %d XP" % maxi(0, next_reward_xp - current_xp), 14, Color(0.72, 0.85, 0.76, 1.0))
+		else:
+			_add_menu_label("Все постоянные награды открыты.", 14, Color(0.97, 0.86, 0.55, 1.0))
 		_add_menu_button("Выпустить новый код восстановления", _on_rotate_account_recovery_pressed)
 	else:
 		_add_menu_button("Подключить аккаунт", _on_connect_account_pressed, true)

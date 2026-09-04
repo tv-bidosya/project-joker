@@ -47,6 +47,8 @@ var account_xp := 0
 var account_completed_matches := 0
 var account_rating := 1000
 var account_ranked_matches := 0
+var account_inventory: Dictionary = {}
+var account_next_reward: Dictionary = {}
 var account_active_room_id := 0
 var last_xp_award: Dictionary = {}
 var session_token := ""
@@ -184,6 +186,8 @@ func get_account_state() -> Dictionary:
 		"completed_matches": account_completed_matches,
 		"rating": account_rating,
 		"ranked_matches": account_ranked_matches,
+		"inventory": account_inventory.duplicate(true),
+		"next_reward": account_next_reward.duplicate(true),
 		"active_room_id": account_active_room_id,
 		"last_xp_award": last_xp_award.duplicate(true)
 	}
@@ -622,6 +626,7 @@ func _handle_account_state(message: Dictionary) -> void:
 	account_completed_matches = maxi(0, int(account.get("completed_matches", 0)))
 	account_rating = maxi(0, int(account.get("rating", account_rating)))
 	account_ranked_matches = maxi(0, int(account.get("ranked_matches", account_ranked_matches)))
+	_store_account_rewards(account)
 	account_active_room_id = maxi(0, int(message.get("active_room_id", 0)))
 	if account_active_room_id > 0 and saved_room_id <= 0:
 		saved_room_id = account_active_room_id
@@ -659,10 +664,20 @@ func _handle_account_progress(message: Dictionary) -> void:
 	account_completed_matches = maxi(0, int(account.get("completed_matches", account_completed_matches)))
 	account_rating = maxi(0, int(account.get("rating", account_rating)))
 	account_ranked_matches = maxi(0, int(account.get("ranked_matches", account_ranked_matches)))
+	_store_account_rewards(account)
 	last_xp_award = (award_variant as Dictionary).duplicate(true)
 	var rating_delta := int(last_xp_award.get("rating_delta", 0))
-	_set_status(tr("Матч завершён: получено %d XP%s.") % [int(last_xp_award.get("xp_awarded", 0)), " · рейтинг %+d" % rating_delta if str(last_xp_award.get("game_type", "casual")) == "ranked" else ""])
+	var newly_unlocked: Array = last_xp_award.get("newly_unlocked", [])
+	var unlock_text := " · открыто наград: %d" % newly_unlocked.size() if not newly_unlocked.is_empty() else ""
+	_set_status(tr("Матч завершён: получено %d XP%s%s.") % [int(last_xp_award.get("xp_awarded", 0)), " · рейтинг %+d" % rating_delta if str(last_xp_award.get("game_type", "casual")) == "ranked" else "", unlock_text])
 	account_state_changed.emit()
+
+
+func _store_account_rewards(account: Dictionary) -> void:
+	var inventory_variant: Variant = account.get("inventory", {})
+	account_inventory = (inventory_variant as Dictionary).duplicate(true) if inventory_variant is Dictionary else {}
+	var next_reward_variant: Variant = account.get("next_reward", {})
+	account_next_reward = (next_reward_variant as Dictionary).duplicate(true) if next_reward_variant is Dictionary else {}
 
 
 func _handle_account_rejected(message: Dictionary) -> void:

@@ -1346,6 +1346,7 @@ func _record_completed_match_if_needed(room: Dictionary) -> void:
 					"exact_tricks_xp": exact_tricks,
 					"multiplier": xp_multiplier,
 					"xp_awarded": int(grant_result.get("xp_awarded", 0)),
+					"newly_unlocked": (grant_result.get("newly_unlocked", []) as Array).duplicate(true),
 					"abandoned": abandoned,
 					"forfeited": forfeited,
 					"bot_match": match_started_with_bots,

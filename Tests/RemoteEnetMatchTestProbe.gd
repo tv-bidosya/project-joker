@@ -28,6 +28,8 @@ func _run() -> void:
 		assert(client.account_id.begins_with("PJ-"))
 		assert(client.account_device_token.length() == 64)
 		assert(client.account_recovery_code.length() == 39)
+		assert((client.account_inventory.get("reactions", []) as Array).size() == 20)
+		assert(int(client.account_next_reward.get("xp", 0)) == 500)
 
 	var recovered_client = RemoteMatch.new()
 	root.add_child(recovered_client)
