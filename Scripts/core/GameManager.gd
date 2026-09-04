@@ -37,6 +37,7 @@ const LoopbackNetwork = preload("res://Scripts/core/LoopbackNetworkTest.gd")
 const SteamBridge = preload("res://Scripts/core/SteamBridge.gd")
 const SteamP2PMatch = preload("res://Scripts/core/SteamP2PMatch.gd")
 const RemoteEnetMatchResource = preload("res://Scripts/core/RemoteEnetMatch.gd")
+const RewardCatalogResource = preload("res://Scripts/core/RewardCatalog.gd")
 const REMOTE_GAME_SERVER_HOST := "130.61.155.173"
 const REMOTE_GAME_SERVER_PORT := 8765
 const BotMonteCarloStrategy = preload("res://Scripts/core/BotMonteCarloStrategy.gd")
@@ -87,7 +88,7 @@ const CHAT_VISIBLE_MESSAGE_LIMIT := 40
 const BUILT_IN_AVATAR_COUNT := 4
 const CUSTOM_AVATAR_INDEX := BUILT_IN_AVATAR_COUNT
 const HUMAN_AVATAR_COUNT := BUILT_IN_AVATAR_COUNT + 1
-const GAME_VERSION := "0.5.2"
+const GAME_VERSION := "0.6.9"
 # Внутренний просмотр отчётов доступен только при запуске из редактора и может
 # быть дополнительно отключён этим переключателем. Создание отчёта игроком не зависит от него.
 const PERSISTENT_SETTINGS_PATH := "user://project_joker_settings.cfg"
@@ -7818,6 +7819,7 @@ func _show_account_menu() -> void:
 	menu_overlay.visible = true
 	_clear_children(menu_content)
 	if mobile_table_layout:
+		mobile_reading_page = false
 		mobile_compact_menu = true
 		_refresh_menu_presentation(true)
 		menu_scroll.scroll_vertical = 0
@@ -7885,6 +7887,7 @@ func _show_account_menu() -> void:
 		_add_menu_button("Подключить аккаунт", _on_connect_account_pressed, true)
 		if not remote_account_id.is_empty():
 			_add_menu_button("Создать новый аккаунт", _show_new_account_confirmation)
+	_add_menu_button("Награды и инвентарь", _show_rewards_inventory_menu)
 
 	_add_menu_spacer(10.0)
 	_add_menu_label("Войти в существующий аккаунт на этом устройстве", 17, Color(0.97, 0.86, 0.55, 1.0))
@@ -7907,6 +7910,176 @@ func _show_account_menu() -> void:
 	if mobile_table_layout:
 		_prepare_mobile_menu_fields(menu_content)
 		_queue_menu_panel_fit()
+
+
+func _show_rewards_inventory_menu() -> void:
+	account_menu_is_open = false
+	menu_overlay.visible = true
+	_clear_children(menu_content)
+	_begin_mobile_reading_page()
+	if mobile_table_layout:
+		mobile_compact_menu = true
+	_refresh_menu_presentation(true)
+	menu_scroll.scroll_vertical = 0
+	_add_menu_title("Награды и инвентарь", "Играй, получай XP и навсегда открывай оформление и реакции")
+
+	var is_connected: bool = remote_enet_match != null and remote_enet_match.is_account_connected()
+	var account_state: Dictionary = remote_enet_match.get_account_state() if is_connected else {}
+	var current_xp := maxi(0, int(account_state.get("xp", 0)))
+	var inventory: Dictionary = account_state.get("inventory", RewardCatalogResource.create_inventory_for_xp(current_xp))
+	if not is_connected:
+		_add_menu_label("Предпросмотр стартового набора. Подключи аккаунт, чтобы сервер сохранял прогресс.", 14, Color(0.95, 0.7, 0.52, 1.0))
+
+	var next_reward: Dictionary = account_state.get("next_reward", RewardCatalogResource.get_next_reward(current_xp))
+	_add_reward_progress(current_xp, next_reward)
+
+	var category_grid := GridContainer.new()
+	category_grid.name = "RewardInventoryGrid"
+	category_grid.columns = 2 if mobile_table_layout else 3
+	category_grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	category_grid.add_theme_constant_override("h_separation", 16 if mobile_table_layout else 12)
+	category_grid.add_theme_constant_override("v_separation", 16 if mobile_table_layout else 12)
+	menu_content.add_child(category_grid)
+
+	var category_specs := [
+		[RewardCatalogResource.CATEGORY_CARD_BACKS, "Рубашки карт"],
+		[RewardCatalogResource.CATEGORY_AVATARS, "Аватары"],
+		[RewardCatalogResource.CATEGORY_TABLE_THEMES, "Темы стола"],
+		[RewardCatalogResource.CATEGORY_REACTIONS, "Смайлики"],
+		[RewardCatalogResource.CATEGORY_GIFTS, "Подарки"],
+		[RewardCatalogResource.CATEGORY_SOUNDBAR_FOLDERS, "Папки саундбара"]
+	]
+	for category_spec in category_specs:
+		var category := str(category_spec[0])
+		var unlocked_items: Array = inventory.get(category, [])
+		category_grid.add_child(_create_reward_inventory_tile(
+			str(category_spec[1]),
+			unlocked_items.size(),
+			_get_reward_category_total(category),
+			_get_next_category_reward_xp(category, current_xp)
+		))
+
+	if next_reward.is_empty():
+		_add_menu_label("Все запланированные постоянные награды уже открыты.", 16, Color(0.97, 0.86, 0.55, 1.0))
+	else:
+		_add_menu_label(
+			"Следующий набор: %s" % _format_reward_items(next_reward.get("items", [])),
+			16,
+			Color(0.97, 0.86, 0.55, 1.0)
+		)
+	_add_menu_button("Назад к аккаунту", _show_account_menu, true)
+	_queue_menu_panel_fit()
+
+
+func _add_reward_progress(current_xp: int, next_reward: Dictionary) -> void:
+	var previous_threshold := 0
+	var next_threshold := current_xp
+	if not next_reward.is_empty():
+		next_threshold = int(next_reward.get("xp", current_xp))
+		for reward in RewardCatalogResource.get_all_rewards():
+			var threshold := int(reward.get("xp", 0))
+			if threshold <= current_xp:
+				previous_threshold = maxi(previous_threshold, threshold)
+	else:
+		previous_threshold = current_xp
+
+	var progress_label := Label.new()
+	progress_label.text = (
+		"%d XP · до следующего набора %d XP" % [current_xp, maxi(0, next_threshold - current_xp)]
+		if not next_reward.is_empty()
+		else "%d XP · все награды открыты" % current_xp
+	)
+	progress_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	progress_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	progress_label.add_theme_font_override("font", menu_button_font)
+	progress_label.add_theme_font_size_override("font_size", 28 if mobile_table_layout else 18)
+	progress_label.add_theme_color_override("font_color", _get_menu_palette().heading)
+	menu_content.add_child(progress_label)
+
+	var progress := ProgressBar.new()
+	progress.name = "RewardProgressBar"
+	progress.show_percentage = false
+	progress.min_value = float(previous_threshold)
+	progress.max_value = float(maxi(previous_threshold + 1, next_threshold))
+	progress.value = float(current_xp if not next_reward.is_empty() else progress.max_value)
+	progress.custom_minimum_size.y = 42.0 if mobile_table_layout else 28.0
+	var palette := _get_menu_palette()
+	progress.add_theme_stylebox_override("background", _create_flat_style(Color(palette.field, 0.95), Color(palette.border, 0.9), 2, 8, 2))
+	progress.add_theme_stylebox_override("fill", _create_flat_style(Color(palette.border_bright, 0.95), palette.glow, 1, 8, 2))
+	menu_content.add_child(progress)
+
+
+func _create_reward_inventory_tile(title_text: String, unlocked_count: int, total_count: int, next_xp: int) -> PanelContainer:
+	var palette := _get_menu_palette()
+	var panel := PanelContainer.new()
+	panel.custom_minimum_size = Vector2(0.0, 148.0 if mobile_table_layout else 112.0)
+	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	panel.add_theme_stylebox_override("panel", _create_flat_style(Color(palette.panel_deep, 0.92), Color(palette.border, 0.92), 2, 10, 14))
+	var column := VBoxContainer.new()
+	column.alignment = BoxContainer.ALIGNMENT_CENTER
+	column.add_theme_constant_override("separation", 6)
+	panel.add_child(column)
+
+	var title_label := Label.new()
+	title_label.text = tr(title_text)
+	title_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	title_label.add_theme_font_override("font", menu_button_font)
+	title_label.add_theme_font_size_override("font_size", 27 if mobile_table_layout else 19)
+	title_label.add_theme_color_override("font_color", palette.heading)
+	column.add_child(title_label)
+
+	var count_label := Label.new()
+	count_label.text = tr("Открыто: %d из %d") % [unlocked_count, total_count]
+	count_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	count_label.add_theme_font_override("font", menu_body_font)
+	count_label.add_theme_font_size_override("font_size", 24 if mobile_table_layout else 16)
+	count_label.add_theme_color_override("font_color", palette.text)
+	column.add_child(count_label)
+
+	var next_label := Label.new()
+	next_label.text = tr("Всё открыто") if next_xp < 0 else tr("Следующая: %d XP") % next_xp
+	next_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	next_label.add_theme_font_override("font", menu_body_font)
+	next_label.add_theme_font_size_override("font_size", 21 if mobile_table_layout else 14)
+	next_label.add_theme_color_override("font_color", palette.secondary)
+	column.add_child(next_label)
+	return panel
+
+
+func _get_reward_category_total(category: String) -> int:
+	var total := (RewardCatalogResource.STARTER_INVENTORY.get(category, []) as Array).size()
+	for reward in RewardCatalogResource.get_all_rewards():
+		if str(reward.get("category", "")) == category:
+			total += 1
+	return total
+
+
+func _get_next_category_reward_xp(category: String, current_xp: int) -> int:
+	for reward in RewardCatalogResource.get_all_rewards():
+		if str(reward.get("category", "")) == category and int(reward.get("xp", 0)) > current_xp:
+			return int(reward.get("xp", 0))
+	return -1
+
+
+func _format_reward_items(items: Array) -> String:
+	var counts := {}
+	for reward in items:
+		var category := str((reward as Dictionary).get("category", ""))
+		counts[category] = int(counts.get(category, 0)) + 1
+	var labels := {
+		RewardCatalogResource.CATEGORY_CARD_BACKS: "рубашки",
+		RewardCatalogResource.CATEGORY_AVATARS: "аватары",
+		RewardCatalogResource.CATEGORY_TABLE_THEMES: "темы стола",
+		RewardCatalogResource.CATEGORY_REACTIONS: "реакции",
+		RewardCatalogResource.CATEGORY_GIFTS: "подарки",
+		RewardCatalogResource.CATEGORY_SOUNDBAR_FOLDERS: "папки звуков"
+	}
+	var parts: Array[String] = []
+	for category in RewardCatalogResource.CATEGORY_ORDER:
+		if int(counts.get(category, 0)) > 0:
+			parts.append("%s: %d" % [tr(str(labels.get(category, category))), int(counts[category])])
+	return " · ".join(parts)
 
 
 func _on_connect_account_pressed() -> void:

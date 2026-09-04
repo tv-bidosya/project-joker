@@ -65,6 +65,12 @@ func _run() -> void:
 	assert(main_scene.menu_content.find_child("AccountRecoveryInput", true, false) is LineEdit)
 	assert("Подключить аккаунт" in _get_button_texts(main_scene.menu_content))
 	assert("Восстановить аккаунт" in _get_button_texts(main_scene.menu_content))
+	assert("Награды и инвентарь" in _get_button_texts(main_scene.menu_content))
+	main_scene._show_rewards_inventory_menu()
+	assert(main_scene.menu_content.find_child("RewardProgressBar", true, false) is ProgressBar)
+	var reward_grid := main_scene.menu_content.find_child("RewardInventoryGrid", true, false) as GridContainer
+	assert(reward_grid != null and reward_grid.get_child_count() == 6)
+	assert("Назад к аккаунту" in _get_button_texts(main_scene.menu_content))
 
 	main_scene._show_tutorial_menu()
 	var tutorial_buttons := _get_button_texts(main_scene.menu_content)
@@ -179,6 +185,14 @@ func _run() -> void:
 	main_scene.remote_enet_session_token = "test-reconnect-token"
 	main_scene._show_online_hub(2, false)
 	assert("Подключиться и вернуться" in _get_button_texts(main_scene.menu_content))
+
+	main_scene.mobile_table_layout = true
+	main_scene._apply_mobile_table_layout()
+	main_scene._show_rewards_inventory_menu()
+	await process_frame
+	var mobile_reward_grid := main_scene.menu_content.find_child("RewardInventoryGrid", true, false) as GridContainer
+	assert(mobile_reward_grid != null and mobile_reward_grid.columns == 2)
+	assert(mobile_reward_grid.get_child(0).custom_minimum_size.y >= 140.0)
 
 	print("MAIN_MENU_STRUCTURE_TEST_PASS")
 	quit()
