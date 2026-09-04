@@ -703,10 +703,12 @@ var remote_enet_lobby_is_open := false
 var remote_room_name_edit: LineEdit
 var remote_room_private_toggle: CheckButton
 var remote_room_password_edit: LineEdit
+var remote_room_game_type_selector: OptionButton
 var remote_room_match_mode_selector: OptionButton
 var remote_room_fill_bots_toggle: CheckButton
 var remote_room_bot_difficulty_selector: OptionButton
 var remote_lobby_match_mode_selector: OptionButton
+var remote_lobby_game_type_selector: OptionButton
 var remote_lobby_fill_bots_toggle: CheckButton
 var remote_lobby_bot_difficulty_selector: OptionButton
 var remote_join_password_edit: LineEdit
@@ -2723,8 +2725,10 @@ func _add_remote_lobby_card(summary: Dictionary, parent: Container) -> void:
 	title.add_theme_color_override("font_color", Color(0.98, 0.84, 0.52, 1.0))
 	content.add_child(title)
 	var state_text := tr("идёт партия") if state == "playing" else tr("завершена") if state == "finished" else tr("ожидает игроков")
+	var game_type_text := tr("Рейтинг") if str(summary.get("game_type", "casual")) == "ranked" else tr("Обычная")
 	var details := Label.new()
-	details.text = "%s · %d/%d\n%s: %s" % [
+	details.text = "%s · %s · %d/%d\n%s: %s" % [
+		game_type_text,
 		state_text,
 		int(summary.get("member_count", 0)),
 		int(summary.get("member_limit", 4)),
@@ -2851,6 +2855,15 @@ func _show_remote_create_lobby_menu() -> void:
 	remote_room_password_edit.custom_minimum_size = Vector2(0.0, 52.0)
 	remote_room_password_edit.add_theme_font_size_override("font_size", 20)
 	menu_content.add_child(remote_room_password_edit)
+	_add_menu_label("Тип игры", 17)
+	remote_room_game_type_selector = OptionButton.new()
+	remote_room_game_type_selector.name = "RemoteRoomGameTypeSelector"
+	remote_room_game_type_selector.add_item(tr("Обычная · замена ботом через 5 минут"), 0)
+	remote_room_game_type_selector.add_item(tr("Рейтинговая · до 3 дней на возвращение"), 1)
+	remote_room_game_type_selector.custom_minimum_size = Vector2(0.0, 52.0)
+	remote_room_game_type_selector.add_theme_font_size_override("font_size", 19)
+	remote_room_game_type_selector.item_selected.connect(_on_remote_room_game_type_selected)
+	menu_content.add_child(remote_room_game_type_selector)
 	_add_menu_label("Режим партии", 17)
 	remote_room_match_mode_selector = OptionButton.new()
 	remote_room_match_mode_selector.name = "RemoteRoomMatchModeSelector"
@@ -2890,6 +2903,15 @@ func _on_remote_private_toggled(enabled: bool) -> void:
 			remote_room_password_edit.text = ""
 
 
+func _on_remote_room_game_type_selected(selected_index: int) -> void:
+	var is_ranked := selected_index == 1
+	if is_instance_valid(remote_room_fill_bots_toggle):
+		remote_room_fill_bots_toggle.button_pressed = false if is_ranked else remote_room_fill_bots_toggle.button_pressed
+		remote_room_fill_bots_toggle.disabled = is_ranked
+	if is_instance_valid(remote_room_bot_difficulty_selector):
+		remote_room_bot_difficulty_selector.disabled = is_ranked
+
+
 func _on_create_remote_lobby_pressed() -> void:
 	if remote_enet_match == null or not remote_enet_match.is_directory_connected():
 		return
@@ -2902,9 +2924,10 @@ func _on_create_remote_lobby_pressed() -> void:
 	var match_mode := SteamBridge.MATCH_MODE_TEAMS_2V2 if is_instance_valid(remote_room_match_mode_selector) and remote_room_match_mode_selector.get_selected_id() == 1 else SteamBridge.MATCH_MODE_CLASSIC
 	var fill_with_bots := is_instance_valid(remote_room_fill_bots_toggle) and remote_room_fill_bots_toggle.button_pressed
 	var bot_difficulty := remote_room_bot_difficulty_selector.get_selected_id() if is_instance_valid(remote_room_bot_difficulty_selector) else 1
+	var game_type := "ranked" if is_instance_valid(remote_room_game_type_selector) and remote_room_game_type_selector.get_selected_id() == 1 else "casual"
 	remote_enet_lobby_is_open = true
 	remote_enet_table_presentation = true
-	if remote_enet_match.create_lobby(room_name, is_private, password, match_mode, fill_with_bots, bot_difficulty):
+	if remote_enet_match.create_lobby(room_name, is_private, password, match_mode, fill_with_bots, bot_difficulty, game_type):
 		_show_remote_enet_lobby()
 
 
@@ -2918,7 +2941,8 @@ func _show_remote_enet_lobby() -> void:
 	_refresh_menu_presentation(true)
 	var room_title: String = str(remote_enet_match.current_room_name) if remote_enet_match != null and not remote_enet_match.current_room_name.is_empty() else tr("Интернет-комната")
 	var privacy_text := tr("закрытая") if remote_enet_match != null and remote_enet_match.current_room_is_private else tr("открытая")
-	_add_menu_title(room_title, tr("Сервер Project Joker · %s комната · код %d") % [privacy_text, remote_enet_match.current_room_id if remote_enet_match != null else 0])
+	var game_type_title := tr("рейтинговая") if remote_enet_match != null and remote_enet_match.current_room_game_type == "ranked" else tr("обычная")
+	_add_menu_title(room_title, tr("Сервер Project Joker · %s · %s комната · код %d") % [game_type_title, privacy_text, remote_enet_match.current_room_id if remote_enet_match != null else 0])
 	_add_menu_spacer(8.0)
 	var status: String = tr("Подключение к комнате…") if remote_enet_match == null else str(remote_enet_match.status_text)
 	_add_menu_label(status, 18, Color(0.82, 0.94, 0.76, 1.0))
@@ -2940,11 +2964,20 @@ func _show_remote_enet_lobby() -> void:
 		if remote_enet_match.is_host():
 			_add_menu_label("Настройки владельца", 19, Color(0.97, 0.86, 0.55, 1.0))
 			var settings_grid := GridContainer.new()
-			settings_grid.columns = 3
+			settings_grid.columns = 2 if mobile_table_layout else 4
 			settings_grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			settings_grid.add_theme_constant_override("h_separation", 12)
 			settings_grid.add_theme_constant_override("v_separation", 8)
 			menu_content.add_child(settings_grid)
+			remote_lobby_game_type_selector = OptionButton.new()
+			remote_lobby_game_type_selector.name = "RemoteLobbyGameTypeSelector"
+			remote_lobby_game_type_selector.add_item(tr("Обычная"), 0)
+			remote_lobby_game_type_selector.add_item(tr("Рейтинговая"), 1)
+			remote_lobby_game_type_selector.select(1 if remote_enet_match.current_room_game_type == "ranked" else 0)
+			remote_lobby_game_type_selector.custom_minimum_size = Vector2(260.0, 58.0)
+			remote_lobby_game_type_selector.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			remote_lobby_game_type_selector.add_theme_font_size_override("font_size", 18)
+			settings_grid.add_child(remote_lobby_game_type_selector)
 			remote_lobby_match_mode_selector = OptionButton.new()
 			remote_lobby_match_mode_selector.name = "RemoteLobbyMatchModeSelector"
 			remote_lobby_match_mode_selector.add_item(tr("Классическая"), 0)
@@ -2958,6 +2991,7 @@ func _show_remote_enet_lobby() -> void:
 			remote_lobby_fill_bots_toggle.name = "RemoteLobbyFillBotsToggle"
 			remote_lobby_fill_bots_toggle.text = tr("Заполнить ботами")
 			remote_lobby_fill_bots_toggle.button_pressed = remote_enet_match.current_room_fill_empty_seats_with_bots
+			remote_lobby_fill_bots_toggle.disabled = remote_enet_match.current_room_game_type == "ranked"
 			remote_lobby_fill_bots_toggle.custom_minimum_size = Vector2(260.0, 58.0)
 			remote_lobby_fill_bots_toggle.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			remote_lobby_fill_bots_toggle.add_theme_font_size_override("font_size", 18)
@@ -2968,17 +3002,20 @@ func _show_remote_enet_lobby() -> void:
 			remote_lobby_bot_difficulty_selector.add_item(tr("Боты: обычные"), 1)
 			remote_lobby_bot_difficulty_selector.add_item(tr("Боты: сложные"), 2)
 			remote_lobby_bot_difficulty_selector.select(remote_enet_match.current_room_bot_difficulty)
+			remote_lobby_bot_difficulty_selector.disabled = remote_enet_match.current_room_game_type == "ranked"
 			remote_lobby_bot_difficulty_selector.custom_minimum_size = Vector2(260.0, 58.0)
 			remote_lobby_bot_difficulty_selector.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			remote_lobby_bot_difficulty_selector.add_theme_font_size_override("font_size", 18)
 			settings_grid.add_child(remote_lobby_bot_difficulty_selector)
 			remote_lobby_match_mode_selector.item_selected.connect(_on_remote_lobby_settings_changed.unbind(1))
+			remote_lobby_game_type_selector.item_selected.connect(_on_remote_lobby_settings_changed.unbind(1))
 			remote_lobby_fill_bots_toggle.toggled.connect(_on_remote_lobby_settings_changed.unbind(1))
 			remote_lobby_bot_difficulty_selector.item_selected.connect(_on_remote_lobby_settings_changed.unbind(1))
 		else:
 			var mode_text := tr("Командная 2×2") if remote_enet_match.current_room_match_mode == SteamBridge.MATCH_MODE_TEAMS_2V2 else tr("Классическая")
+			var game_type_text := tr("Рейтинговая") if remote_enet_match.current_room_game_type == "ranked" else tr("Обычная")
 			var bots_text := tr("с ботами на свободных местах") if remote_enet_match.current_room_fill_empty_seats_with_bots else tr("только четыре игрока")
-			_add_menu_label(tr("Режим: %s · %s") % [mode_text, bots_text], 17, Color(0.95, 0.89, 0.7, 1.0))
+			_add_menu_label(tr("%s · режим: %s · %s") % [game_type_text, mode_text, bots_text], 17, Color(0.95, 0.89, 0.7, 1.0))
 
 	_add_menu_spacer(12.0)
 	var has_table: bool = remote_enet_match != null and (not remote_enet_match.get_test_table_snapshot().is_empty() or remote_enet_match.is_first_turn_roll_active())
@@ -3011,6 +3048,7 @@ func _add_remote_room_seat_tile(parent: Container, seat: Dictionary) -> void:
 	var is_connected := bool(seat.get("connected", false))
 	var is_reconnecting := bool(seat.get("reconnecting", false))
 	var is_temporary_bot := bool(seat.get("is_temporary_bot", false))
+	var is_forfeited := bool(seat.get("forfeited", false))
 	var card := PanelContainer.new()
 	card.custom_minimum_size = Vector2(360.0, 112.0)
 	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -3038,8 +3076,11 @@ func _add_remote_room_seat_tile(parent: Container, seat: Dictionary) -> void:
 	name_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	content.add_child(name_label)
 	var state_label := Label.new()
-	if is_reconnecting:
-		state_label.text = tr("Переподключается · игра временно приостановлена")
+	if is_forfeited:
+		state_label.text = tr("Техническое поражение · место занял бот")
+	elif is_reconnecting:
+		var seconds_left := maxi(0, int(seat.get("reconnect_deadline_unix", 0)) - int(Time.get_unix_time_from_system()))
+		state_label.text = tr("Ждём возвращения · осталось %s") % _format_reconnect_time_left(seconds_left)
 	elif is_temporary_bot:
 		state_label.text = tr("Временный бот играет · место сохранено")
 	elif bool(seat.get("reserved_for_reconnect", false)):
@@ -3055,6 +3096,14 @@ func _add_remote_room_seat_tile(parent: Container, seat: Dictionary) -> void:
 	state_label.add_theme_font_size_override("font_size", 16)
 	state_label.add_theme_color_override("font_color", Color(0.65, 0.94, 0.68, 1.0) if is_ready else Color(0.78, 0.82, 0.74, 1.0))
 	content.add_child(state_label)
+
+
+func _format_reconnect_time_left(seconds_left: int) -> String:
+	if seconds_left >= 2 * 24 * 60 * 60:
+		return tr("%d дн. %d ч.") % [seconds_left / (24 * 60 * 60), (seconds_left / (60 * 60)) % 24]
+	if seconds_left >= 60 * 60:
+		return tr("%d ч. %d мин.") % [seconds_left / (60 * 60), (seconds_left / 60) % 60]
+	return tr("%d мин.") % maxi(1, ceili(float(seconds_left) / 60.0))
 
 
 func _on_remote_ready_pressed() -> void:
@@ -3082,7 +3131,8 @@ func _on_remote_lobby_settings_changed() -> void:
 	var match_mode := SteamBridge.MATCH_MODE_TEAMS_2V2 if is_instance_valid(remote_lobby_match_mode_selector) and remote_lobby_match_mode_selector.get_selected_id() == 1 else SteamBridge.MATCH_MODE_CLASSIC
 	var fill_with_bots := is_instance_valid(remote_lobby_fill_bots_toggle) and remote_lobby_fill_bots_toggle.button_pressed
 	var bot_difficulty := remote_lobby_bot_difficulty_selector.get_selected_id() if is_instance_valid(remote_lobby_bot_difficulty_selector) else 1
-	remote_enet_match.update_room_settings(match_mode, fill_with_bots, bot_difficulty)
+	var game_type := "ranked" if is_instance_valid(remote_lobby_game_type_selector) and remote_lobby_game_type_selector.get_selected_id() == 1 else "casual"
+	remote_enet_match.update_room_settings(match_mode, fill_with_bots, bot_difficulty, game_type)
 
 func _get_remote_enet_seats_text() -> String:
 	if remote_enet_match == null or remote_enet_match.lobby_seats.is_empty():
@@ -3149,11 +3199,12 @@ func _on_remote_account_state_changed() -> void:
 		var xp_award_variant: Variant = state.get("last_xp_award", {})
 		if xp_award_variant is Dictionary and not (xp_award_variant as Dictionary).is_empty():
 			var xp_award: Dictionary = xp_award_variant
-			action_text = "Получено %d XP: партия %d, победа %d, точные взятки %d." % [
+			action_text = "Получено %d XP: партия %d, победа %d, точные взятки %d.%s" % [
 				int(xp_award.get("xp_awarded", 0)),
 				int(xp_award.get("base_xp", 0)),
 				int(xp_award.get("win_xp", 0)),
-				int(xp_award.get("exact_tricks_xp", 0))
+				int(xp_award.get("exact_tricks_xp", 0)),
+				" Рейтинг: %+d." % int(xp_award.get("rating_delta", 0)) if str(xp_award.get("game_type", "casual")) == "ranked" else ""
 			]
 	_save_persistent_settings()
 	if account_menu_is_open:
@@ -7797,6 +7848,11 @@ func _show_account_menu() -> void:
 			"XP: %d · завершено матчей: %d" % [int(account_state.get("xp", 0)), int(account_state.get("completed_matches", 0))],
 			16,
 			Color(0.72, 0.85, 0.76, 1.0)
+		)
+		_add_menu_label(
+			"Рейтинг: %d · рейтинговых матчей: %d" % [int(account_state.get("rating", 1000)), int(account_state.get("ranked_matches", 0))],
+			16,
+			Color(0.97, 0.86, 0.55, 1.0)
 		)
 		var current_xp := int(account_state.get("xp", 0))
 		var next_reward_xp := (floori(float(current_xp) / 500.0) + 1) * 500

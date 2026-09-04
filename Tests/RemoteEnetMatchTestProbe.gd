@@ -57,6 +57,13 @@ func _run() -> void:
 	stale_client.stop()
 	stale_client.queue_free()
 	await process_frame
+	assert(clients[0].create_lobby("Ranked validation", false, "", "classic", true, 2, "ranked"))
+	assert(await _wait_until(func(): return clients[0].is_in_room()), "Ranked room creator did not enter the room")
+	assert(clients[0].current_room_game_type == "ranked")
+	assert(not clients[0].current_room_fill_empty_seats_with_bots, "Ranked rooms must reject starting bots")
+	assert(not clients[0].can_start_match(), "A ranked room must require four human players")
+	assert(clients[0].leave_lobby())
+	assert(await _wait_until(func(): return not clients[0].is_in_room()), "Ranked validation room did not close")
 
 	assert(clients[0].create_lobby("Automated room", true, "secret", "teams_2v2", false, 2))
 	assert(await _wait_until(func(): return clients[0].is_in_room()), "Creator did not enter the room")
@@ -132,6 +139,7 @@ func _run() -> void:
 	await process_frame
 	assert(await _wait_until(func(): return disconnected_player_index in observer_client.get_reconnecting_player_indices()), "The room did not pause for the disconnected player")
 	assert(observer_client.is_match_paused_for_reconnect())
+	(server._rooms[room_id].get("reconnect_deadline_unix_by_player", {}) as Dictionary)[disconnected_player_index] = int(Time.get_unix_time_from_system()) - 1
 	assert(await _wait_until(func(): return disconnected_player_index in observer_client.get_temporary_bot_player_indices(), 12.0), "A temporary bot did not take over after the reconnect grace period")
 	assert(not observer_client.is_match_paused_for_reconnect())
 	var reconnecting_client = RemoteMatch.new()

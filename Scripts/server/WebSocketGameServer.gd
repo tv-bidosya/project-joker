@@ -5,7 +5,7 @@ extends RefCounted
 
 signal status_changed(status: String)
 
-const PROTOCOL_VERSION := 6
+const PROTOCOL_VERSION := 7
 const PLAYER_COUNT := 4
 const DEFAULT_PORT := 8765
 const MAX_PACKET_BYTES := 65536
@@ -14,18 +14,26 @@ const MAX_ROOMS := 100
 const TOTAL_ROUND_COUNT := 32
 const NEXT_ROUND_DELAY_MSEC := 8000
 const BOT_ACTION_DELAY_MSEC := 650
-const RECONNECT_GRACE_MSEC := 5000
+const CASUAL_RECONNECT_GRACE_SECONDS := 5 * 60
+const RANKED_RECONNECT_GRACE_SECONDS := 3 * 24 * 60 * 60
 const SERVER_RESTART_RECONNECT_GRACE_MSEC := 5 * 60 * 1000
 const FIRST_TURN_ROLL_REVEAL_MSEC := 2400
 const FIRST_ROUND_AUTO_START_MSEC := 3200
 const MATCH_MODE_CLASSIC := "classic"
 const MATCH_MODE_TEAMS_2V2 := "teams_2v2"
+const GAME_TYPE_CASUAL := "casual"
+const GAME_TYPE_RANKED := "ranked"
 const BOT_NAMES := ["Rhysand", "Azriel", "Cassian"]
 const EMPTY_MATCH_TTL_MSEC := 6 * 60 * 60 * 1000
 const MATCH_BASE_XP := 100
 const MATCH_WIN_XP := 20
 const BOT_MATCH_XP_MULTIPLIER := 0.5
-const ABANDONED_CASUAL_XP_MULTIPLIER := 0.3
+const ABANDONED_CASUAL_EARLY_XP_MULTIPLIER := 0.05
+const ABANDONED_CASUAL_HALF_XP_MULTIPLIER := 0.3
+const RATING_K_FACTOR := 24.0
+const RATING_FORFEIT_MULTIPLIER := 1.5
+const RATING_FORFEIT_MIN_LOSS := 20
+const RATING_FORFEIT_MAX_LOSS := 45
 const MatchHost = preload("res://Scripts/core/LocalMatchHost.gd")
 const MatchCommand = preload("res://Scripts/core/MatchCommand.gd")
 const ServerBotTurn = preload("res://Scripts/server/ServerBotTurn.gd")
@@ -173,7 +181,8 @@ func get_room_debug_state(room_id: int) -> Dictionary:
 		"round_number": match_host.game.round_number if match_host != null else 0,
 		"first_turn_roll_phase": int(room.get("first_turn_roll_phase", FirstTurnRollPhase.INACTIVE)),
 		"first_turn_roll_winner_index": int(room.get("first_turn_roll_winner_index", -1)),
-		"match_finished": _is_match_finished(room)
+		"match_finished": _is_match_finished(room),
+		"game_type": str(room.get("game_type", GAME_TYPE_CASUAL))
 	}
 
 
@@ -372,6 +381,7 @@ func _handle_create_lobby(sender_peer_id: int, message: Dictionary) -> void:
 	if room_name.is_empty():
 		room_name = "Стол %d" % _next_room_id
 	var is_private := bool(message.get("is_private", false))
+	var game_type := _sanitize_game_type(str(message.get("game_type", GAME_TYPE_CASUAL)))
 	var password_hash := _sanitize_password_hash(str(message.get("password_hash", "")))
 	if is_private and password_hash.is_empty():
 		_reject_room_action(sender_peer_id, "password_required")
@@ -388,11 +398,15 @@ func _handle_create_lobby(sender_peer_id: int, message: Dictionary) -> void:
 		"password_hash": password_hash,
 		"owner_player_index": 0,
 		"match_mode": _sanitize_match_mode(str(message.get("match_mode", MATCH_MODE_CLASSIC))),
-		"fill_empty_seats_with_bots": bool(message.get("fill_empty_seats_with_bots", false)),
+		"game_type": game_type,
+		"fill_empty_seats_with_bots": bool(message.get("fill_empty_seats_with_bots", false)) if game_type == GAME_TYPE_CASUAL else false,
 		"bot_difficulty": clampi(int(message.get("bot_difficulty", 1)), 0, 2),
 		"bot_players": {},
 		"temporary_bot_players": {},
+		"abandoned_at_round_by_player": {},
+		"forfeited_players": {},
 		"reconnecting_since_msec": {},
+		"reconnect_deadline_unix_by_player": {},
 		"bot_action_at_msec": 0,
 		"created_msec": Time.get_ticks_msec(),
 		"created_unix": int(Time.get_unix_time_from_system()),
@@ -445,6 +459,10 @@ func _handle_join_lobby(sender_peer_id: int, message: Dictionary) -> void:
 	)
 	var account_id := str(_account_id_by_peer.get(sender_peer_id, ""))
 	var account_is_member := not account_id.is_empty() and (room.get("player_by_account_id", {}) as Dictionary).has(account_id)
+	var returning_player_index := int((room.get("player_by_account_id", {}) as Dictionary).get(account_id, -1)) if account_is_member else int((room.get("player_by_session_token", {}) as Dictionary).get(session_token, -1))
+	if bool(room.get("round_started", false)) and returning_player_index >= 0 and (room.get("forfeited_players", {}) as Dictionary).has(returning_player_index):
+		_reject_room_action(sender_peer_id, "ranked_forfeit")
+		return
 	if bool(room.get("is_private", false)) and not token_is_valid and not account_is_member:
 		var supplied_hash := _sanitize_password_hash(str(message.get("password_hash", "")))
 		if supplied_hash.is_empty() or supplied_hash != str(room.get("password_hash", "")):
@@ -504,6 +522,8 @@ func _join_peer_to_room(sender_peer_id: int, room: Dictionary, display_name: Str
 	player_by_peer[sender_peer_id] = player_index
 	if bool(room.get("round_started", false)):
 		(room.get("reconnecting_since_msec", {}) as Dictionary).erase(player_index)
+		(room.get("reconnect_deadline_unix_by_player", {}) as Dictionary).erase(player_index)
+		(room.get("abandoned_at_round_by_player", {}) as Dictionary).erase(player_index)
 		if (room.get("temporary_bot_players", {}) as Dictionary).has(player_index):
 			(room.get("temporary_bot_players", {}) as Dictionary).erase(player_index)
 			(room.get("bot_players", {}) as Dictionary).erase(player_index)
@@ -570,7 +590,8 @@ func _handle_update_room_settings(sender_peer_id: int, message: Dictionary) -> v
 		_reject_room_action(sender_peer_id, "host_only")
 		return
 	room["match_mode"] = _sanitize_match_mode(str(message.get("match_mode", room.get("match_mode", MATCH_MODE_CLASSIC))))
-	room["fill_empty_seats_with_bots"] = bool(message.get("fill_empty_seats_with_bots", room.get("fill_empty_seats_with_bots", false)))
+	room["game_type"] = _sanitize_game_type(str(message.get("game_type", room.get("game_type", GAME_TYPE_CASUAL))))
+	room["fill_empty_seats_with_bots"] = bool(message.get("fill_empty_seats_with_bots", room.get("fill_empty_seats_with_bots", false))) if str(room["game_type"]) == GAME_TYPE_CASUAL else false
 	room["bot_difficulty"] = clampi(int(message.get("bot_difficulty", room.get("bot_difficulty", 1))), 0, 2)
 	(room.get("confirmed_players", {}) as Dictionary).clear()
 	room["last_active_msec"] = Time.get_ticks_msec()
@@ -593,6 +614,9 @@ func _handle_start_match(sender_peer_id: int) -> void:
 			_reject_room_action(sender_peer_id, "players_not_ready")
 			return
 	var fill_with_bots := bool(room.get("fill_empty_seats_with_bots", false))
+	if str(room.get("game_type", GAME_TYPE_CASUAL)) == GAME_TYPE_RANKED and human_players.size() < PLAYER_COUNT:
+		_reject_room_action(sender_peer_id, "ranked_requires_four_players")
+		return
 	if human_players.size() < PLAYER_COUNT and not fill_with_bots:
 		_reject_room_action(sender_peer_id, "not_enough_players")
 		return
@@ -664,7 +688,7 @@ func _handle_match_command(sender_peer_id: int, message: Dictionary) -> void:
 		_send(sender_peer_id, {"type": "command_result", "accepted": false, "reason": "not_in_room"})
 		return
 	var player_index := int((room.get("player_by_peer", {}) as Dictionary).get(sender_peer_id, -1))
-	if not (room.get("reconnecting_since_msec", {}) as Dictionary).is_empty():
+	if _is_room_waiting_on_reconnecting_player(room):
 		_send(sender_peer_id, {"type": "command_result", "accepted": false, "reason": "player_reconnecting"})
 		return
 	if player_index < 0 or not (room.get("confirmed_players", {}) as Dictionary).has(player_index) or not bool(room.get("round_started", false)):
@@ -876,7 +900,8 @@ func _process_rooms() -> void:
 		if player_by_peer.is_empty() and not bool(room.get("round_started", false)):
 			rooms_to_remove.append(room_id)
 			continue
-		if player_by_peer.is_empty() and now - int(room.get("last_active_msec", now)) >= EMPTY_MATCH_TTL_MSEC:
+		var empty_match_ttl := (RANKED_RECONNECT_GRACE_SECONDS * 1000 + EMPTY_MATCH_TTL_MSEC) if str(room.get("game_type", GAME_TYPE_CASUAL)) == GAME_TYPE_RANKED else EMPTY_MATCH_TTL_MSEC
+		if player_by_peer.is_empty() and now - int(room.get("last_active_msec", now)) >= empty_match_ttl:
 			rooms_to_remove.append(room_id)
 			continue
 		_process_reconnect_timeouts(room, now)
@@ -894,15 +919,29 @@ func _process_reconnect_timeouts(room: Dictionary, now_msec: int) -> void:
 	if not bool(room.get("round_started", false)):
 		return
 	var reconnecting: Dictionary = room.get("reconnecting_since_msec", {})
+	var deadlines: Dictionary = room.get("reconnect_deadline_unix_by_player", {})
+	var now_unix := int(Time.get_unix_time_from_system())
 	var expired: Array[int] = []
 	for player_index_variant in reconnecting.keys():
 		var player_index := int(player_index_variant)
-		if now_msec - int(reconnecting[player_index]) >= RECONNECT_GRACE_MSEC:
+		var deadline_unix := int(deadlines.get(player_index, deadlines.get(str(player_index), 0)))
+		if deadline_unix <= 0:
+			deadline_unix = now_unix + _get_reconnect_grace_seconds(room)
+			deadlines[player_index] = deadline_unix
+		if now_unix >= deadline_unix:
 			expired.append(player_index)
 	for player_index in expired:
 		reconnecting.erase(player_index)
+		deadlines.erase(player_index)
+		deadlines.erase(str(player_index))
 		(room.get("temporary_bot_players", {}) as Dictionary)[player_index] = true
 		(room.get("bot_players", {}) as Dictionary)[player_index] = true
+		if str(room.get("game_type", GAME_TYPE_CASUAL)) == GAME_TYPE_RANKED:
+			(room.get("forfeited_players", {}) as Dictionary)[player_index] = true
+		else:
+			var match_host: LocalMatchHost = room.get("match_host")
+			var completed_rounds := match_host.completed_round_history.size() if match_host != null else 0
+			(room.get("abandoned_at_round_by_player", {}) as Dictionary)[player_index] = completed_rounds
 		room["bot_action_at_msec"] = now_msec + BOT_ACTION_DELAY_MSEC
 		if int(room.get("first_turn_roll_phase", FirstTurnRollPhase.INACTIVE)) == FirstTurnRollPhase.WAITING:
 			_record_first_turn_roll(room, player_index, false)
@@ -916,7 +955,7 @@ func _process_room_bot(room: Dictionary, now_msec: int) -> void:
 	if not bool(room.get("round_started", false)):
 		return
 	var bot_players: Dictionary = room.get("bot_players", {})
-	if not (room.get("reconnecting_since_msec", {}) as Dictionary).is_empty():
+	if _is_room_waiting_on_reconnecting_player(room):
 		return
 	if bot_players.is_empty() or now_msec < int(room.get("bot_action_at_msec", 0)):
 		return
@@ -944,6 +983,21 @@ func _process_room_bot(room: Dictionary, now_msec: int) -> void:
 	if match_host.game.current_round.state == Round.State.FINISHED:
 		room["next_round_at_msec"] = now_msec + NEXT_ROUND_DELAY_MSEC
 
+
+func _is_room_waiting_on_reconnecting_player(room: Dictionary) -> bool:
+	var reconnecting: Dictionary = room.get("reconnecting_since_msec", {})
+	if reconnecting.is_empty():
+		return false
+	if int(room.get("first_turn_roll_phase", FirstTurnRollPhase.INACTIVE)) == FirstTurnRollPhase.WAITING:
+		for contender_variant in room.get("first_turn_roll_contenders", []):
+			if reconnecting.has(int(contender_variant)):
+				return true
+	var match_host: LocalMatchHost = room.get("match_host")
+	if match_host == null or match_host.game.current_round == null:
+		return false
+	var round: Round = match_host.game.current_round
+	return round.state in [Round.State.BIDDING, Round.State.PLAYING] and reconnecting.has(round.current_player_index)
+
 func _leave_current_room(sender_peer_id: int, notify_client: bool) -> void:
 	var room_id := int(_room_id_by_peer.get(sender_peer_id, 0))
 	if room_id <= 0 or not _rooms.has(room_id):
@@ -962,6 +1016,7 @@ func _leave_current_room(sender_peer_id: int, notify_client: bool) -> void:
 			(room.get("confirmed_players", {}) as Dictionary).erase(player_index)
 		if bool(room.get("round_started", false)):
 			(room.get("reconnecting_since_msec", {}) as Dictionary)[player_index] = Time.get_ticks_msec()
+			(room.get("reconnect_deadline_unix_by_player", {}) as Dictionary)[player_index] = int(Time.get_unix_time_from_system()) + _get_reconnect_grace_seconds(room)
 		else:
 			var token_by_player: Dictionary = room.get("session_token_by_player", {})
 			var player_by_token: Dictionary = room.get("player_by_session_token", {})
@@ -1031,7 +1086,10 @@ func _reset_room_for_rematch(room: Dictionary) -> void:
 	(room.get("confirmed_players", {}) as Dictionary).clear()
 	(room.get("bot_players", {}) as Dictionary).clear()
 	(room.get("temporary_bot_players", {}) as Dictionary).clear()
+	(room.get("abandoned_at_round_by_player", {}) as Dictionary).clear()
+	(room.get("forfeited_players", {}) as Dictionary).clear()
 	(room.get("reconnecting_since_msec", {}) as Dictionary).clear()
+	(room.get("reconnect_deadline_unix_by_player", {}) as Dictionary).clear()
 	room["match_host"] = MatchHost.new(Game.new(player_names))
 	room["round_started"] = false
 	room["match_id"] = ""
@@ -1098,13 +1156,18 @@ func _serialize_persistent_room(room: Dictionary) -> Dictionary:
 		"password_hash": str(room.get("password_hash", "")),
 		"owner_player_index": int(room.get("owner_player_index", 0)),
 		"match_mode": str(room.get("match_mode", MATCH_MODE_CLASSIC)),
+		"game_type": str(room.get("game_type", GAME_TYPE_CASUAL)),
 		"fill_empty_seats_with_bots": bool(room.get("fill_empty_seats_with_bots", false)),
 		"bot_difficulty": int(room.get("bot_difficulty", 1)),
 		"bot_player_indices": _sorted_player_indices(room.get("bot_players", {})),
+		"temporary_bot_player_indices": _sorted_player_indices(room.get("temporary_bot_players", {})),
 		"members": members,
 		"created_unix": int(room.get("created_unix", Time.get_unix_time_from_system())),
 		"match_id": str(room.get("match_id", "")),
 		"completion_recorded": bool(room.get("completion_recorded", false)),
+		"abandoned_at_round_by_player": (room.get("abandoned_at_round_by_player", {}) as Dictionary).duplicate(),
+		"forfeited_players": (room.get("forfeited_players", {}) as Dictionary).duplicate(),
+		"reconnect_deadline_unix_by_player": (room.get("reconnect_deadline_unix_by_player", {}) as Dictionary).duplicate(),
 		"first_turn_roll_phase": int(room.get("first_turn_roll_phase", FirstTurnRollPhase.INACTIVE)),
 		"first_turn_roll_round": int(room.get("first_turn_roll_round", 0)),
 		"first_turn_roll_contenders": (room.get("first_turn_roll_contenders", []) as Array).duplicate(),
@@ -1136,6 +1199,16 @@ func _restore_persistent_rooms() -> void:
 		var account_by_player := {}
 		var player_by_account := {}
 		var reconnecting := {}
+		var reconnect_deadlines := _dictionary_with_integer_keys(room_data.get("reconnect_deadline_unix_by_player", {}))
+		var game_type := _sanitize_game_type(str(room_data.get("game_type", GAME_TYPE_CASUAL)))
+		var restored_abandoned := _dictionary_with_integer_keys(room_data.get("abandoned_at_round_by_player", {}))
+		var restored_forfeited := _dictionary_with_integer_keys(room_data.get("forfeited_players", {}))
+		var restored_temporary_bots := {}
+		for player_index_variant in room_data.get("temporary_bot_player_indices", []):
+			var temporary_index := int(player_index_variant)
+			if temporary_index >= 0 and temporary_index < PLAYER_COUNT:
+				restored_temporary_bots[temporary_index] = true
+		var now_unix := int(Time.get_unix_time_from_system())
 		for member_variant in room_data.get("members", []):
 			if not (member_variant is Dictionary):
 				continue
@@ -1152,11 +1225,16 @@ func _restore_persistent_rooms() -> void:
 				account_by_player[player_index] = account_id
 				player_by_account[account_id] = player_index
 				_room_id_by_account_id[account_id] = room_id
-			reconnecting[player_index] = now_msec + SERVER_RESTART_RECONNECT_GRACE_MSEC - RECONNECT_GRACE_MSEC
+			if not restored_temporary_bots.has(player_index):
+				reconnecting[player_index] = now_msec
+				if not reconnect_deadlines.has(player_index):
+					reconnect_deadlines[player_index] = now_unix + (RANKED_RECONNECT_GRACE_SECONDS if game_type == GAME_TYPE_RANKED else CASUAL_RECONNECT_GRACE_SECONDS)
+			else:
+				reconnect_deadlines.erase(player_index)
 		var bot_players := {}
 		for player_index_variant in room_data.get("bot_player_indices", []):
 			var player_index := int(player_index_variant)
-			if player_index >= 0 and player_index < PLAYER_COUNT and not token_by_player.has(player_index):
+			if player_index >= 0 and player_index < PLAYER_COUNT and (not token_by_player.has(player_index) or restored_temporary_bots.has(player_index)):
 				bot_players[player_index] = true
 		var phase := clampi(int(room_data.get("first_turn_roll_phase", FirstTurnRollPhase.INACTIVE)), FirstTurnRollPhase.INACTIVE, FirstTurnRollPhase.COMPLETE)
 		var room := {
@@ -1166,11 +1244,15 @@ func _restore_persistent_rooms() -> void:
 			"password_hash": _sanitize_password_hash(str(room_data.get("password_hash", ""))),
 			"owner_player_index": clampi(int(room_data.get("owner_player_index", 0)), 0, PLAYER_COUNT - 1),
 			"match_mode": _sanitize_match_mode(str(room_data.get("match_mode", MATCH_MODE_CLASSIC))),
-			"fill_empty_seats_with_bots": bool(room_data.get("fill_empty_seats_with_bots", false)),
+			"game_type": game_type,
+			"fill_empty_seats_with_bots": bool(room_data.get("fill_empty_seats_with_bots", false)) if game_type == GAME_TYPE_CASUAL else false,
 			"bot_difficulty": clampi(int(room_data.get("bot_difficulty", 1)), 0, 2),
 			"bot_players": bot_players,
-			"temporary_bot_players": {},
+			"temporary_bot_players": restored_temporary_bots,
+			"abandoned_at_round_by_player": restored_abandoned,
+			"forfeited_players": restored_forfeited,
 			"reconnecting_since_msec": reconnecting,
+			"reconnect_deadline_unix_by_player": reconnect_deadlines,
 			"bot_action_at_msec": now_msec + BOT_ACTION_DELAY_MSEC,
 			"created_msec": now_msec,
 			"created_unix": int(room_data.get("created_unix", Time.get_unix_time_from_system())),
@@ -1224,8 +1306,14 @@ func _record_completed_match_if_needed(room: Dictionary) -> void:
 	var players: Array[Dictionary] = []
 	var winners: Array[int] = []
 	var account_by_player: Dictionary = room.get("account_id_by_player", {})
-	var temporary_bots: Dictionary = room.get("temporary_bot_players", {})
+	var abandoned_rounds: Dictionary = room.get("abandoned_at_round_by_player", {})
+	var forfeited_players: Dictionary = room.get("forfeited_players", {})
+	var game_type := str(room.get("game_type", GAME_TYPE_CASUAL))
 	var match_started_with_bots := account_by_player.size() < PLAYER_COUNT
+	var ratings: Array[int] = []
+	for player_index in match_host.game.players.size():
+		var rating_account: Dictionary = _account_store.get_public_account(str(account_by_player.get(player_index, ""))) if _account_store != null else {}
+		ratings.append(int(rating_account.get("rating", AccountStoreResource.DEFAULT_RATING)))
 	for player_index in match_host.game.players.size():
 		var player: Player = match_host.game.players[player_index]
 		var is_winner := player.total_score == highest_score
@@ -1233,15 +1321,25 @@ func _record_completed_match_if_needed(room: Dictionary) -> void:
 			winners.append(player_index)
 		var exact_tricks := _get_exact_ordered_tricks(match_host, player_index)
 		var raw_xp := MATCH_BASE_XP + (MATCH_WIN_XP if is_winner else 0) + exact_tricks
-		var abandoned := temporary_bots.has(player_index)
-		var xp_multiplier := ABANDONED_CASUAL_XP_MULTIPLIER if abandoned else (BOT_MATCH_XP_MULTIPLIER if match_started_with_bots else 1.0)
+		var abandoned := abandoned_rounds.has(player_index)
+		var forfeited := forfeited_players.has(player_index)
+		var abandoned_after_half := int(abandoned_rounds.get(player_index, 0)) >= TOTAL_ROUND_COUNT / 2
+		var xp_multiplier := _get_match_xp_multiplier(game_type, forfeited, abandoned, abandoned_after_half, match_started_with_bots)
 		var xp_awarded := roundi(float(raw_xp) * xp_multiplier)
 		var account_id := str(account_by_player.get(player_index, ""))
 		var grant_result := {}
+		var rating_result := {}
+		var rating_delta := _calculate_ranked_rating_delta(room, match_host, player_index, ratings, forfeited) if game_type == GAME_TYPE_RANKED else 0
+		var public_account := {}
 		if not account_id.is_empty() and _account_store != null:
 			grant_result = _account_store.grant_match_xp(account_id, match_id, xp_awarded)
-			if bool(grant_result.get("ok", false)):
-				_send_account_progress(room, player_index, grant_result.get("account", {}), {
+			public_account = grant_result.get("account", {})
+			if game_type == GAME_TYPE_RANKED:
+				rating_result = _account_store.apply_ranked_match_result(account_id, match_id, rating_delta)
+				if bool(rating_result.get("ok", false)):
+					public_account = rating_result.get("account", public_account)
+			if bool(grant_result.get("ok", false)) and (game_type != GAME_TYPE_RANKED or bool(rating_result.get("ok", false))):
+				_send_account_progress(room, player_index, public_account, {
 					"match_id": match_id,
 					"base_xp": MATCH_BASE_XP,
 					"win_xp": MATCH_WIN_XP if is_winner else 0,
@@ -1249,7 +1347,10 @@ func _record_completed_match_if_needed(room: Dictionary) -> void:
 					"multiplier": xp_multiplier,
 					"xp_awarded": int(grant_result.get("xp_awarded", 0)),
 					"abandoned": abandoned,
-					"bot_match": match_started_with_bots
+					"forfeited": forfeited,
+					"bot_match": match_started_with_bots,
+					"game_type": game_type,
+					"rating_delta": int(rating_result.get("rating_delta", 0))
 				})
 		players.append({
 			"player_index": player_index,
@@ -1259,13 +1360,16 @@ func _record_completed_match_if_needed(room: Dictionary) -> void:
 			"exact_orders_completed": player.exact_orders_completed,
 			"exact_ordered_tricks": exact_tricks,
 			"abandoned": abandoned,
-			"xp_awarded": xp_awarded if bool(grant_result.get("awarded", false)) else 0
+			"forfeited": forfeited,
+			"xp_awarded": xp_awarded if bool(grant_result.get("awarded", false)) else 0,
+			"rating_delta": rating_delta if bool(rating_result.get("applied", false)) else 0
 		})
 	_completed_matches.append({
 		"match_id": match_id,
 		"room_id": int(room.get("room_id", 0)),
 		"room_name": str(room.get("room_name", "")),
 		"match_mode": str(room.get("match_mode", MATCH_MODE_CLASSIC)),
+		"game_type": str(room.get("game_type", GAME_TYPE_CASUAL)),
 		"completed_unix": int(Time.get_unix_time_from_system()),
 		"players": players,
 		"winner_player_indices": winners
@@ -1273,6 +1377,51 @@ func _record_completed_match_if_needed(room: Dictionary) -> void:
 	while _completed_matches.size() > MatchStoreResource.MAX_COMPLETED_MATCHES:
 		_completed_matches.pop_front()
 	room["completion_recorded"] = true
+
+
+func _calculate_ranked_rating_delta(room: Dictionary, match_host: LocalMatchHost, player_index: int, ratings: Array[int], forfeited: bool) -> int:
+	if player_index < 0 or player_index >= ratings.size():
+		return 0
+	var player_rating := ratings[player_index]
+	var opponent_rating_sum := 0.0
+	var opponent_count := 0
+	for other_index in ratings.size():
+		if other_index != player_index:
+			opponent_rating_sum += ratings[other_index]
+			opponent_count += 1
+	var opponent_average := opponent_rating_sum / maxf(1.0, float(opponent_count))
+	var expected := _rating_expected_score(player_rating, opponent_average)
+	if forfeited:
+		var loss := clampi(roundi(RATING_K_FACTOR * expected * RATING_FORFEIT_MULTIPLIER), RATING_FORFEIT_MIN_LOSS, RATING_FORFEIT_MAX_LOSS)
+		return -loss
+	var actual := 0.0
+	if str(room.get("match_mode", MATCH_MODE_CLASSIC)) == MATCH_MODE_TEAMS_2V2:
+		var team_id := player_index % 2
+		var own_team_score := match_host.game.players[team_id].total_score + match_host.game.players[team_id + 2].total_score
+		var other_team_id := 1 - team_id
+		var other_team_score := match_host.game.players[other_team_id].total_score + match_host.game.players[other_team_id + 2].total_score
+		actual = 1.0 if own_team_score > other_team_score else 0.5 if own_team_score == other_team_score else 0.0
+	else:
+		var player_score := match_host.game.players[player_index].total_score
+		for other_index in match_host.game.players.size():
+			if other_index == player_index:
+				continue
+			var other_score := match_host.game.players[other_index].total_score
+			actual += 1.0 if player_score > other_score else 0.5 if player_score == other_score else 0.0
+		actual /= maxf(1.0, float(match_host.game.players.size() - 1))
+	return roundi(RATING_K_FACTOR * (actual - expected))
+
+
+func _rating_expected_score(player_rating: int, opponent_rating: float) -> float:
+	return 1.0 / (1.0 + pow(10.0, (opponent_rating - float(player_rating)) / 400.0))
+
+
+func _get_match_xp_multiplier(game_type: String, forfeited: bool, abandoned: bool, abandoned_after_half: bool, match_started_with_bots: bool) -> float:
+	if game_type == GAME_TYPE_RANKED and forfeited:
+		return 0.0
+	if abandoned:
+		return ABANDONED_CASUAL_HALF_XP_MULTIPLIER if abandoned_after_half else ABANDONED_CASUAL_EARLY_XP_MULTIPLIER
+	return BOT_MATCH_XP_MULTIPLIER if match_started_with_bots else 1.0
 
 
 func _get_exact_ordered_tricks(match_host: LocalMatchHost, player_index: int) -> int:
@@ -1323,6 +1472,7 @@ func _send_seat_assigned(target_peer_id: int, room: Dictionary, player_index: in
 		"first_turn_roll": _create_first_turn_roll_state(room),
 		"owner_player_index": int(room.get("owner_player_index", 0)),
 		"match_mode": str(room.get("match_mode", MATCH_MODE_CLASSIC)),
+		"game_type": str(room.get("game_type", GAME_TYPE_CASUAL)),
 		"fill_empty_seats_with_bots": bool(room.get("fill_empty_seats_with_bots", false)),
 		"bot_difficulty": int(room.get("bot_difficulty", 1)),
 		"lobby_seats": _create_lobby_seats(room)
@@ -1346,6 +1496,7 @@ func _create_room_state_message(room: Dictionary) -> Dictionary:
 		"first_turn_roll": _create_first_turn_roll_state(room),
 		"owner_player_index": int(room.get("owner_player_index", 0)),
 		"match_mode": str(room.get("match_mode", MATCH_MODE_CLASSIC)),
+		"game_type": str(room.get("game_type", GAME_TYPE_CASUAL)),
 		"fill_empty_seats_with_bots": bool(room.get("fill_empty_seats_with_bots", false)),
 		"bot_difficulty": int(room.get("bot_difficulty", 1)),
 		"lobby_seats": _create_lobby_seats(room)
@@ -1374,10 +1525,13 @@ func _send_player_snapshot(room: Dictionary, player_index: int) -> void:
 		return
 	var snapshot := match_host.create_player_snapshot(player_index)
 	snapshot["match_mode"] = str(room.get("match_mode", MATCH_MODE_CLASSIC))
+	snapshot["game_type"] = str(room.get("game_type", GAME_TYPE_CASUAL))
 	snapshot["team_by_player"] = [0, 1, 0, 1] if str(room.get("match_mode", MATCH_MODE_CLASSIC)) == MATCH_MODE_TEAMS_2V2 else []
 	snapshot["team_names"] = ["Команда 1", "Команда 2"]
 	snapshot["reconnecting_player_indices"] = _sorted_player_indices(room.get("reconnecting_since_msec", {}))
 	snapshot["temporary_bot_player_indices"] = _sorted_player_indices(room.get("temporary_bot_players", {}))
+	snapshot["forfeited_player_indices"] = _sorted_player_indices(room.get("forfeited_players", {}))
+	snapshot["reconnect_deadline_unix_by_player"] = (room.get("reconnect_deadline_unix_by_player", {}) as Dictionary).duplicate()
 	_send(int(peer_by_player[player_index]), {
 		"type": "player_snapshot",
 		"room_id": int(room.get("room_id", 0)),
@@ -1427,6 +1581,7 @@ func _create_room_summaries() -> Array[Dictionary]:
 			"member_limit": PLAYER_COUNT,
 			"round_number": match_host.game.round_number if match_host != null else 0,
 			"match_mode": str(room.get("match_mode", MATCH_MODE_CLASSIC)),
+			"game_type": str(room.get("game_type", GAME_TYPE_CASUAL)),
 			"fill_empty_seats_with_bots": bool(room.get("fill_empty_seats_with_bots", false)),
 			"bot_difficulty": int(room.get("bot_difficulty", 1))
 		})
@@ -1462,7 +1617,9 @@ func _create_lobby_seats(room: Dictionary) -> Array[Dictionary]:
 			"is_host": player_index == int(room.get("owner_player_index", 0)),
 			"is_bot": is_bot,
 			"is_temporary_bot": temporary_bot_players.has(player_index),
+			"forfeited": (room.get("forfeited_players", {}) as Dictionary).has(player_index),
 			"reconnecting": reconnecting.has(player_index),
+			"reconnect_deadline_unix": int((room.get("reconnect_deadline_unix_by_player", {}) as Dictionary).get(player_index, 0)),
 			"team_id": player_index % 2 if str(room.get("match_mode", MATCH_MODE_CLASSIC)) == MATCH_MODE_TEAMS_2V2 else -1,
 			"reserved_for_reconnect": bool(room.get("round_started", false)) and token_by_player.has(player_index) and not peer_by_player.has(player_index)
 		})
@@ -1516,6 +1673,24 @@ func _assign_room_owner(room: Dictionary) -> void:
 
 func _sanitize_match_mode(value: String) -> String:
 	return MATCH_MODE_TEAMS_2V2 if value == MATCH_MODE_TEAMS_2V2 else MATCH_MODE_CLASSIC
+
+
+func _sanitize_game_type(value: String) -> String:
+	return GAME_TYPE_RANKED if value == GAME_TYPE_RANKED else GAME_TYPE_CASUAL
+
+
+func _get_reconnect_grace_seconds(room: Dictionary) -> int:
+	return RANKED_RECONNECT_GRACE_SECONDS if str(room.get("game_type", GAME_TYPE_CASUAL)) == GAME_TYPE_RANKED else CASUAL_RECONNECT_GRACE_SECONDS
+
+
+func _dictionary_with_integer_keys(source_variant: Variant) -> Dictionary:
+	var result := {}
+	if source_variant is Dictionary:
+		for key_variant in (source_variant as Dictionary).keys():
+			var key := int(key_variant)
+			if key >= 0 and key < PLAYER_COUNT:
+				result[key] = (source_variant as Dictionary)[key_variant]
+	return result
 
 func _get_scheduled_round_plan(round_number: int) -> Dictionary:
 	var round_index := round_number - 1

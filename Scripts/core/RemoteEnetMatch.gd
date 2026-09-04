@@ -15,7 +15,7 @@ signal room_left
 
 const DEFAULT_HOST := "130.61.155.173"
 const DEFAULT_PORT := 8765
-const PROTOCOL_VERSION := 6
+const PROTOCOL_VERSION := 7
 const PLAYER_COUNT := 4
 const REQUEST_RETRY_SECONDS := 1.0
 const ROOM_RESYNC_INTERVAL_SECONDS := 1.0
@@ -45,6 +45,8 @@ var account_display_name := ""
 var account_avatar_index := 0
 var account_xp := 0
 var account_completed_matches := 0
+var account_rating := 1000
+var account_ranked_matches := 0
 var account_active_room_id := 0
 var last_xp_award: Dictionary = {}
 var session_token := ""
@@ -54,6 +56,7 @@ var current_room_name := ""
 var current_room_is_private := false
 var current_room_owner_player_index := -1
 var current_room_match_mode := "classic"
+var current_room_game_type := "casual"
 var current_room_fill_empty_seats_with_bots := false
 var current_room_bot_difficulty := 1
 var directory_ready := false
@@ -136,6 +139,7 @@ func _clear_current_room(clear_saved_credentials: bool) -> void:
 	current_room_is_private = false
 	current_room_owner_player_index = -1
 	current_room_match_mode = "classic"
+	current_room_game_type = "casual"
 	current_room_fill_empty_seats_with_bots = false
 	current_room_bot_difficulty = 1
 	client_snapshot.clear()
@@ -178,6 +182,8 @@ func get_account_state() -> Dictionary:
 		"avatar_index": account_avatar_index,
 		"xp": account_xp,
 		"completed_matches": account_completed_matches,
+		"rating": account_rating,
+		"ranked_matches": account_ranked_matches,
 		"active_room_id": account_active_room_id,
 		"last_xp_award": last_xp_award.duplicate(true)
 	}
@@ -364,7 +370,7 @@ func request_room_resync() -> bool:
 	return _send_message({"type": "resync_request"}, 1)
 
 
-func create_lobby(room_name: String, is_private: bool, password: String = "", match_mode: String = "classic", fill_empty_seats_with_bots: bool = false, bot_difficulty: int = 1) -> bool:
+func create_lobby(room_name: String, is_private: bool, password: String = "", match_mode: String = "classic", fill_empty_seats_with_bots: bool = false, bot_difficulty: int = 1, game_type: String = "casual") -> bool:
 	if not is_directory_connected() or is_in_room():
 		return false
 	var clean_name := room_name.replace("\n", " ").replace("\r", " ").strip_edges().left(28)
@@ -380,7 +386,8 @@ func create_lobby(room_name: String, is_private: bool, password: String = "", ma
 		"password_hash": password_hash,
 		"display_name": display_name,
 		"match_mode": "teams_2v2" if match_mode == "teams_2v2" else "classic",
-		"fill_empty_seats_with_bots": fill_empty_seats_with_bots,
+		"game_type": "ranked" if game_type == "ranked" else "casual",
+		"fill_empty_seats_with_bots": fill_empty_seats_with_bots if game_type != "ranked" else false,
 		"bot_difficulty": clampi(bot_difficulty, 0, 2)
 	}, 1)
 	if was_sent:
@@ -425,13 +432,14 @@ func set_ready(ready: bool) -> bool:
 	return sent
 
 
-func update_room_settings(match_mode: String, fill_empty_seats_with_bots: bool, bot_difficulty: int) -> bool:
+func update_room_settings(match_mode: String, fill_empty_seats_with_bots: bool, bot_difficulty: int, game_type: String = "casual") -> bool:
 	if peer == null or not is_host() or lobby_round_started:
 		return false
 	return _send_message({
 		"type": "update_room_settings",
 		"match_mode": "teams_2v2" if match_mode == "teams_2v2" else "classic",
-		"fill_empty_seats_with_bots": fill_empty_seats_with_bots,
+		"game_type": "ranked" if game_type == "ranked" else "casual",
+		"fill_empty_seats_with_bots": fill_empty_seats_with_bots if game_type != "ranked" else false,
 		"bot_difficulty": clampi(bot_difficulty, 0, 2)
 	}, 1)
 
@@ -456,7 +464,7 @@ func can_start_match() -> bool:
 			human_count += 1
 			if not bool(seat.get("ready", seat.get("confirmed", false))):
 				return false
-	return human_count > 0 and (current_room_fill_empty_seats_with_bots or human_count == PLAYER_COUNT)
+	return human_count > 0 and (current_room_fill_empty_seats_with_bots or human_count == PLAYER_COUNT) and (current_room_game_type != "ranked" or human_count == PLAYER_COUNT)
 
 func _process(delta: float) -> void:
 	if peer == null:
@@ -612,6 +620,8 @@ func _handle_account_state(message: Dictionary) -> void:
 	account_avatar_index = maxi(0, int(account.get("avatar_index", 0)))
 	account_xp = maxi(0, int(account.get("xp", 0)))
 	account_completed_matches = maxi(0, int(account.get("completed_matches", 0)))
+	account_rating = maxi(0, int(account.get("rating", account_rating)))
+	account_ranked_matches = maxi(0, int(account.get("ranked_matches", account_ranked_matches)))
 	account_active_room_id = maxi(0, int(message.get("active_room_id", 0)))
 	if account_active_room_id > 0 and saved_room_id <= 0:
 		saved_room_id = account_active_room_id
@@ -647,8 +657,11 @@ func _handle_account_progress(message: Dictionary) -> void:
 	account_avatar_index = maxi(0, int(account.get("avatar_index", account_avatar_index)))
 	account_xp = maxi(0, int(account.get("xp", account_xp)))
 	account_completed_matches = maxi(0, int(account.get("completed_matches", account_completed_matches)))
+	account_rating = maxi(0, int(account.get("rating", account_rating)))
+	account_ranked_matches = maxi(0, int(account.get("ranked_matches", account_ranked_matches)))
 	last_xp_award = (award_variant as Dictionary).duplicate(true)
-	_set_status(tr("Матч завершён: получено %d XP.") % int(last_xp_award.get("xp_awarded", 0)))
+	var rating_delta := int(last_xp_award.get("rating_delta", 0))
+	_set_status(tr("Матч завершён: получено %d XP%s.") % [int(last_xp_award.get("xp_awarded", 0)), " · рейтинг %+d" % rating_delta if str(last_xp_award.get("game_type", "casual")) == "ranked" else ""])
 	account_state_changed.emit()
 
 
@@ -1049,6 +1062,7 @@ func _store_room_settings(message: Dictionary) -> void:
 	current_room_match_mode = str(message.get("match_mode", current_room_match_mode))
 	if current_room_match_mode != "teams_2v2":
 		current_room_match_mode = "classic"
+	current_room_game_type = "ranked" if str(message.get("game_type", current_room_game_type)) == "ranked" else "casual"
 	current_room_fill_empty_seats_with_bots = bool(message.get("fill_empty_seats_with_bots", current_room_fill_empty_seats_with_bots))
 	current_room_bot_difficulty = clampi(int(message.get("bot_difficulty", current_room_bot_difficulty)), 0, 2)
 
@@ -1103,6 +1117,10 @@ func _get_rejection_text(reason: String) -> String:
 			return tr("Не все игроки отметили готовность.")
 		"not_enough_players":
 			return tr("Нужно четыре игрока или заполнение свободных мест ботами.")
+		"ranked_requires_four_players":
+			return tr("Рейтинговая партия начинается только с четырьмя игроками, без стартовых ботов.")
+		"ranked_forfeit":
+			return tr("Срок возвращения истёк: в этой рейтинговой партии уже засчитано техническое поражение.")
 		"roll_not_available":
 			return tr("Этот бросок кубика уже недоступен.")
 		"roll_not_complete":

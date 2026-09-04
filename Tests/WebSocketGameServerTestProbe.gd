@@ -20,6 +20,10 @@ func _init() -> void:
 func _run() -> void:
 	_cleanup_databases()
 	server = Server.new()
+	assert(is_equal_approx(server._get_match_xp_multiplier(Server.GAME_TYPE_CASUAL, false, true, false, false), 0.05))
+	assert(is_equal_approx(server._get_match_xp_multiplier(Server.GAME_TYPE_CASUAL, false, true, true, false), 0.3))
+	assert(is_equal_approx(server._get_match_xp_multiplier(Server.GAME_TYPE_RANKED, true, false, true, false), 0.0))
+	assert(is_equal_approx(server._rating_expected_score(1000, 1000), 0.5))
 	assert(server.start(TEST_PORT, "127.0.0.1", TEST_ACCOUNT_DB_PATH, TEST_MATCH_DB_PATH) == OK)
 	for client_index in CLIENT_COUNT:
 		var client := ENetMultiplayerPeer.new()
@@ -150,9 +154,12 @@ func _run() -> void:
 
 	var private_room: Dictionary = server._rooms[private_room_id]
 	var private_match_host = private_room.get("match_host")
+	var equal_ratings: Array[int] = [1000, 1000, 1000, 1000]
+	assert(server._calculate_ranked_rating_delta(private_room, private_match_host, 0, equal_ratings, true) == -Server.RATING_FORFEIT_MIN_LOSS)
 	var abandoned_player_index := _player_index_for_peer(private_room_id, 2)
 	(private_room.get("temporary_bot_players", {}) as Dictionary)[abandoned_player_index] = true
 	(private_room.get("bot_players", {}) as Dictionary)[abandoned_player_index] = true
+	(private_room.get("abandoned_at_round_by_player", {}) as Dictionary)[abandoned_player_index] = 8
 	private_match_host.game.round_number = Server.TOTAL_ROUND_COUNT
 	private_match_host.game.current_round.state = Round.State.FINISHED
 	_send_client(2, {"type": "return_to_lobby"})
@@ -163,7 +170,7 @@ func _run() -> void:
 		var progress_message := _take_message(client_index, "account_progress")
 		var award: Dictionary = progress_message.get("award", {})
 		assert(int(award.get("base_xp", 0)) == Server.MATCH_BASE_XP)
-		var expected_xp := roundi(float(Server.MATCH_BASE_XP + Server.MATCH_WIN_XP) * Server.ABANDONED_CASUAL_XP_MULTIPLIER) if _player_index_for_peer(private_room_id, client_index) == abandoned_player_index else Server.MATCH_BASE_XP + Server.MATCH_WIN_XP
+		var expected_xp := roundi(float(Server.MATCH_BASE_XP + Server.MATCH_WIN_XP) * Server.ABANDONED_CASUAL_EARLY_XP_MULTIPLIER) if _player_index_for_peer(private_room_id, client_index) == abandoned_player_index else Server.MATCH_BASE_XP + Server.MATCH_WIN_XP
 		assert(int(award.get("xp_awarded", 0)) == expected_xp)
 	assert(await _wait_until(func(): return not bool(server.get_room_debug_state(private_room_id).get("round_started", true)) and int(server.get_room_debug_state(private_room_id).get("round_number", -1)) == 0), "Finished room must reset for a rematch")
 	assert(int(server.get_health().get("completed_matches_saved", 0)) >= 1, "Finished match must be stored in the completed-match archive")
