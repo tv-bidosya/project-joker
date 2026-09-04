@@ -149,6 +149,184 @@ func set_history_mode(selected_mode: int) -> void:
 	history_mode = clampi(selected_mode, HistoryMode.FULL, HistoryMode.LAST_TRICK_ONLY)
 
 
+func create_persistence_snapshot() -> Dictionary:
+	if game == null:
+		return {}
+	var game_snapshot := _serialize_game_snapshot(game.create_snapshot())
+	var player_states: Array = game_snapshot.get("players", [])
+	for player_index in mini(player_states.size(), game.players.size()):
+		(player_states[player_index] as Dictionary)["display_name"] = game.players[player_index].display_name
+	return {
+		"version": 1,
+		"game": game_snapshot,
+		"revision": revision,
+		"history_mode": int(history_mode),
+		"public_history": public_history.duplicate(),
+		"completed_round_history": completed_round_history.duplicate(true),
+		"public_table_events": public_table_events.duplicate(true),
+		"next_public_table_event_id": next_public_table_event_id,
+		"undo_state_reset_id": undo_state_reset_id
+	}
+
+
+static func restore_persistence_snapshot(data: Dictionary) -> LocalMatchHost:
+	if int(data.get("version", 0)) != 1:
+		return null
+	var game_data_variant: Variant = data.get("game", {})
+	if not (game_data_variant is Dictionary):
+		return null
+	var game_data: Dictionary = game_data_variant
+	var player_states: Array = game_data.get("players", [])
+	if player_states.size() != 4:
+		return null
+	var names: Array[String] = []
+	for player_state_variant in player_states:
+		if not (player_state_variant is Dictionary):
+			return null
+		names.append(str((player_state_variant as Dictionary).get("display_name", "Игрок")))
+	var restored_game := Game.new(names)
+	var restored_snapshot := _deserialize_game_snapshot(game_data)
+	if restored_snapshot.is_empty():
+		return null
+	restored_game.restore_snapshot(restored_snapshot)
+	var restored := LocalMatchHost.new(restored_game)
+	restored.revision = maxi(0, int(data.get("revision", 0)))
+	restored.history_mode = clampi(int(data.get("history_mode", HistoryMode.FULL)), HistoryMode.FULL, HistoryMode.LAST_TRICK_ONLY)
+	restored.public_history.assign(data.get("public_history", []))
+	restored.completed_round_history.assign(data.get("completed_round_history", []))
+	restored.public_table_events.assign(data.get("public_table_events", []))
+	restored.next_public_table_event_id = maxi(1, int(data.get("next_public_table_event_id", 1)))
+	restored.undo_state_reset_id = maxi(0, int(data.get("undo_state_reset_id", 0))) + 1
+	return restored
+
+
+static func _serialize_game_snapshot(snapshot: Dictionary) -> Dictionary:
+	var players_data: Array[Dictionary] = []
+	for player_state_variant in snapshot.get("players", []):
+		var player_state: Dictionary = player_state_variant
+		players_data.append({
+			"hand": _serialize_cards_for_persistence(player_state.get("hand", [])),
+			"bid": int(player_state.get("bid", -1)),
+			"tricks_taken": int(player_state.get("tricks_taken", 0)),
+			"total_score": int(player_state.get("total_score", 0)),
+			"exact_orders_completed": int(player_state.get("exact_orders_completed", 0))
+		})
+	return {
+		"players": players_data,
+		"deck_cards": _serialize_cards_for_persistence(snapshot.get("deck_cards", [])),
+		"round": (snapshot.get("round", {}) as Dictionary).duplicate(true),
+		"active_trick": _serialize_trick_for_persistence(snapshot.get("active_trick", {})),
+		"trump_card": _serialize_card_for_persistence(snapshot.get("trump_card")),
+		"last_completed_trick_cards": _serialize_cards_for_persistence(snapshot.get("last_completed_trick_cards", [])),
+		"last_completed_trick_played_by": (snapshot.get("last_completed_trick_played_by", []) as Array).duplicate(),
+		"played_cards_this_round": _serialize_cards_for_persistence(snapshot.get("played_cards_this_round", [])),
+		"played_cards_by_this_round": (snapshot.get("played_cards_by_this_round", []) as Array).duplicate(),
+		"played_lead_suits_this_round": (snapshot.get("played_lead_suits_this_round", []) as Array).duplicate(),
+		"last_completed_trick_joker_mode": int(snapshot.get("last_completed_trick_joker_mode", Trick.JokerMode.NONE)),
+		"last_completed_trick_declared_suit": int(snapshot.get("last_completed_trick_declared_suit", -1)),
+		"last_completed_trick_forced_card_rank": int(snapshot.get("last_completed_trick_forced_card_rank", Trick.ForcedCardRank.NONE)),
+		"dealer_index": int(snapshot.get("dealer_index", -1)),
+		"last_trick_winner_index": int(snapshot.get("last_trick_winner_index", -1)),
+		"round_number": int(snapshot.get("round_number", 0)),
+		"cards_are_dealt": bool(snapshot.get("cards_are_dealt", false)),
+		"jokers_dealt_this_round": (snapshot.get("jokers_dealt_this_round", []) as Array).duplicate()
+	}
+
+
+static func _deserialize_game_snapshot(data: Dictionary) -> Dictionary:
+	var players_data: Array = data.get("players", [])
+	if players_data.size() != 4 or not (data.get("round", {}) is Dictionary):
+		return {}
+	var player_states: Array[Dictionary] = []
+	for player_state_variant in players_data:
+		if not (player_state_variant is Dictionary):
+			return {}
+		var player_state: Dictionary = player_state_variant
+		player_states.append({
+			"hand": _deserialize_cards_for_persistence(player_state.get("hand", [])),
+			"bid": int(player_state.get("bid", -1)),
+			"tricks_taken": int(player_state.get("tricks_taken", 0)),
+			"total_score": int(player_state.get("total_score", 0)),
+			"exact_orders_completed": int(player_state.get("exact_orders_completed", 0))
+		})
+	return {
+		"players": player_states,
+		"deck_cards": _deserialize_cards_for_persistence(data.get("deck_cards", [])),
+		"round": (data.get("round", {}) as Dictionary).duplicate(true),
+		"active_trick": _deserialize_trick_for_persistence(data.get("active_trick", {})),
+		"trump_card": _deserialize_card_for_persistence(data.get("trump_card", {})),
+		"last_completed_trick_cards": _deserialize_cards_for_persistence(data.get("last_completed_trick_cards", [])),
+		"last_completed_trick_played_by": (data.get("last_completed_trick_played_by", []) as Array).duplicate(),
+		"played_cards_this_round": _deserialize_cards_for_persistence(data.get("played_cards_this_round", [])),
+		"played_cards_by_this_round": (data.get("played_cards_by_this_round", []) as Array).duplicate(),
+		"played_lead_suits_this_round": (data.get("played_lead_suits_this_round", []) as Array).duplicate(),
+		"last_completed_trick_joker_mode": int(data.get("last_completed_trick_joker_mode", Trick.JokerMode.NONE)),
+		"last_completed_trick_declared_suit": int(data.get("last_completed_trick_declared_suit", -1)),
+		"last_completed_trick_forced_card_rank": int(data.get("last_completed_trick_forced_card_rank", Trick.ForcedCardRank.NONE)),
+		"dealer_index": int(data.get("dealer_index", -1)),
+		"last_trick_winner_index": int(data.get("last_trick_winner_index", -1)),
+		"round_number": int(data.get("round_number", 0)),
+		"cards_are_dealt": bool(data.get("cards_are_dealt", false)),
+		"jokers_dealt_this_round": (data.get("jokers_dealt_this_round", []) as Array).duplicate()
+	}
+
+
+static func _serialize_trick_for_persistence(trick_variant: Variant) -> Dictionary:
+	if not (trick_variant is Dictionary) or (trick_variant as Dictionary).is_empty():
+		return {}
+	var trick: Dictionary = (trick_variant as Dictionary).duplicate(true)
+	trick["played_cards"] = _serialize_cards_for_persistence(trick.get("played_cards", []))
+	return trick
+
+
+static func _deserialize_trick_for_persistence(trick_variant: Variant) -> Dictionary:
+	if not (trick_variant is Dictionary) or (trick_variant as Dictionary).is_empty():
+		return {}
+	var trick: Dictionary = (trick_variant as Dictionary).duplicate(true)
+	trick["played_cards"] = _deserialize_cards_for_persistence(trick.get("played_cards", []))
+	return trick
+
+
+static func _serialize_cards_for_persistence(cards_variant: Variant) -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
+	if not (cards_variant is Array):
+		return result
+	for card_variant in cards_variant:
+		var serialized := _serialize_card_for_persistence(card_variant)
+		if not serialized.is_empty():
+			result.append(serialized)
+	return result
+
+
+static func _deserialize_cards_for_persistence(cards_variant: Variant) -> Array[Card]:
+	var result: Array[Card] = []
+	if not (cards_variant is Array):
+		return result
+	for card_variant in cards_variant:
+		var card := _deserialize_card_for_persistence(card_variant)
+		if card != null:
+			result.append(card)
+	return result
+
+
+static func _serialize_card_for_persistence(card_variant: Variant) -> Dictionary:
+	if not (card_variant is Card):
+		return {}
+	var card: Card = card_variant
+	return {"suit": int(card.suit), "rank": int(card.rank), "is_joker": card.is_joker}
+
+
+static func _deserialize_card_for_persistence(card_variant: Variant) -> Card:
+	if not (card_variant is Dictionary) or (card_variant as Dictionary).is_empty():
+		return null
+	var data: Dictionary = card_variant
+	var card := Card.new()
+	card.suit = clampi(int(data.get("suit", Card.Suit.CLUBS)), Card.Suit.CLUBS, Card.Suit.DIAMONDS)
+	card.rank = clampi(int(data.get("rank", Card.Rank.SIX)), Card.Rank.SIX, Card.Rank.ACE)
+	card.is_joker = bool(data.get("is_joker", false))
+	return card
+
+
 func _get_visible_public_history() -> Array[String]:
 	if history_mode == HistoryMode.LAST_TRICK_ONLY:
 		return []

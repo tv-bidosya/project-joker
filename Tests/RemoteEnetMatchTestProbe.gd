@@ -3,6 +3,7 @@ extends SceneTree
 const Server = preload("res://Scripts/server/WebSocketGameServer.gd")
 const RemoteMatch = preload("res://Scripts/core/RemoteEnetMatch.gd")
 const TEST_PORT := 28766
+const TEST_ACCOUNT_DB_PATH := "user://remote_enet_accounts_test.json"
 
 var server
 var clients: Array[Node] = []
@@ -13,14 +14,39 @@ func _init() -> void:
 
 
 func _run() -> void:
+	_cleanup_account_database()
 	server = Server.new()
-	assert(server.start(TEST_PORT, "127.0.0.1") == OK)
+	assert(server.start(TEST_PORT, "127.0.0.1", TEST_ACCOUNT_DB_PATH) == OK)
 	for player_index in Server.PLAYER_COUNT:
 		var client = RemoteMatch.new()
 		root.add_child(client)
 		clients.append(client)
 		assert(client.start_client("127.0.0.1", TEST_PORT, "Client %d" % (player_index + 1), "", 0))
 	assert(await _wait_until(func(): return _all_directories_ready()), "Remote directory clients did not connect")
+	for client in clients:
+		assert(client.is_account_connected())
+		assert(client.account_id.begins_with("PJ-"))
+		assert(client.account_device_token.length() == 64)
+		assert(client.account_recovery_code.length() == 39)
+
+	var recovered_client = RemoteMatch.new()
+	root.add_child(recovered_client)
+	assert(recovered_client.start_client(
+		"127.0.0.1",
+		TEST_PORT,
+		"Recovered",
+		"",
+		0,
+		"",
+		clients[0].account_id,
+		clients[0].account_recovery_code
+	))
+	assert(await _wait_until(func(): return recovered_client.is_directory_connected()), "A second device did not recover the account")
+	assert(recovered_client.account_id == clients[0].account_id)
+	assert(recovered_client.account_device_token != clients[0].account_device_token)
+	recovered_client.stop()
+	recovered_client.queue_free()
+	await process_frame
 
 	var stale_client = RemoteMatch.new()
 	root.add_child(stale_client)
@@ -47,6 +73,21 @@ func _run() -> void:
 	assert(await _wait_until(func(): return clients[0].can_start_match()), "Owner did not receive the final ready state")
 	assert(clients[0].start_match())
 	assert(await _wait_until(func(): return _all_clients_have_first_turn_roll()), "RemoteEnetMatch clients did not enter the first-turn roll")
+	clients[0].first_turn_roll_state.clear()
+	assert(not clients[0].is_first_turn_roll_active())
+	assert(clients[0].request_room_resync())
+	assert(
+		await _wait_until(func(): return clients[0].is_first_turn_roll_active()),
+		"A client that missed the roll update must recover the room state through resync"
+	)
+	var saved_seats: Array[Dictionary] = clients[0].lobby_seats.duplicate(true)
+	clients[0].lobby_seats[1]["reconnecting"] = true
+	assert(clients[0].is_match_paused_for_reconnect())
+	assert(
+		clients[0].can_submit_first_turn_roll(),
+		"A connected contender must be able to roll while another player is reconnecting"
+	)
+	clients[0].lobby_seats.assign(saved_seats)
 	assert(await _complete_first_turn_roll(), "RemoteEnetMatch clients did not complete the first-turn roll")
 	var first_player_index := int(clients[0].get_first_turn_roll_state().get("winner_player_index", -1))
 	assert(first_player_index >= 0)
@@ -83,6 +124,8 @@ func _run() -> void:
 	assert(disconnected_client_slot >= 0)
 	var observer_client = clients[0] if disconnected_client_slot != 0 else clients[1]
 	var reconnect_token: String = clients[disconnected_client_slot].session_token
+	var reconnect_account_id: String = clients[disconnected_client_slot].account_id
+	var reconnect_recovery_code: String = clients[disconnected_client_slot].account_recovery_code
 	clients[disconnected_client_slot].stop()
 	clients[disconnected_client_slot].queue_free()
 	clients[disconnected_client_slot] = null
@@ -94,13 +137,25 @@ func _run() -> void:
 	var reconnecting_client = RemoteMatch.new()
 	root.add_child(reconnecting_client)
 	clients[disconnected_client_slot] = reconnecting_client
-	assert(reconnecting_client.start_client("127.0.0.1", TEST_PORT, "Client %d reconnected" % (disconnected_player_index + 1), reconnect_token, room_id))
+	assert(reconnecting_client.start_client(
+		"127.0.0.1",
+		TEST_PORT,
+		"Client %d reconnected" % (disconnected_player_index + 1),
+		"",
+		0,
+		"",
+		reconnect_account_id,
+		reconnect_recovery_code
+	))
 	assert(await _wait_until(func(): return reconnecting_client.is_directory_connected()), "Reconnect client did not reach directory")
+	assert(reconnecting_client.account_active_room_id == room_id)
+	assert(reconnecting_client.saved_room_id == room_id)
 	assert(reconnecting_client.join_lobby(room_id, ""), "Reconnect token should bypass the private-room password")
 	assert(await _wait_until(func(): return reconnecting_client.client_snapshot_is_safe), "Reconnect client did not recover its private snapshot")
 	assert(await _wait_until(func(): return disconnected_player_index not in observer_client.get_temporary_bot_player_indices()), "The temporary bot did not yield the seat back to the player")
 	assert(reconnecting_client.current_room_id == room_id)
 	assert(reconnecting_client.session_token == reconnect_token)
+	assert(reconnecting_client.account_id == reconnect_account_id)
 	assert(reconnecting_client.client_player_index == disconnected_player_index)
 
 	var room: Dictionary = server._rooms[room_id]
@@ -192,3 +247,11 @@ func _cleanup() -> void:
 		client.stop()
 		client.queue_free()
 	server.stop()
+	_cleanup_account_database()
+
+
+func _cleanup_account_database() -> void:
+	for suffix in ["", ".tmp", ".bak"]:
+		var path: String = TEST_ACCOUNT_DB_PATH + str(suffix)
+		if FileAccess.file_exists(path):
+			DirAccess.remove_absolute(ProjectSettings.globalize_path(path))

@@ -5,6 +5,8 @@ const Snapshot = preload("res://Scripts/core/MatchStateSnapshot.gd")
 const Command = preload("res://Scripts/core/MatchCommand.gd")
 const TEST_PORT := 28765
 const CLIENT_COUNT := 6
+const TEST_ACCOUNT_DB_PATH := "user://websocket_server_accounts_test.json"
+const TEST_MATCH_DB_PATH := "user://websocket_server_matches_test.json"
 
 var server
 var clients: Array[ENetMultiplayerPeer] = []
@@ -16,14 +18,40 @@ func _init() -> void:
 
 
 func _run() -> void:
+	_cleanup_databases()
 	server = Server.new()
-	assert(server.start(TEST_PORT, "127.0.0.1") == OK)
+	assert(server.start(TEST_PORT, "127.0.0.1", TEST_ACCOUNT_DB_PATH, TEST_MATCH_DB_PATH) == OK)
 	for client_index in CLIENT_COUNT:
 		var client := ENetMultiplayerPeer.new()
 		assert(client.create_client("127.0.0.1", TEST_PORT) == OK)
 		clients.append(client)
 		inboxes.append([])
 	assert(await _wait_until(func(): return _all_clients_connected()), "Directory clients did not connect")
+	for client_index in CLIENT_COUNT:
+		_send_client(client_index, {
+			"type": "account_challenge_request",
+			"protocol_version": Server.PROTOCOL_VERSION
+		})
+	assert(await _wait_until(func(): return _all_message_types_received("account_challenge")), "All clients must receive an account challenge")
+	for client_index in CLIENT_COUNT:
+		var challenge_message := _take_message(client_index, "account_challenge")
+		assert(str(challenge_message.get("challenge", "")).length() == 64)
+		var device_token := "device-token-%d" % client_index
+		var recovery_code := "recovery-code-%d" % client_index
+		_send_client(client_index, {
+			"type": "account_create",
+			"protocol_version": Server.PROTOCOL_VERSION,
+			"display_name": "Account %d" % (client_index + 1),
+			"avatar_index": client_index % 4,
+			"device_token_hash": device_token.sha256_text(),
+			"recovery_code_hash": recovery_code.sha256_text()
+		})
+	assert(await _wait_until(func(): return _all_message_types_received("account_state")), "All clients must authenticate an account")
+	for client_index in CLIENT_COUNT:
+		var account_state := _take_message(client_index, "account_state")
+		assert(str((account_state.get("account", {}) as Dictionary).get("account_id", "")).begins_with("PJ-"))
+		assert(not account_state.has("device_token"))
+		assert(not account_state.has("recovery_code"))
 	for client_index in CLIENT_COUNT:
 		_send_client(client_index, {"type": "directory_request", "protocol_version": Server.PROTOCOL_VERSION})
 	assert(await _wait_until(func(): return _all_message_types_received("directory_state")), "All clients must receive the directory")
@@ -128,6 +156,7 @@ func _run() -> void:
 	assert(await _wait_until(func(): return _has_rejection(2, "host_only")), "Only the owner may return a finished match to the lobby")
 	_send_client(1, {"type": "return_to_lobby"})
 	assert(await _wait_until(func(): return not bool(server.get_room_debug_state(private_room_id).get("round_started", true)) and int(server.get_room_debug_state(private_room_id).get("round_number", -1)) == 0), "Finished room must reset for a rematch")
+	assert(int(server.get_health().get("completed_matches_saved", 0)) >= 1, "Finished match must be stored in the completed-match archive")
 
 	_send_client(0, {"type": "seat_ack", "player_index": int(public_seat.get("player_index", -1))})
 	assert(await _wait_until(func(): return _has_message_type(0, "seat_confirmed")), "Bot-room host seat must be confirmed")
@@ -136,6 +165,23 @@ func _run() -> void:
 	assert(await _drive_first_turn_roll(public_room_id, [0]), "Bot room must complete the first-turn roll")
 	_send_client(0, {"type": "start_first_round"})
 	assert(await _wait_until(func(): return _has_message_type(0, "player_snapshot") and int(server.get_room_debug_state(public_room_id).get("round_number", 0)) == 1), "One human plus server bots must start the first round")
+	var state_before_restart: Dictionary = server.get_room_debug_state(public_room_id)
+	var room_before_restart: Dictionary = server._rooms[public_room_id]
+	var host_before_restart: LocalMatchHost = room_before_restart.get("match_host")
+	var game_snapshot_before_restart: Dictionary = host_before_restart.create_persistence_snapshot().get("game", {})
+	for client in clients:
+		client.close()
+	server.stop()
+	server = Server.new()
+	assert(server.start(TEST_PORT, "127.0.0.1", TEST_ACCOUNT_DB_PATH, TEST_MATCH_DB_PATH) == OK, "Server must reopen the persistent match database")
+	var restored_state: Dictionary = server.get_room_debug_state(public_room_id)
+	assert(not restored_state.is_empty(), "Started room must survive a real server object restart")
+	assert(int(restored_state.get("round_number", 0)) == int(state_before_restart.get("round_number", -1)), "Restored match must keep its round")
+	assert(int(restored_state.get("revision", -1)) == int(state_before_restart.get("revision", -2)), "Restored match must keep its command revision")
+	assert(bool(restored_state.get("round_started", false)), "Restored match must remain active")
+	var restored_room: Dictionary = server._rooms[public_room_id]
+	var restored_host: LocalMatchHost = restored_room.get("match_host")
+	assert(JSON.stringify(restored_host.create_persistence_snapshot().get("game", {})) == JSON.stringify(game_snapshot_before_restart), "Restored match must keep hands, deck, trump, score and active trick exactly")
 	print("WEBSOCKET_GAME_SERVER_TEST_PASS")
 	_cleanup()
 	quit()
@@ -295,4 +341,14 @@ func _peek_latest_message(client_index: int, message_type: String) -> Dictionary
 func _cleanup() -> void:
 	for client in clients:
 		client.close()
-	server.stop()
+	if server != null:
+		server.stop()
+	_cleanup_databases()
+
+
+func _cleanup_databases() -> void:
+	for base_path in [TEST_ACCOUNT_DB_PATH, TEST_MATCH_DB_PATH]:
+		for suffix in ["", ".tmp", ".bak"]:
+			var path: String = base_path + str(suffix)
+			if FileAccess.file_exists(path):
+				DirAccess.remove_absolute(ProjectSettings.globalize_path(path))

@@ -1,11 +1,9 @@
 extends SceneTree
 
-const ServerProtocolVersion := 4
+const ServerProtocolVersion := 6
 var client: ENetMultiplayerPeer
 var deadline_msec := 0
 var ping_sent := false
-var directory_sent := false
-var pong_received := false
 
 
 func _init() -> void:
@@ -40,14 +38,9 @@ func _poll() -> void:
 		var message: Dictionary = parsed
 		match str(message.get("type", "")):
 			"pong":
-				pong_received = true
-				if not directory_sent:
-					_send({"type": "directory_request", "protocol_version": ServerProtocolVersion})
-					directory_sent = true
-			"directory_state":
-				assert(pong_received)
-				assert(int(message.get("protocol_version", -1)) == ServerProtocolVersion)
-				assert(message.get("lobbies", []) is Array)
+				var health: Dictionary = message.get("health", {})
+				assert(int(health.get("protocol_version", -1)) == ServerProtocolVersion)
+				assert(str(health.get("service", "")) == "project-joker")
 				print("REMOTE_ENET_SMOKE_PASS")
 				client.close()
 				quit()

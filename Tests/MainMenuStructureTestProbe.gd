@@ -50,9 +50,21 @@ func _run() -> void:
 	await process_frame
 	assert(main_scene.new_game_name_inputs.size() == 1, "Only the human profile is editable")
 	assert(main_scene.new_game_bot_avatar_selectors.is_empty(), "No bot customization")
+	assert(
+		main_scene.new_game_name_inputs[0].get_parent().get_index() < main_scene.new_game_match_mode_selector.get_index(),
+		"The editable player name must appear above match mode so the mobile keyboard does not cover it"
+	)
 	var preview: Node = main_scene.menu_content.find_child("NewGameAvatarPreview0", true, false)
 	assert(preview != null)
 	assert(int(preview.get_meta("avatar_index", -1)) == main_scene.configured_avatar_indices[0])
+
+	main_scene._show_profile_menu()
+	assert("Аккаунт Project Joker" in _get_button_texts(main_scene.menu_content))
+	main_scene._show_account_menu()
+	assert(main_scene.menu_content.find_child("AccountIdInput", true, false) is LineEdit)
+	assert(main_scene.menu_content.find_child("AccountRecoveryInput", true, false) is LineEdit)
+	assert("Подключить аккаунт" in _get_button_texts(main_scene.menu_content))
+	assert("Восстановить аккаунт" in _get_button_texts(main_scene.menu_content))
 
 	main_scene._show_tutorial_menu()
 	var tutorial_buttons := _get_button_texts(main_scene.menu_content)

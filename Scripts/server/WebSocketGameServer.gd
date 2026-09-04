@@ -5,7 +5,7 @@ extends RefCounted
 
 signal status_changed(status: String)
 
-const PROTOCOL_VERSION := 4
+const PROTOCOL_VERSION := 6
 const PLAYER_COUNT := 4
 const DEFAULT_PORT := 8765
 const MAX_PACKET_BYTES := 65536
@@ -15,6 +15,7 @@ const TOTAL_ROUND_COUNT := 32
 const NEXT_ROUND_DELAY_MSEC := 8000
 const BOT_ACTION_DELAY_MSEC := 650
 const RECONNECT_GRACE_MSEC := 5000
+const SERVER_RESTART_RECONNECT_GRACE_MSEC := 5 * 60 * 1000
 const FIRST_TURN_ROLL_REVEAL_MSEC := 2400
 const FIRST_ROUND_AUTO_START_MSEC := 3200
 const MATCH_MODE_CLASSIC := "classic"
@@ -24,6 +25,8 @@ const EMPTY_MATCH_TTL_MSEC := 6 * 60 * 60 * 1000
 const MatchHost = preload("res://Scripts/core/LocalMatchHost.gd")
 const MatchCommand = preload("res://Scripts/core/MatchCommand.gd")
 const ServerBotTurn = preload("res://Scripts/server/ServerBotTurn.gd")
+const AccountStoreResource = preload("res://Scripts/server/AccountStore.gd")
+const MatchStoreResource = preload("res://Scripts/server/MatchStore.gd")
 
 var peer: ENetMultiplayerPeer
 var active_port := DEFAULT_PORT
@@ -31,8 +34,16 @@ var status := "Сервер не запущен."
 var _rooms: Dictionary = {}
 var _room_id_by_peer: Dictionary = {}
 var _room_id_by_session_token: Dictionary = {}
+var _room_id_by_account_id: Dictionary = {}
 var _known_peer_ids: Dictionary = {}
+var _account_id_by_peer: Dictionary = {}
+var _account_recovery_attempts_by_peer: Dictionary = {}
+var _account_challenge_by_peer: Dictionary = {}
 var _next_room_id := 1001
+var _account_store
+var _match_store
+var _completed_matches: Array[Dictionary] = []
+var _is_stopping := false
 
 
 enum FirstTurnRollPhase {
@@ -43,8 +54,22 @@ enum FirstTurnRollPhase {
 }
 
 
-func start(port: int = DEFAULT_PORT, bind_address: String = "*") -> Error:
+func start(port: int = DEFAULT_PORT, bind_address: String = "*", account_database_path: String = "", match_database_path: String = "") -> Error:
 	stop()
+	_account_store = AccountStoreResource.new()
+	var account_error: Error = _account_store.open(account_database_path)
+	if account_error != OK:
+		_set_status("Не удалось открыть базу аккаунтов: %s" % _account_store.last_error)
+		_account_store = null
+		return account_error
+	_match_store = MatchStoreResource.new()
+	var match_error: Error = _match_store.open(match_database_path)
+	if match_error != OK:
+		_set_status("Не удалось открыть базу матчей: %s" % _match_store.last_error)
+		_match_store = null
+		_account_store = null
+		return match_error
+	_restore_persistent_rooms()
 	active_port = port
 	peer = ENetMultiplayerPeer.new()
 	peer.set_bind_ip(bind_address)
@@ -59,13 +84,23 @@ func start(port: int = DEFAULT_PORT, bind_address: String = "*") -> Error:
 
 
 func stop() -> void:
+	_is_stopping = true
+	_persist_rooms()
 	if peer != null:
 		peer.close()
 	peer = null
 	_rooms.clear()
 	_room_id_by_peer.clear()
 	_room_id_by_session_token.clear()
+	_room_id_by_account_id.clear()
 	_known_peer_ids.clear()
+	_account_id_by_peer.clear()
+	_account_recovery_attempts_by_peer.clear()
+	_account_challenge_by_peer.clear()
+	_account_store = null
+	_match_store = null
+	_completed_matches.clear()
+	_is_stopping = false
 
 
 func poll() -> void:
@@ -106,7 +141,9 @@ func get_health() -> Dictionary:
 		"rooms": _rooms.size(),
 		"players_connected": players_connected,
 		"players_confirmed": players_confirmed,
-		"matches_running": matches_running
+		"matches_running": matches_running,
+		"accounts": _account_store.get_account_count() if _account_store != null else 0,
+		"completed_matches_saved": _completed_matches.size()
 	}
 
 
@@ -140,6 +177,18 @@ func _handle_message(sender_peer_id: int, message: Dictionary) -> void:
 	match str(message.get("type", "")):
 		"ping":
 			_send(sender_peer_id, {"type": "pong", "health": get_health()})
+		"account_challenge_request":
+			_handle_account_challenge_request(sender_peer_id, message)
+		"account_create":
+			_handle_account_create(sender_peer_id, message)
+		"account_login":
+			_handle_account_login(sender_peer_id, message)
+		"account_recover":
+			_handle_account_recover(sender_peer_id, message)
+		"account_update":
+			_handle_account_update(sender_peer_id, message)
+		"account_rotate_recovery":
+			_handle_account_rotate_recovery(sender_peer_id, message)
 		"directory_request":
 			_handle_directory_request(sender_peer_id, message)
 		"create_lobby":
@@ -165,9 +214,133 @@ func _handle_message(sender_peer_id: int, message: Dictionary) -> void:
 		"match_command":
 			_handle_match_command(sender_peer_id, message)
 		"resync_request":
-			_send_player_snapshot_for_peer(sender_peer_id)
+			_handle_resync_request(sender_peer_id)
 		_:
 			_send(sender_peer_id, {"type": "error", "reason": "unknown_message"})
+
+
+func _handle_account_challenge_request(sender_peer_id: int, message: Dictionary) -> void:
+	if not _validate_account_protocol(sender_peer_id, message):
+		return
+	var challenge := Crypto.new().generate_random_bytes(32).hex_encode()
+	_account_challenge_by_peer[sender_peer_id] = challenge
+	_send(sender_peer_id, {
+		"type": "account_challenge",
+		"protocol_version": PROTOCOL_VERSION,
+		"challenge": challenge
+	})
+
+
+func _handle_account_create(sender_peer_id: int, message: Dictionary) -> void:
+	if not _validate_account_protocol(sender_peer_id, message):
+		return
+	if _take_account_challenge(sender_peer_id).is_empty():
+		_send(sender_peer_id, {"type": "account_rejected", "reason": "account_challenge_required"})
+		return
+	var result: Dictionary = _account_store.create_account_from_verifiers(
+		str(message.get("display_name", "Игрок")),
+		int(message.get("avatar_index", 0)),
+		str(message.get("device_token_hash", "")),
+		str(message.get("recovery_code_hash", ""))
+	)
+	if not bool(result.get("ok", false)):
+		_send(sender_peer_id, {"type": "account_rejected", "reason": str(result.get("error", "account_create_failed"))})
+		return
+	_authenticate_account_peer(sender_peer_id, result, true)
+
+
+func _handle_account_login(sender_peer_id: int, message: Dictionary) -> void:
+	if not _validate_account_protocol(sender_peer_id, message):
+		return
+	var challenge := _take_account_challenge(sender_peer_id)
+	if challenge.is_empty():
+		_send(sender_peer_id, {"type": "account_rejected", "reason": "account_challenge_required"})
+		return
+	var result: Dictionary = _account_store.authenticate_device_proof(
+		str(message.get("account_id", "")),
+		challenge,
+		str(message.get("proof", ""))
+	)
+	if not bool(result.get("ok", false)):
+		_send(sender_peer_id, {"type": "account_rejected", "reason": str(result.get("error", "account_login_failed"))})
+		return
+	_authenticate_account_peer(sender_peer_id, result, false)
+
+
+func _handle_account_recover(sender_peer_id: int, message: Dictionary) -> void:
+	if not _validate_account_protocol(sender_peer_id, message):
+		return
+	var attempt_count := int(_account_recovery_attempts_by_peer.get(sender_peer_id, 0)) + 1
+	_account_recovery_attempts_by_peer[sender_peer_id] = attempt_count
+	if attempt_count > 5:
+		_send(sender_peer_id, {"type": "account_rejected", "reason": "recovery_rate_limited"})
+		return
+	var challenge := _take_account_challenge(sender_peer_id)
+	if challenge.is_empty():
+		_send(sender_peer_id, {"type": "account_rejected", "reason": "account_challenge_required"})
+		return
+	var result: Dictionary = _account_store.recover_account_with_proof(
+		str(message.get("account_id", "")),
+		challenge,
+		str(message.get("proof", "")),
+		str(message.get("device_token_hash", ""))
+	)
+	if not bool(result.get("ok", false)):
+		_send(sender_peer_id, {"type": "account_rejected", "reason": str(result.get("error", "account_recovery_failed"))})
+		return
+	_account_recovery_attempts_by_peer.erase(sender_peer_id)
+	_authenticate_account_peer(sender_peer_id, result, false)
+
+
+func _handle_account_update(sender_peer_id: int, message: Dictionary) -> void:
+	var account_id := str(_account_id_by_peer.get(sender_peer_id, ""))
+	if account_id.is_empty():
+		_send(sender_peer_id, {"type": "account_rejected", "reason": "account_required"})
+		return
+	var result: Dictionary = _account_store.update_profile(
+		account_id,
+		str(message.get("display_name", "Игрок")),
+		int(message.get("avatar_index", 0))
+	)
+	if not bool(result.get("ok", false)):
+		_send(sender_peer_id, {"type": "account_rejected", "reason": str(result.get("error", "account_update_failed"))})
+		return
+	_authenticate_account_peer(sender_peer_id, result, false)
+
+
+func _handle_account_rotate_recovery(sender_peer_id: int, message: Dictionary) -> void:
+	var account_id := str(_account_id_by_peer.get(sender_peer_id, ""))
+	if account_id.is_empty():
+		_send(sender_peer_id, {"type": "account_rejected", "reason": "account_required"})
+		return
+	var result: Dictionary = _account_store.set_recovery_code_hash(account_id, str(message.get("recovery_code_hash", "")))
+	if not bool(result.get("ok", false)):
+		_send(sender_peer_id, {"type": "account_rejected", "reason": str(result.get("error", "recovery_rotation_failed"))})
+		return
+	_authenticate_account_peer(sender_peer_id, result, false)
+
+
+func _authenticate_account_peer(sender_peer_id: int, result: Dictionary, account_created: bool) -> void:
+	var account: Dictionary = result.get("account", {})
+	var account_id := str(account.get("account_id", ""))
+	if account_id.is_empty():
+		_send(sender_peer_id, {"type": "account_rejected", "reason": "account_state_invalid"})
+		return
+	_account_id_by_peer[sender_peer_id] = account_id
+	var response := {
+		"type": "account_state",
+		"protocol_version": PROTOCOL_VERSION,
+		"account": account,
+		"created": account_created,
+		"active_room_id": int(_room_id_by_account_id.get(account_id, 0))
+	}
+	var device_token := str(result.get("device_token", ""))
+	if not device_token.is_empty():
+		response["device_token"] = device_token
+	var recovery_code := str(result.get("recovery_code", ""))
+	if not recovery_code.is_empty():
+		response["recovery_code"] = recovery_code
+	_send(sender_peer_id, response)
 
 
 func _handle_directory_request(sender_peer_id: int, message: Dictionary) -> void:
@@ -177,6 +350,9 @@ func _handle_directory_request(sender_peer_id: int, message: Dictionary) -> void
 			"reason": "protocol_version_mismatch",
 			"protocol_version": PROTOCOL_VERSION
 		})
+		return
+	if not _account_id_by_peer.has(sender_peer_id):
+		_send(sender_peer_id, {"type": "account_rejected", "reason": "account_required"})
 		return
 	_send_directory_state(sender_peer_id)
 
@@ -196,7 +372,7 @@ func _handle_create_lobby(sender_peer_id: int, message: Dictionary) -> void:
 	if is_private and password_hash.is_empty():
 		_reject_room_action(sender_peer_id, "password_required")
 		return
-	var display_name := _sanitize_display_name(str(message.get("display_name", "")))
+	var display_name := _get_authenticated_display_name(sender_peer_id)
 	var room_id := _next_room_id
 	_next_room_id += 1
 	var game_state := Game.new(["Игрок 1", "Игрок 2", "Игрок 3", "Игрок 4"])
@@ -215,6 +391,7 @@ func _handle_create_lobby(sender_peer_id: int, message: Dictionary) -> void:
 		"reconnecting_since_msec": {},
 		"bot_action_at_msec": 0,
 		"created_msec": Time.get_ticks_msec(),
+		"created_unix": int(Time.get_unix_time_from_system()),
 		"last_active_msec": Time.get_ticks_msec(),
 		"match_host": MatchHost.new(game_state),
 		"round_started": false,
@@ -231,7 +408,11 @@ func _handle_create_lobby(sender_peer_id: int, message: Dictionary) -> void:
 		"player_by_peer": {},
 		"confirmed_players": {},
 		"session_token_by_player": {},
-		"player_by_session_token": {}
+		"player_by_session_token": {},
+		"account_id_by_player": {},
+		"player_by_account_id": {},
+		"match_id": "",
+		"completion_recorded": false
 	}
 	_rooms[room_id] = room
 	if not _join_peer_to_room(sender_peer_id, room, display_name, "", 0):
@@ -258,16 +439,18 @@ func _handle_join_lobby(sender_peer_id: int, message: Dictionary) -> void:
 		and int(_room_id_by_session_token.get(session_token, 0)) == room_id
 		and (room.get("player_by_session_token", {}) as Dictionary).has(session_token)
 	)
-	if bool(room.get("is_private", false)) and not token_is_valid:
+	var account_id := str(_account_id_by_peer.get(sender_peer_id, ""))
+	var account_is_member := not account_id.is_empty() and (room.get("player_by_account_id", {}) as Dictionary).has(account_id)
+	if bool(room.get("is_private", false)) and not token_is_valid and not account_is_member:
 		var supplied_hash := _sanitize_password_hash(str(message.get("password_hash", "")))
 		if supplied_hash.is_empty() or supplied_hash != str(room.get("password_hash", "")):
 			_reject_room_action(sender_peer_id, "wrong_password")
 			return
-	if bool(room.get("round_started", false)) and not token_is_valid:
+	if bool(room.get("round_started", false)) and not token_is_valid and not account_is_member:
 		_reject_room_action(sender_peer_id, "match_in_progress")
 		return
 	_leave_current_room(sender_peer_id, false)
-	var display_name := _sanitize_display_name(str(message.get("display_name", "")))
+	var display_name := _get_authenticated_display_name(sender_peer_id)
 	if not _join_peer_to_room(sender_peer_id, room, display_name, session_token, int(message.get("requested_player_index", -1))):
 		_reject_room_action(sender_peer_id, "table_full")
 		return
@@ -281,8 +464,19 @@ func _join_peer_to_room(sender_peer_id: int, room: Dictionary, display_name: Str
 	var player_by_peer: Dictionary = room.get("player_by_peer", {})
 	var token_by_player: Dictionary = room.get("session_token_by_player", {})
 	var player_by_token: Dictionary = room.get("player_by_session_token", {})
+	var account_by_player: Dictionary = room.get("account_id_by_player", {})
+	var player_by_account: Dictionary = room.get("player_by_account_id", {})
+	var account_id := str(_account_id_by_peer.get(sender_peer_id, ""))
 	var player_index := -1
-	if not session_token.is_empty() and player_by_token.has(session_token):
+	if not account_id.is_empty() and player_by_account.has(account_id):
+		player_index = int(player_by_account[account_id])
+		session_token = str(token_by_player.get(player_index, session_token))
+		var previous_peer_id := int(peer_by_player.get(player_index, 0))
+		if previous_peer_id > 0 and previous_peer_id != sender_peer_id:
+			peer.disconnect_peer(previous_peer_id)
+			player_by_peer.erase(previous_peer_id)
+			_room_id_by_peer.erase(previous_peer_id)
+	elif not session_token.is_empty() and player_by_token.has(session_token):
 		player_index = int(player_by_token[session_token])
 		var previous_peer_id := int(peer_by_player.get(player_index, 0))
 		if previous_peer_id > 0 and previous_peer_id != sender_peer_id:
@@ -296,6 +490,10 @@ func _join_peer_to_room(sender_peer_id: int, room: Dictionary, display_name: Str
 			token_by_player[player_index] = session_token
 			player_by_token[session_token] = player_index
 			_room_id_by_session_token[session_token] = room_id
+	if player_index >= 0 and not account_id.is_empty():
+		account_by_player[player_index] = account_id
+		player_by_account[account_id] = player_index
+		_room_id_by_account_id[account_id] = room_id
 	if player_index < 0:
 		return false
 	peer_by_player[player_index] = sender_peer_id
@@ -433,6 +631,15 @@ func _handle_start_first_round(sender_peer_id: int) -> void:
 	_start_first_round(room)
 
 
+func _handle_resync_request(sender_peer_id: int) -> void:
+	var room := _get_room_for_peer(sender_peer_id)
+	if room.is_empty():
+		return
+	_send(sender_peer_id, _create_room_state_message(room))
+	if _has_started_round(room):
+		_send_player_snapshot_for_peer(sender_peer_id)
+
+
 func _handle_return_to_lobby(sender_peer_id: int) -> void:
 	var room := _get_room_for_peer(sender_peer_id)
 	if room.is_empty():
@@ -491,6 +698,8 @@ func _handle_match_command(sender_peer_id: int, message: Dictionary) -> void:
 
 func _begin_first_turn_roll(room: Dictionary) -> void:
 	room["round_started"] = true
+	if str(room.get("match_id", "")).is_empty():
+		room["match_id"] = "%d-%d-%s" % [int(Time.get_unix_time_from_system()), int(room.get("room_id", 0)), Crypto.new().generate_random_bytes(6).hex_encode()]
 	_reset_first_turn_roll_state(room)
 	_start_first_turn_roll_round(room, [0, 1, 2, 3])
 	_broadcast_directory_state()
@@ -756,6 +965,12 @@ func _leave_current_room(sender_peer_id: int, notify_client: bool) -> void:
 			token_by_player.erase(player_index)
 			player_by_token.erase(token)
 			_room_id_by_session_token.erase(token)
+			var account_by_player: Dictionary = room.get("account_id_by_player", {})
+			var player_by_account: Dictionary = room.get("player_by_account_id", {})
+			var account_id := str(account_by_player.get(player_index, ""))
+			account_by_player.erase(player_index)
+			player_by_account.erase(account_id)
+			_room_id_by_account_id.erase(account_id)
 			if player_index == int(room.get("owner_player_index", -1)):
 				_assign_room_owner(room)
 	room["last_active_msec"] = Time.get_ticks_msec()
@@ -787,6 +1002,7 @@ func _is_match_finished(room: Dictionary) -> bool:
 
 
 func _reset_room_for_rematch(room: Dictionary) -> void:
+	_record_completed_match_if_needed(room)
 	var old_match_host: LocalMatchHost = room.get("match_host")
 	var player_names: Array[String] = []
 	for player_index in PLAYER_COUNT:
@@ -794,6 +1010,8 @@ func _reset_room_for_rematch(room: Dictionary) -> void:
 	var token_by_player: Dictionary = room.get("session_token_by_player", {})
 	var player_by_token: Dictionary = room.get("player_by_session_token", {})
 	var peer_by_player: Dictionary = room.get("peer_by_player", {})
+	var account_by_player: Dictionary = room.get("account_id_by_player", {})
+	var player_by_account: Dictionary = room.get("player_by_account_id", {})
 	for player_index_variant in token_by_player.keys():
 		var player_index := int(player_index_variant)
 		if peer_by_player.has(player_index):
@@ -802,12 +1020,18 @@ func _reset_room_for_rematch(room: Dictionary) -> void:
 		token_by_player.erase(player_index)
 		player_by_token.erase(stale_token)
 		_room_id_by_session_token.erase(stale_token)
+		var stale_account_id := str(account_by_player.get(player_index, ""))
+		account_by_player.erase(player_index)
+		player_by_account.erase(stale_account_id)
+		_room_id_by_account_id.erase(stale_account_id)
 	(room.get("confirmed_players", {}) as Dictionary).clear()
 	(room.get("bot_players", {}) as Dictionary).clear()
 	(room.get("temporary_bot_players", {}) as Dictionary).clear()
 	(room.get("reconnecting_since_msec", {}) as Dictionary).clear()
 	room["match_host"] = MatchHost.new(Game.new(player_names))
 	room["round_started"] = false
+	room["match_id"] = ""
+	room["completion_recorded"] = false
 	room["next_round_at_msec"] = 0
 	room["bot_action_at_msec"] = 0
 	room["last_active_msec"] = Time.get_ticks_msec()
@@ -820,12 +1044,200 @@ func _remove_room(room_id: int) -> void:
 	if not _rooms.has(room_id):
 		return
 	var room: Dictionary = _rooms[room_id]
+	_record_completed_match_if_needed(room)
 	for token_variant in (room.get("player_by_session_token", {}) as Dictionary).keys():
 		_room_id_by_session_token.erase(str(token_variant))
+	for account_id_variant in (room.get("player_by_account_id", {}) as Dictionary).keys():
+		_room_id_by_account_id.erase(str(account_id_variant))
 	for peer_id_variant in (room.get("player_by_peer", {}) as Dictionary).keys():
 		_room_id_by_peer.erase(int(peer_id_variant))
 	_rooms.erase(room_id)
+	_persist_rooms()
 	_broadcast_directory_state()
+
+
+func _persist_rooms() -> void:
+	if _match_store == null:
+		return
+	var rooms_data: Array[Dictionary] = []
+	for room_variant in _rooms.values():
+		var room: Dictionary = room_variant
+		if not bool(room.get("round_started", false)):
+			continue
+		_record_completed_match_if_needed(room)
+		var serialized := _serialize_persistent_room(room)
+		if not serialized.is_empty():
+			rooms_data.append(serialized)
+	var save_error: Error = _match_store.save(rooms_data, _completed_matches)
+	if save_error != OK and not _is_stopping:
+		_set_status("Не удалось сохранить матчи: %s" % _match_store.last_error)
+
+
+func _serialize_persistent_room(room: Dictionary) -> Dictionary:
+	var match_host: LocalMatchHost = room.get("match_host")
+	if match_host == null:
+		return {}
+	var members: Array[Dictionary] = []
+	var token_by_player: Dictionary = room.get("session_token_by_player", {})
+	var account_by_player: Dictionary = room.get("account_id_by_player", {})
+	for player_index_variant in token_by_player.keys():
+		var player_index := int(player_index_variant)
+		members.append({
+			"player_index": player_index,
+			"session_token": str(token_by_player.get(player_index_variant, "")),
+			"account_id": str(account_by_player.get(player_index_variant, account_by_player.get(player_index, "")))
+		})
+	return {
+		"room_id": int(room.get("room_id", 0)),
+		"room_name": str(room.get("room_name", "")),
+		"is_private": bool(room.get("is_private", false)),
+		"password_hash": str(room.get("password_hash", "")),
+		"owner_player_index": int(room.get("owner_player_index", 0)),
+		"match_mode": str(room.get("match_mode", MATCH_MODE_CLASSIC)),
+		"fill_empty_seats_with_bots": bool(room.get("fill_empty_seats_with_bots", false)),
+		"bot_difficulty": int(room.get("bot_difficulty", 1)),
+		"bot_player_indices": _sorted_player_indices(room.get("bot_players", {})),
+		"members": members,
+		"created_unix": int(room.get("created_unix", Time.get_unix_time_from_system())),
+		"match_id": str(room.get("match_id", "")),
+		"completion_recorded": bool(room.get("completion_recorded", false)),
+		"first_turn_roll_phase": int(room.get("first_turn_roll_phase", FirstTurnRollPhase.INACTIVE)),
+		"first_turn_roll_round": int(room.get("first_turn_roll_round", 0)),
+		"first_turn_roll_contenders": (room.get("first_turn_roll_contenders", []) as Array).duplicate(),
+		"first_turn_roll_submitted": (room.get("first_turn_roll_submitted", []) as Array).duplicate(),
+		"first_turn_roll_values": (room.get("first_turn_roll_values", []) as Array).duplicate(),
+		"first_turn_roll_winner_index": int(room.get("first_turn_roll_winner_index", -1)),
+		"match_host": match_host.create_persistence_snapshot()
+	}
+
+
+func _restore_persistent_rooms() -> void:
+	if _match_store == null:
+		return
+	_completed_matches = _match_store.get_completed_matches()
+	var now_msec := Time.get_ticks_msec()
+	for room_data_variant in _match_store.get_rooms():
+		if not (room_data_variant is Dictionary):
+			continue
+		var room_data: Dictionary = room_data_variant
+		var host_data_variant: Variant = room_data.get("match_host", {})
+		if not (host_data_variant is Dictionary):
+			continue
+		var match_host: LocalMatchHost = MatchHost.restore_persistence_snapshot(host_data_variant)
+		var room_id := int(room_data.get("room_id", 0))
+		if match_host == null or room_id <= 0 or _rooms.has(room_id):
+			continue
+		var token_by_player := {}
+		var player_by_token := {}
+		var account_by_player := {}
+		var player_by_account := {}
+		var reconnecting := {}
+		for member_variant in room_data.get("members", []):
+			if not (member_variant is Dictionary):
+				continue
+			var member: Dictionary = member_variant
+			var player_index := int(member.get("player_index", -1))
+			var session_token := str(member.get("session_token", ""))
+			var account_id := str(member.get("account_id", ""))
+			if player_index < 0 or player_index >= PLAYER_COUNT or session_token.is_empty():
+				continue
+			token_by_player[player_index] = session_token
+			player_by_token[session_token] = player_index
+			_room_id_by_session_token[session_token] = room_id
+			if not account_id.is_empty():
+				account_by_player[player_index] = account_id
+				player_by_account[account_id] = player_index
+				_room_id_by_account_id[account_id] = room_id
+			reconnecting[player_index] = now_msec + SERVER_RESTART_RECONNECT_GRACE_MSEC - RECONNECT_GRACE_MSEC
+		var bot_players := {}
+		for player_index_variant in room_data.get("bot_player_indices", []):
+			var player_index := int(player_index_variant)
+			if player_index >= 0 and player_index < PLAYER_COUNT and not token_by_player.has(player_index):
+				bot_players[player_index] = true
+		var phase := clampi(int(room_data.get("first_turn_roll_phase", FirstTurnRollPhase.INACTIVE)), FirstTurnRollPhase.INACTIVE, FirstTurnRollPhase.COMPLETE)
+		var room := {
+			"room_id": room_id,
+			"room_name": _sanitize_room_name(str(room_data.get("room_name", "Стол %d" % room_id))),
+			"is_private": bool(room_data.get("is_private", false)),
+			"password_hash": _sanitize_password_hash(str(room_data.get("password_hash", ""))),
+			"owner_player_index": clampi(int(room_data.get("owner_player_index", 0)), 0, PLAYER_COUNT - 1),
+			"match_mode": _sanitize_match_mode(str(room_data.get("match_mode", MATCH_MODE_CLASSIC))),
+			"fill_empty_seats_with_bots": bool(room_data.get("fill_empty_seats_with_bots", false)),
+			"bot_difficulty": clampi(int(room_data.get("bot_difficulty", 1)), 0, 2),
+			"bot_players": bot_players,
+			"temporary_bot_players": {},
+			"reconnecting_since_msec": reconnecting,
+			"bot_action_at_msec": now_msec + BOT_ACTION_DELAY_MSEC,
+			"created_msec": now_msec,
+			"created_unix": int(room_data.get("created_unix", Time.get_unix_time_from_system())),
+			"last_active_msec": now_msec,
+			"match_host": match_host,
+			"round_started": true,
+			"next_round_at_msec": now_msec + NEXT_ROUND_DELAY_MSEC if match_host.game.current_round.state == Round.State.FINISHED and not _is_restored_host_finished(match_host) else 0,
+			"first_round_at_msec": now_msec + FIRST_ROUND_AUTO_START_MSEC if phase == FirstTurnRollPhase.COMPLETE and match_host.game.round_number == 0 else 0,
+			"first_turn_roll_phase": phase,
+			"first_turn_roll_round": maxi(0, int(room_data.get("first_turn_roll_round", 0))),
+			"first_turn_roll_contenders": (room_data.get("first_turn_roll_contenders", []) as Array).duplicate(),
+			"first_turn_roll_submitted": (room_data.get("first_turn_roll_submitted", [false, false, false, false]) as Array).duplicate(),
+			"first_turn_roll_values": (room_data.get("first_turn_roll_values", [-1, -1, -1, -1]) as Array).duplicate(),
+			"first_turn_roll_winner_index": int(room_data.get("first_turn_roll_winner_index", -1)),
+			"first_turn_roll_reveal_at_msec": now_msec + FIRST_TURN_ROLL_REVEAL_MSEC if phase == FirstTurnRollPhase.REVEAL else 0,
+			"peer_by_player": {},
+			"player_by_peer": {},
+			"confirmed_players": token_by_player.duplicate(),
+			"session_token_by_player": token_by_player,
+			"player_by_session_token": player_by_token,
+			"account_id_by_player": account_by_player,
+			"player_by_account_id": player_by_account,
+			"match_id": str(room_data.get("match_id", "")),
+			"completion_recorded": bool(room_data.get("completion_recorded", false))
+		}
+		for bot_index_variant in bot_players.keys():
+			(room.get("confirmed_players", {}) as Dictionary)[int(bot_index_variant)] = true
+		_rooms[room_id] = room
+		_next_room_id = maxi(_next_room_id, room_id + 1)
+	if not _rooms.is_empty():
+		_set_status("Восстановлено сетевых матчей: %d." % _rooms.size())
+
+
+func _is_restored_host_finished(match_host: LocalMatchHost) -> bool:
+	return match_host.game.round_number >= TOTAL_ROUND_COUNT and match_host.game.current_round.state == Round.State.FINISHED
+
+
+func _record_completed_match_if_needed(room: Dictionary) -> void:
+	if bool(room.get("completion_recorded", false)) or not _is_match_finished(room):
+		return
+	var match_host: LocalMatchHost = room.get("match_host")
+	if match_host == null:
+		return
+	var players: Array[Dictionary] = []
+	var highest_score := -2147483648
+	for player_index in match_host.game.players.size():
+		var player: Player = match_host.game.players[player_index]
+		highest_score = maxi(highest_score, player.total_score)
+		players.append({
+			"player_index": player_index,
+			"account_id": str((room.get("account_id_by_player", {}) as Dictionary).get(player_index, "")),
+			"display_name": player.display_name,
+			"score": player.total_score,
+			"exact_orders_completed": player.exact_orders_completed
+		})
+	var winners: Array[int] = []
+	for player_data in players:
+		if int(player_data.get("score", 0)) == highest_score:
+			winners.append(int(player_data.get("player_index", -1)))
+	_completed_matches.append({
+		"match_id": str(room.get("match_id", "")),
+		"room_id": int(room.get("room_id", 0)),
+		"room_name": str(room.get("room_name", "")),
+		"match_mode": str(room.get("match_mode", MATCH_MODE_CLASSIC)),
+		"completed_unix": int(Time.get_unix_time_from_system()),
+		"players": players,
+		"winner_player_indices": winners
+	})
+	while _completed_matches.size() > MatchStoreResource.MAX_COMPLETED_MATCHES:
+		_completed_matches.pop_front()
+	room["completion_recorded"] = true
 
 
 func _send_seat_assigned(target_peer_id: int, room: Dictionary, player_index: int) -> void:
@@ -850,8 +1262,13 @@ func _send_seat_assigned(target_peer_id: int, room: Dictionary, player_index: in
 
 
 func _broadcast_room_state(room: Dictionary) -> void:
+	_persist_rooms()
+	_broadcast_to_room(room, _create_room_state_message(room))
+
+
+func _create_room_state_message(room: Dictionary) -> Dictionary:
 	var match_host: LocalMatchHost = room.get("match_host")
-	_broadcast_to_room(room, {
+	return {
 		"type": "lobby_state",
 		"room_id": int(room.get("room_id", 0)),
 		"room_name": str(room.get("room_name", "")),
@@ -864,10 +1281,11 @@ func _broadcast_room_state(room: Dictionary) -> void:
 		"fill_empty_seats_with_bots": bool(room.get("fill_empty_seats_with_bots", false)),
 		"bot_difficulty": int(room.get("bot_difficulty", 1)),
 		"lobby_seats": _create_lobby_seats(room)
-	})
+	}
 
 
 func _broadcast_player_snapshots(room: Dictionary) -> void:
+	_persist_rooms()
 	for player_index_variant in (room.get("peer_by_player", {}) as Dictionary).keys():
 		_send_player_snapshot(room, int(player_index_variant))
 
@@ -956,6 +1374,7 @@ func _create_lobby_seats(room: Dictionary) -> Array[Dictionary]:
 	var bot_players: Dictionary = room.get("bot_players", {})
 	var temporary_bot_players: Dictionary = room.get("temporary_bot_players", {})
 	var reconnecting: Dictionary = room.get("reconnecting_since_msec", {})
+	var account_by_player: Dictionary = room.get("account_id_by_player", {})
 	var show_bot_placeholders := bool(room.get("fill_empty_seats_with_bots", false))
 	var bot_number := 0
 	for player_index in PLAYER_COUNT:
@@ -968,6 +1387,7 @@ func _create_lobby_seats(room: Dictionary) -> Array[Dictionary]:
 		seats.append({
 			"player_index": player_index,
 			"display_name": display_name,
+			"account_id": str(account_by_player.get(player_index, "")),
 			"connected": peer_by_player.has(player_index),
 			"confirmed": ready_players.has(player_index) or is_bot,
 			"ready": ready_players.has(player_index) or is_bot,
@@ -1072,10 +1492,33 @@ func _get_fixed_trump(round_index: int) -> Round.TrumpSuit:
 
 
 func _validate_protocol(target_peer_id: int, message: Dictionary) -> bool:
+	if int(message.get("protocol_version", -1)) != PROTOCOL_VERSION:
+		_reject_room_action(target_peer_id, "protocol_version_mismatch")
+		return false
+	if not _account_id_by_peer.has(target_peer_id):
+		_reject_room_action(target_peer_id, "account_required")
+		return false
+	return true
+
+
+func _validate_account_protocol(target_peer_id: int, message: Dictionary) -> bool:
 	if int(message.get("protocol_version", -1)) == PROTOCOL_VERSION:
 		return true
-	_reject_room_action(target_peer_id, "protocol_version_mismatch")
+	_send(target_peer_id, {"type": "account_rejected", "reason": "protocol_version_mismatch", "protocol_version": PROTOCOL_VERSION})
 	return false
+
+
+func _take_account_challenge(peer_id: int) -> String:
+	var challenge := str(_account_challenge_by_peer.get(peer_id, ""))
+	_account_challenge_by_peer.erase(peer_id)
+	return challenge
+
+
+func _get_authenticated_display_name(peer_id: int) -> String:
+	if _account_store == null:
+		return "Игрок"
+	var account: Dictionary = _account_store.get_public_account(str(_account_id_by_peer.get(peer_id, "")))
+	return _sanitize_display_name(str(account.get("display_name", "Игрок")))
 
 
 func _reject_room_action(target_peer_id: int, reason: String) -> void:
@@ -1106,6 +1549,9 @@ func _create_session_token() -> String:
 
 func _on_peer_disconnected(peer_id: int) -> void:
 	_known_peer_ids.erase(peer_id)
+	_account_id_by_peer.erase(peer_id)
+	_account_recovery_attempts_by_peer.erase(peer_id)
+	_account_challenge_by_peer.erase(peer_id)
 	_leave_current_room(peer_id, false)
 
 

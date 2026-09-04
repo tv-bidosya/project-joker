@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+umask 077
+
+readonly CONFIG="/var/lib/project-backup/rclone.conf"
+readonly REMOTE="pjbackup:weekly"
+readonly WORK_ROOT="/var/lib/project-backup"
+readonly LOCK_FILE="/var/lib/project-backup/project-joker-backup.lock"
+
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+    echo "A backup is already running; exiting."
+    exit 0
+fi
+
+STAMP="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
+DATE_DIR="$(date -u +%Y-%m-%d)"
+RUN_DIR="${WORK_ROOT}/run-${STAMP}"
+STAGE_DIR="${RUN_DIR}/stage"
+OUT_DIR="${RUN_DIR}/out"
+ARCHIVE_NAME="project-joker-backup_${STAMP}.tar.gz"
+ARCHIVE_PATH="${OUT_DIR}/${ARCHIVE_NAME}"
+
+cleanup() {
+    chmod 700 "$WORK_ROOT" 2>/dev/null || true
+    rm -rf -- "$RUN_DIR"
+}
+trap cleanup EXIT
+
+mkdir -p "$STAGE_DIR/opt/geek-bot/data" "$STAGE_DIR/metadata" "$OUT_DIR" "${WORK_ROOT}/cache"
+chmod 711 "$WORK_ROOT" "$RUN_DIR" "$STAGE_DIR"
+chown -R geekbot:geekbot "$STAGE_DIR/opt"
+
+# SQLite's online backup command creates a consistent snapshot while the bot keeps running.
+runuser -u geekbot -- sqlite3 /opt/geek-bot/data/geek_bot.sqlite3 ".timeout 15000" ".backup '${STAGE_DIR}/opt/geek-bot/data/geek_bot.sqlite3'"
+chown -R root:root "$STAGE_DIR/opt"
+chmod 700 "$RUN_DIR" "$STAGE_DIR"
+chmod 700 "$WORK_ROOT"
+sqlite3 "${STAGE_DIR}/opt/geek-bot/data/geek_bot.sqlite3" "PRAGMA integrity_check;" > "${STAGE_DIR}/metadata/sqlite-integrity.txt"
+grep -qx "ok" "${STAGE_DIR}/metadata/sqlite-integrity.txt"
+
+{
+    echo "Backup UTC: $(date -u --iso-8601=seconds)"
+    echo "Host: $(hostname -f 2>/dev/null || hostname)"
+    echo "Kernel: $(uname -a)"
+    echo
+    df -h /
+} > "${STAGE_DIR}/metadata/system.txt"
+
+dpkg-query -W -f='${binary:Package}\t${Version}\n' > "${STAGE_DIR}/metadata/packages.tsv"
+systemctl is-active project-joker-server geek-bot > "${STAGE_DIR}/metadata/service-state.txt" || true
+systemctl is-enabled project-joker-server geek-bot > "${STAGE_DIR}/metadata/service-enabled.txt" || true
+systemctl cat project-joker-server geek-bot > "${STAGE_DIR}/metadata/service-units.txt"
+ss -lntup > "${STAGE_DIR}/metadata/listening-ports.txt" || true
+ufw status verbose > "${STAGE_DIR}/metadata/ufw-status.txt" 2>&1 || true
+nft list ruleset > "${STAGE_DIR}/metadata/nft-rules.txt" 2>&1 || true
+
+include_paths=(
+    "opt/geek-bot"
+    "opt/project-joker-server"
+    "var/lib/project-joker-server"
+    "etc/geek-bot.env"
+    "etc/systemd/system/geek-bot.service"
+    "etc/systemd/system/project-joker-server.service"
+    "etc/systemd/system/project-joker-server.service.d"
+    "home/ubuntu/.ssh/authorized_keys"
+)
+
+if [[ -d /etc/ufw ]]; then
+    include_paths+=("etc/ufw")
+fi
+
+existing_paths=()
+for path in "${include_paths[@]}"; do
+    if [[ -e "/${path}" ]]; then
+        existing_paths+=("$path")
+    fi
+done
+
+tar \
+    --numeric-owner \
+    --acls \
+    --xattrs \
+    --exclude='opt/geek-bot/.venv' \
+    --exclude='opt/geek-bot/**/__pycache__' \
+    --exclude='opt/geek-bot/.pytest_cache' \
+    --exclude='opt/geek-bot/data/geek_bot.sqlite3' \
+    --exclude='opt/geek-bot/data/geek_bot.sqlite3-*' \
+    --exclude='opt/geek-bot/*.log' \
+    --exclude='opt/project-joker-server/.git' \
+    -C / \
+    -czf "$ARCHIVE_PATH" \
+    "${existing_paths[@]}" \
+    -C "$STAGE_DIR" opt/geek-bot/data/geek_bot.sqlite3 metadata
+
+(
+    cd "$OUT_DIR"
+    sha256sum "$ARCHIVE_NAME" > "${ARCHIVE_NAME}.sha256"
+)
+
+rclone --config "$CONFIG" --cache-dir "${WORK_ROOT}/cache" mkdir "${REMOTE}/${DATE_DIR}"
+rclone --config "$CONFIG" --cache-dir "${WORK_ROOT}/cache" copy "$OUT_DIR" "${REMOTE}/${DATE_DIR}" --checkers 4 --transfers 2
+rclone --config "$CONFIG" --cache-dir "${WORK_ROOT}/cache" check "$OUT_DIR" "${REMOTE}/${DATE_DIR}" --one-way
+
+# Keep twelve weeks of remote archives so Google Drive does not fill indefinitely.
+rclone --config "$CONFIG" --cache-dir "${WORK_ROOT}/cache" delete "$REMOTE" \
+    --min-age 84d \
+    --filter '+ **/*.tar.gz' \
+    --filter '+ **/*.sha256' \
+    --filter '- **'
+rclone --config "$CONFIG" --cache-dir "${WORK_ROOT}/cache" rmdirs "$REMOTE" --leave-root
+
+echo "Backup uploaded and verified: ${REMOTE}/${DATE_DIR}/${ARCHIVE_NAME}"

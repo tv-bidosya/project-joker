@@ -690,6 +690,13 @@ var statistics_return_to_profile := false
 var loopback_network_test
 var steam_p2p_match
 var remote_enet_match
+var remote_account_id := ""
+var remote_account_device_token := ""
+var remote_account_recovery_code := ""
+var account_id_input: LineEdit
+var account_recovery_input: LineEdit
+var account_status_label: Label
+var account_menu_is_open := false
 var remote_enet_session_token := ""
 var remote_enet_saved_lobby_id := 0
 var remote_enet_lobby_is_open := false
@@ -875,7 +882,9 @@ func _ready() -> void:
 	remote_enet_match.public_table_event_received.connect(_on_network_public_table_event_received)
 	remote_enet_match.player_snapshot_received.connect(_on_network_player_snapshot_received)
 	remote_enet_match.session_token_changed.connect(_on_remote_enet_session_token_changed)
+	remote_enet_match.account_state_changed.connect(_on_remote_account_state_changed)
 	remote_enet_match.directory_changed.connect(_on_remote_enet_directory_changed)
+	remote_enet_match.room_state_changed.connect(_refresh_remote_enet_status)
 	remote_enet_match.room_joined.connect(_on_remote_enet_room_joined)
 	remote_enet_match.room_left.connect(_on_remote_enet_room_left)
 	add_child(remote_enet_match)
@@ -1658,10 +1667,6 @@ func _refresh_mobile_action_dock() -> void:
 		bid_title.visible = only_numeric_buttons
 	_position_mobile_bid_popup()
 	mobile_bid_popup.visible = has_actions
-	if has_actions:
-		_close_sticker_picker()
-		reaction_picker.hide()
-		soundpad_picker.hide()
 
 func _position_mobile_bid_popup() -> void:
 	if not is_instance_valid(mobile_bid_popup):
@@ -2484,6 +2489,7 @@ func _on_menu_backdrop_gui_input(event: InputEvent) -> void:
 
 func _build_main_menu_content() -> void:
 	online_hub_is_open = false
+	account_menu_is_open = false
 	_clear_children(menu_content)
 	if mobile_table_layout:
 		_build_mobile_main_menu_content()
@@ -2584,6 +2590,7 @@ func _show_developer_tools_menu() -> void:
 
 func _show_online_hub(tab: int = OnlineHubTab.OPEN_TABLES, request_refresh := false) -> void:
 	is_pause_menu_open = false
+	account_menu_is_open = false
 	online_hub_is_open = true
 	online_hub_tab = clampi(tab, OnlineHubTab.OPEN_TABLES, OnlineHubTab.MY_GAMES)
 	menu_overlay.visible = true
@@ -2727,7 +2734,7 @@ func _add_remote_lobby_card(summary: Dictionary, parent: Container) -> void:
 	details.add_theme_font_size_override("font_size", 14)
 	details.add_theme_color_override("font_color", Color(0.84, 0.88, 0.78, 1.0))
 	content.add_child(details)
-	var is_saved_room := room_id == remote_enet_saved_lobby_id and not remote_enet_session_token.is_empty()
+	var is_saved_room := room_id == remote_enet_saved_lobby_id and (not remote_enet_session_token.is_empty() or not remote_account_id.is_empty())
 	var button_text := tr("Переподключиться") if state == "playing" and is_saved_room else tr("Ввести пароль") if is_private else tr("Войти")
 	var button := _create_menu_button(button_text, _on_remote_lobby_card_pressed.bind(room_id, is_private), is_saved_room)
 	button.custom_minimum_size = Vector2(0.0, 42.0)
@@ -2742,12 +2749,17 @@ func _on_connect_remote_enet_pressed() -> void:
 	remote_enet_table_presentation = false
 	steam_p2p_table_presentation = false
 	steam_p2p_main_table_presentation = false
+	remote_enet_match.account_avatar_index = configured_avatar_indices[HUMAN_PLAYER_INDEX] if configured_avatar_indices[HUMAN_PLAYER_INDEX] < BUILT_IN_AVATAR_COUNT else 0
 	remote_enet_match.start_client(
 		REMOTE_GAME_SERVER_HOST,
 		REMOTE_GAME_SERVER_PORT,
 		configured_player_names[HUMAN_PLAYER_INDEX],
 		remote_enet_session_token,
-		remote_enet_saved_lobby_id
+		remote_enet_saved_lobby_id,
+		remote_account_device_token,
+		"",
+		"",
+		remote_account_id
 	)
 	_show_online_hub(return_tab, false)
 
@@ -2758,7 +2770,7 @@ func _on_refresh_remote_lobbies_pressed() -> void:
 
 
 func _on_remote_lobby_card_pressed(room_id: int, is_private: bool) -> void:
-	if is_private and not (room_id == remote_enet_saved_lobby_id and not remote_enet_session_token.is_empty()):
+	if is_private and not (room_id == remote_enet_saved_lobby_id and (not remote_enet_session_token.is_empty() or not remote_account_id.is_empty())):
 		_show_remote_password_prompt(room_id)
 		return
 	_join_remote_lobby(room_id, "")
@@ -3115,6 +3127,30 @@ func _on_remote_enet_session_token_changed(token: String) -> void:
 	_save_persistent_settings()
 
 
+func _on_remote_account_state_changed() -> void:
+	if remote_enet_match == null:
+		return
+	var state: Dictionary = remote_enet_match.get_account_state()
+	if bool(state.get("authenticated", false)):
+		remote_account_id = str(state.get("account_id", remote_account_id))
+		remote_account_device_token = str(state.get("device_token", remote_account_device_token))
+		var active_room_id := maxi(0, int(state.get("active_room_id", 0)))
+		if active_room_id > 0:
+			remote_enet_saved_lobby_id = active_room_id
+		var recovery_code := str(state.get("recovery_code", ""))
+		if not recovery_code.is_empty():
+			remote_account_recovery_code = recovery_code
+		var server_name := str(state.get("display_name", "")).strip_edges()
+		if not server_name.is_empty():
+			configured_player_names[HUMAN_PLAYER_INDEX] = _sanitize_player_name(server_name, str(PLAYER_NAMES[HUMAN_PLAYER_INDEX]))
+		var server_avatar_index := int(state.get("avatar_index", configured_avatar_indices[HUMAN_PLAYER_INDEX]))
+		if server_avatar_index >= 0 and server_avatar_index < BUILT_IN_AVATAR_COUNT:
+			configured_avatar_indices[HUMAN_PLAYER_INDEX] = server_avatar_index
+	_save_persistent_settings()
+	if account_menu_is_open:
+		call_deferred("_show_account_menu")
+
+
 func _on_remote_enet_directory_changed() -> void:
 	if online_hub_is_open:
 		call_deferred("_show_online_hub", online_hub_tab, false)
@@ -3393,7 +3429,7 @@ func _build_online_my_games_tab() -> void:
 		_add_online_action_tile(actions, "Покинуть комнату", _on_leave_remote_lobby_pressed)
 		return
 
-	if remote_enet_saved_lobby_id > 0 and not remote_enet_session_token.is_empty():
+	if remote_enet_saved_lobby_id > 0 and (not remote_enet_session_token.is_empty() or not remote_account_id.is_empty()):
 		_add_menu_label(
 			tr("Сохранено место в комнате #%d. Можно вернуться после обрыва связи.") % remote_enet_saved_lobby_id,
 			16,
@@ -5773,6 +5809,8 @@ func _on_open_network_table_pressed() -> void:
 	menu_overlay.visible = false
 	steam_p2p_main_table_presentation = false
 	network_table_view.visible = true
+	if network_match == remote_enet_match:
+		remote_enet_match.request_room_resync()
 	_refresh_network_table_view()
 
 
@@ -7237,9 +7275,9 @@ func _show_new_game_setup() -> void:
 	new_game_bot_avatar_selectors.clear()
 	menu_scroll.scroll_vertical = 0
 	_add_menu_title("Новая игра с ботами", "SETUP_SUBTITLE")
-	_add_new_game_match_mode_row()
-	_add_menu_spacer(8.0)
 	_add_new_game_player_row(HUMAN_PLAYER_INDEX)
+	_add_menu_spacer(8.0)
+	_add_new_game_match_mode_row()
 	_add_menu_spacer(8.0)
 	_add_new_game_bot_difficulty_row()
 	_add_menu_spacer(12.0)
@@ -7420,6 +7458,7 @@ func _sanitize_player_name(value: String, fallback: String) -> String:
 
 
 func _show_profile_menu() -> void:
+	account_menu_is_open = false
 	if mobile_table_layout:
 		_show_mobile_profile_menu()
 		return
@@ -7504,6 +7543,7 @@ func _show_profile_menu() -> void:
 	_add_menu_button("Выбрать свою картинку", _open_profile_avatar_file_dialog)
 	_add_menu_button("Вернуть стандартный аватар", _on_reset_profile_avatar_pressed)
 	_add_menu_spacer(10.0)
+	_add_menu_button("Аккаунт Project Joker", _show_account_menu, not remote_account_id.is_empty())
 	_add_menu_button("Музыка профиля", _show_music_profile_menu)
 	_add_menu_button("Статистика и рейтинг", Callable(self, "_show_statistics_menu").bind(false, true))
 	_add_menu_button("Сохранить профиль", _save_profile, true)
@@ -7580,6 +7620,7 @@ func _show_mobile_profile_menu() -> void:
 	_update_profile_avatar_preview()
 	_add_menu_button("Выбрать свою картинку", _open_profile_avatar_file_dialog)
 	_add_menu_button("Вернуть стандартный аватар", _on_reset_profile_avatar_pressed)
+	_add_menu_button("Аккаунт Project Joker", _show_account_menu, not remote_account_id.is_empty())
 	_add_menu_button("Статистика и рейтинг", Callable(self, "_show_statistics_menu").bind(false, true))
 	_add_menu_button("Сохранить профиль", _save_profile, true)
 	_add_menu_button("Назад", _return_from_menu_subpage)
@@ -7687,6 +7728,11 @@ func _save_profile() -> void:
 	configured_avatar_indices[HUMAN_PLAYER_INDEX] = selected_avatar_index
 	custom_profile_avatar_path = pending_profile_avatar_path if selected_avatar_index == CUSTOM_AVATAR_INDEX else ""
 	_save_persistent_settings()
+	if remote_enet_match != null and remote_enet_match.is_account_connected():
+		remote_enet_match.update_account_profile(
+			configured_player_names[HUMAN_PLAYER_INDEX],
+			configured_avatar_indices[HUMAN_PLAYER_INDEX] if configured_avatar_indices[HUMAN_PLAYER_INDEX] < BUILT_IN_AVATAR_COUNT else 0
+		)
 	if steam_p2p_match != null and steam_p2p_match.is_running():
 		network_avatar_texture_cache.clear()
 		steam_p2p_match.update_local_profile(
@@ -7705,6 +7751,157 @@ func _save_profile() -> void:
 		return
 
 	_build_main_menu_content()
+
+
+func _show_account_menu() -> void:
+	account_menu_is_open = true
+	menu_overlay.visible = true
+	_clear_children(menu_content)
+	if mobile_table_layout:
+		mobile_compact_menu = true
+		_refresh_menu_presentation(true)
+		menu_scroll.scroll_vertical = 0
+	_add_menu_title("Аккаунт Project Joker", "Один профиль для Android, itch.io и будущей Steam-версии")
+	account_status_label = Label.new()
+	account_status_label.name = "AccountStatusLabel"
+	account_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	account_status_label.add_theme_font_size_override("font_size", 24 if mobile_table_layout else 16)
+	account_status_label.add_theme_color_override("font_color", Color(0.82, 0.9, 0.82, 1.0))
+	account_status_label.text = remote_enet_match.status_text if remote_enet_match != null else tr("Сетевой модуль недоступен.")
+	menu_content.add_child(account_status_label)
+
+	if not remote_account_id.is_empty():
+		_add_menu_label("ID аккаунта: %s" % remote_account_id, 17, Color(0.97, 0.86, 0.55, 1.0))
+		_add_menu_label("Этот ID можно показывать друзьям. Токен устройства никогда никому не отправляй.", 14, Color(0.72, 0.85, 0.76, 1.0))
+		_add_menu_button("Скопировать ID", _on_copy_account_id_pressed)
+	else:
+		_add_menu_label("При первом подключении сервер бесплатно создаст постоянный аккаунт.", 16, Color(0.72, 0.85, 0.76, 1.0))
+
+	if not remote_account_recovery_code.is_empty():
+		_add_menu_label("Код восстановления: %s" % remote_account_recovery_code, 17, Color(0.97, 0.86, 0.55, 1.0))
+		_add_menu_label("Сохрани его отдельно. Тот, кто знает ID и этот код, сможет войти в аккаунт.", 14, Color(0.95, 0.7, 0.52, 1.0))
+		_add_menu_button("Скопировать код", _on_copy_account_recovery_pressed)
+
+	if remote_enet_match != null and remote_enet_match.is_account_connected():
+		var account_state: Dictionary = remote_enet_match.get_account_state()
+		_add_menu_label(
+			"XP: %d · завершено матчей: %d" % [int(account_state.get("xp", 0)), int(account_state.get("completed_matches", 0))],
+			16,
+			Color(0.72, 0.85, 0.76, 1.0)
+		)
+		_add_menu_button("Выпустить новый код восстановления", _on_rotate_account_recovery_pressed)
+	else:
+		_add_menu_button("Подключить аккаунт", _on_connect_account_pressed, true)
+		if not remote_account_id.is_empty():
+			_add_menu_button("Создать новый аккаунт", _show_new_account_confirmation)
+
+	_add_menu_spacer(10.0)
+	_add_menu_label("Войти в существующий аккаунт на этом устройстве", 17, Color(0.97, 0.86, 0.55, 1.0))
+	account_id_input = LineEdit.new()
+	account_id_input.name = "AccountIdInput"
+	account_id_input.placeholder_text = "PJ-XXXXXXXXXXXXXXXX"
+	account_id_input.text = remote_account_id
+	account_id_input.max_length = 19
+	account_id_input.custom_minimum_size.y = 48.0
+	menu_content.add_child(account_id_input)
+	account_recovery_input = LineEdit.new()
+	account_recovery_input.name = "AccountRecoveryInput"
+	account_recovery_input.placeholder_text = "XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX"
+	account_recovery_input.max_length = 39
+	account_recovery_input.secret = true
+	account_recovery_input.custom_minimum_size.y = 48.0
+	menu_content.add_child(account_recovery_input)
+	_add_menu_button("Восстановить аккаунт", _on_restore_account_pressed, true)
+	_add_menu_button("Назад к профилю", _show_profile_menu)
+	if mobile_table_layout:
+		_prepare_mobile_menu_fields(menu_content)
+		_queue_menu_panel_fit()
+
+
+func _on_connect_account_pressed() -> void:
+	if remote_enet_match == null:
+		return
+	remote_enet_match.account_avatar_index = configured_avatar_indices[HUMAN_PLAYER_INDEX] if configured_avatar_indices[HUMAN_PLAYER_INDEX] < BUILT_IN_AVATAR_COUNT else 0
+	remote_enet_match.start_client(
+		REMOTE_GAME_SERVER_HOST,
+		REMOTE_GAME_SERVER_PORT,
+		configured_player_names[HUMAN_PLAYER_INDEX],
+		remote_enet_session_token,
+		remote_enet_saved_lobby_id,
+		remote_account_device_token,
+		"",
+		"",
+		remote_account_id
+	)
+	if is_instance_valid(account_status_label):
+		account_status_label.text = tr("Подключаю аккаунт к серверу…")
+
+
+func _on_restore_account_pressed() -> void:
+	if remote_enet_match == null or not is_instance_valid(account_id_input) or not is_instance_valid(account_recovery_input):
+		return
+	var recovery_id := account_id_input.text.strip_edges()
+	var recovery_code := account_recovery_input.text.strip_edges()
+	if recovery_id.is_empty() or recovery_code.is_empty():
+		account_status_label.text = tr("Введи ID аккаунта и полный код восстановления.")
+		return
+	remote_account_recovery_code = recovery_code
+	remote_enet_match.start_client(
+		REMOTE_GAME_SERVER_HOST,
+		REMOTE_GAME_SERVER_PORT,
+		configured_player_names[HUMAN_PLAYER_INDEX],
+		"",
+		0,
+		"",
+		recovery_id,
+		recovery_code
+	)
+	account_status_label.text = tr("Проверяю код восстановления…")
+
+
+func _on_rotate_account_recovery_pressed() -> void:
+	if remote_enet_match != null and remote_enet_match.rotate_account_recovery_code():
+		remote_account_recovery_code = ""
+		if is_instance_valid(account_status_label):
+			account_status_label.text = tr("Создаю новый код восстановления…")
+
+
+func _show_new_account_confirmation() -> void:
+	account_menu_is_open = false
+	_clear_children(menu_content)
+	_add_menu_title("Новый аккаунт", "Сохранённый вход на этом устройстве будет заменён")
+	_add_menu_label(
+		"Продолжай только если сохранил ID и код восстановления старого аккаунта. Иначе вернуть его будет невозможно.",
+		16,
+		Color(0.95, 0.7, 0.52, 1.0)
+	)
+	_add_menu_button("Нет, вернуться", _show_account_menu, true)
+	_add_menu_button("Да, создать новый аккаунт", _confirm_create_new_account)
+
+
+func _confirm_create_new_account() -> void:
+	remote_account_id = ""
+	remote_account_device_token = ""
+	remote_account_recovery_code = ""
+	remote_enet_session_token = ""
+	remote_enet_saved_lobby_id = 0
+	_save_persistent_settings()
+	account_menu_is_open = true
+	if remote_enet_match != null and remote_enet_match.is_running():
+		remote_enet_match.create_new_account()
+	else:
+		_on_connect_account_pressed()
+	_show_account_menu()
+
+
+func _on_copy_account_id_pressed() -> void:
+	if not remote_account_id.is_empty():
+		DisplayServer.clipboard_set(remote_account_id)
+
+
+func _on_copy_account_recovery_pressed() -> void:
+	if not remote_account_recovery_code.is_empty():
+		DisplayServer.clipboard_set(remote_account_recovery_code)
 
 
 func _create_profile_avatar_file_dialog() -> void:
@@ -9782,6 +9979,8 @@ func _load_persistent_settings() -> void:
 	active_online_match_started = bool(config.get_value("online", "active_match_started", false))
 	remote_enet_session_token = str(config.get_value("online", "remote_session_token", ""))
 	remote_enet_saved_lobby_id = maxi(0, int(config.get_value("online", "remote_lobby_id", 0)))
+	remote_account_id = str(config.get_value("account", "account_id", ""))
+	remote_account_device_token = str(config.get_value("account", "device_token", ""))
 	tutorial_enabled = bool(config.get_value("game", "tutorial_enabled", tutorial_enabled))
 	auto_turn_enabled = bool(config.get_value("game", "auto_turn_enabled", auto_turn_enabled))
 	var audio_defaults_are_current := int(config.get_value("audio", "defaults_version", 0)) >= AUDIO_DEFAULTS_VERSION
@@ -9859,6 +10058,8 @@ func _save_persistent_settings() -> void:
 	config.set_value("online", "active_match_started", active_online_match_started)
 	config.set_value("online", "remote_session_token", remote_enet_session_token)
 	config.set_value("online", "remote_lobby_id", remote_enet_saved_lobby_id)
+	config.set_value("account", "account_id", remote_account_id)
+	config.set_value("account", "device_token", remote_account_device_token)
 	config.set_value("display", "card_deck_style", card_deck_style)
 	config.set_value("display", "table_felt_theme", table_felt_theme)
 	config.set_value("display", "table_surround_theme", table_surround_theme)
@@ -15100,7 +15301,6 @@ func _create_reaction_controls() -> void:
 
 
 func _on_reaction_toggle_pressed() -> void:
-	_close_mobile_bid_fan()
 	if not _can_show_reaction_controls() or (not _is_steam_p2p_main_table_active() and not _is_social_action_ready(SocialAction.REACTION)):
 		return
 
@@ -15370,7 +15570,6 @@ func _fit_phone_gift_picker() -> void:
 
 
 func _on_sticker_toggle_pressed() -> void:
-	_close_mobile_bid_fan()
 	if not _can_show_reaction_controls() or (not _is_steam_p2p_main_table_active() and not _is_social_action_ready(SocialAction.STICKER)):
 		return
 
@@ -15751,7 +15950,6 @@ func _create_soundpad_controls() -> void:
 
 
 func _on_soundpad_toggle_pressed() -> void:
-	_close_mobile_bid_fan()
 	if not _can_show_reaction_controls() or not _is_social_action_ready(SocialAction.SOUNDPAD):
 		return
 

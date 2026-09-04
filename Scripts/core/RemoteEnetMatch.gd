@@ -7,15 +7,18 @@ signal status_changed
 signal public_table_event_received
 signal player_snapshot_received
 signal session_token_changed(token: String)
+signal account_state_changed
 signal directory_changed
+signal room_state_changed
 signal room_joined
 signal room_left
 
 const DEFAULT_HOST := "130.61.155.173"
 const DEFAULT_PORT := 8765
-const PROTOCOL_VERSION := 4
+const PROTOCOL_VERSION := 6
 const PLAYER_COUNT := 4
 const REQUEST_RETRY_SECONDS := 1.0
+const ROOM_RESYNC_INTERVAL_SECONDS := 1.0
 const NetworkSnapshot = preload("res://Scripts/core/MatchStateSnapshot.gd")
 const NetworkCommand = preload("res://Scripts/core/MatchCommand.gd")
 const NetworkHost = preload("res://Scripts/core/LocalMatchHost.gd")
@@ -34,6 +37,15 @@ var status_text := "Удалённый сервер не подключён."
 var active_host := DEFAULT_HOST
 var active_port := DEFAULT_PORT
 var display_name := "Игрок"
+var account_authenticated := false
+var account_id := ""
+var account_device_token := ""
+var account_recovery_code := ""
+var account_display_name := ""
+var account_avatar_index := 0
+var account_xp := 0
+var account_completed_matches := 0
+var account_active_room_id := 0
 var session_token := ""
 var saved_room_id := 0
 var current_room_id := 0
@@ -58,17 +70,26 @@ var lobby_seats: Array[Dictionary] = []
 var lobby_round_started := false
 var first_turn_roll_state: Dictionary = {}
 var _directory_request_sent := false
+var _account_request_sent := false
+var _pending_recovery_account_id := ""
+var _pending_recovery_code := ""
+var _pending_rotated_recovery_code := ""
 var _request_retry_elapsed := 0.0
+var _room_resync_elapsed := 0.0
 var _rejected := false
 
 
-func start_client(host: String = DEFAULT_HOST, port: int = DEFAULT_PORT, player_name: String = "", reconnect_token: String = "", reconnect_room_id: int = 0) -> bool:
+func start_client(host: String = DEFAULT_HOST, port: int = DEFAULT_PORT, player_name: String = "", reconnect_token: String = "", reconnect_room_id: int = 0, device_token: String = "", recovery_account_id: String = "", recovery_code: String = "", saved_account_id: String = "") -> bool:
 	_disconnect_transport()
 	active_host = host.strip_edges() if not host.strip_edges().is_empty() else DEFAULT_HOST
 	active_port = port
 	display_name = player_name.replace("\n", " ").replace("\r", " ").strip_edges().left(20)
 	if display_name.is_empty():
 		display_name = tr("Игрок")
+	account_device_token = device_token.strip_edges()
+	account_id = saved_account_id.strip_edges()
+	_pending_recovery_account_id = recovery_account_id.strip_edges()
+	_pending_recovery_code = recovery_code.strip_edges()
 	session_token = reconnect_token.strip_edges()
 	saved_room_id = maxi(0, reconnect_room_id)
 	_reset_directory_state()
@@ -95,7 +116,10 @@ func _disconnect_transport() -> void:
 		peer.close()
 	peer = null
 	_directory_request_sent = false
+	_account_request_sent = false
+	account_authenticated = false
 	_request_retry_elapsed = 0.0
+	_room_resync_elapsed = 0.0
 	_rejected = false
 
 
@@ -136,6 +160,24 @@ func is_running() -> bool:
 
 func is_directory_connected() -> bool:
 	return peer != null and directory_ready
+
+
+func is_account_connected() -> bool:
+	return peer != null and account_authenticated and not account_id.is_empty()
+
+
+func get_account_state() -> Dictionary:
+	return {
+		"authenticated": account_authenticated,
+		"account_id": account_id,
+		"device_token": account_device_token,
+		"recovery_code": account_recovery_code,
+		"display_name": account_display_name,
+		"avatar_index": account_avatar_index,
+		"xp": account_xp,
+		"completed_matches": account_completed_matches,
+		"active_room_id": account_active_room_id
+	}
 
 
 func is_in_room() -> bool:
@@ -211,7 +253,7 @@ func get_first_turn_roll_state() -> Dictionary:
 
 
 func can_submit_first_turn_roll() -> bool:
-	if not is_first_turn_roll_active() or is_first_turn_roll_complete() or is_match_paused_for_reconnect():
+	if not is_first_turn_roll_active() or is_first_turn_roll_complete():
 		return false
 	var contenders: Array = first_turn_roll_state.get("contenders", [])
 	var submitted: Array = first_turn_roll_state.get("submitted", [])
@@ -262,9 +304,61 @@ func _has_started_round() -> bool:
 
 
 func request_lobby_list() -> bool:
-	if peer == null or peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED:
+	if peer == null or peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED or not account_authenticated:
 		return false
 	return _send_message({"type": "directory_request", "protocol_version": PROTOCOL_VERSION}, 1)
+
+
+func recover_account(recovery_account_id: String, recovery_code: String) -> bool:
+	if peer == null or peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED:
+		return false
+	_pending_recovery_account_id = recovery_account_id.strip_edges()
+	_pending_recovery_code = recovery_code.strip_edges()
+	_account_request_sent = false
+	account_authenticated = false
+	directory_ready = false
+	return _send_account_auth_request()
+
+
+func create_new_account() -> bool:
+	if peer == null or peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED:
+		return false
+	account_device_token = ""
+	account_id = ""
+	account_recovery_code = ""
+	_pending_recovery_account_id = ""
+	_pending_recovery_code = ""
+	_account_request_sent = false
+	account_authenticated = false
+	directory_ready = false
+	return _send_account_auth_request()
+
+
+func update_account_profile(new_display_name: String, avatar_index: int) -> bool:
+	if peer == null or peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED or not account_authenticated:
+		return false
+	return _send_message({
+		"type": "account_update",
+		"display_name": new_display_name,
+		"avatar_index": maxi(0, avatar_index)
+	}, 1)
+
+
+func rotate_account_recovery_code() -> bool:
+	if peer == null or peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED or not account_authenticated:
+		return false
+	var raw_code := Crypto.new().generate_random_bytes(16).hex_encode().to_upper()
+	_pending_rotated_recovery_code = _format_recovery_code(raw_code)
+	return _send_message({
+		"type": "account_rotate_recovery",
+		"recovery_code_hash": raw_code.sha256_text()
+	}, 1)
+
+
+func request_room_resync() -> bool:
+	if peer == null or peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED or not is_in_room():
+		return false
+	return _send_message({"type": "resync_request"}, 1)
 
 
 func create_lobby(room_name: String, is_private: bool, password: String = "", match_mode: String = "classic", fill_empty_seats_with_bots: bool = false, bot_difficulty: int = 1) -> bool:
@@ -370,13 +464,17 @@ func _process(delta: float) -> void:
 		peer.close()
 		peer = null
 		directory_ready = false
+		account_authenticated = false
 		client_seat_confirmed = false
 		client_snapshot.clear()
 		client_snapshot_is_safe = false
 		_set_status(tr("Связь с сервером потеряна. Нажми «Подключиться» ещё раз."))
 		directory_changed.emit()
 		return
-	if connection_status == MultiplayerPeer.CONNECTION_CONNECTED and not directory_ready and not _rejected:
+	if connection_status == MultiplayerPeer.CONNECTION_CONNECTED and not account_authenticated and not _rejected:
+		if not _account_request_sent:
+			_send_account_auth_request()
+	elif connection_status == MultiplayerPeer.CONNECTION_CONNECTED and not directory_ready and not _rejected:
 		_request_retry_elapsed += delta
 		if not _directory_request_sent or _request_retry_elapsed >= REQUEST_RETRY_SECONDS:
 			if request_lobby_list():
@@ -388,10 +486,26 @@ func _process(delta: float) -> void:
 		var parsed: Variant = JSON.parse_string(peer.get_packet().get_string_from_utf8())
 		if parsed is Dictionary and sender_peer_id == 1:
 			_handle_message(parsed)
+	if peer != null and peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED and is_in_room() and lobby_round_started:
+		_room_resync_elapsed += delta
+		if (
+			_room_resync_elapsed >= ROOM_RESYNC_INTERVAL_SECONDS
+			and (not client_snapshot_is_safe or is_first_turn_roll_active() or client_command_in_flight)
+		):
+			if request_room_resync():
+				_room_resync_elapsed = 0.0
+	else:
+		_room_resync_elapsed = 0.0
 
 
 func _handle_message(message: Dictionary) -> void:
 	match str(message.get("type", "")):
+		"account_challenge":
+			_handle_account_challenge(message)
+		"account_state":
+			_handle_account_state(message)
+		"account_rejected":
+			_handle_account_rejected(message)
 		"directory_state":
 			_handle_directory_state(message)
 		"directory_rejected":
@@ -421,6 +535,136 @@ func _handle_message(message: Dictionary) -> void:
 			_set_status(tr("Ошибка сервера: %s") % str(message.get("reason", "unknown")))
 		"pong":
 			pass
+
+
+func _send_account_auth_request() -> bool:
+	if peer == null or peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED:
+		return false
+	var sent := _send_message({
+		"type": "account_challenge_request",
+		"protocol_version": PROTOCOL_VERSION
+	}, 1)
+	if sent:
+		_account_request_sent = true
+		_set_status(tr("Проверяю аккаунт Project Joker…"))
+	return sent
+
+
+func _handle_account_challenge(message: Dictionary) -> void:
+	if int(message.get("protocol_version", -1)) != PROTOCOL_VERSION:
+		_handle_account_rejected({"reason": "protocol_version_mismatch"})
+		return
+	var challenge := str(message.get("challenge", ""))
+	if challenge.length() != 64:
+		_handle_account_rejected({"reason": "account_challenge_invalid"})
+		return
+	var auth_message: Dictionary
+	if not _pending_recovery_account_id.is_empty() or not _pending_recovery_code.is_empty():
+		var recovery_secret_hash := _normalize_recovery_code(_pending_recovery_code).sha256_text()
+		account_device_token = Crypto.new().generate_random_bytes(32).hex_encode()
+		auth_message = {
+			"type": "account_recover",
+			"protocol_version": PROTOCOL_VERSION,
+			"account_id": _pending_recovery_account_id,
+			"proof": _create_account_proof(recovery_secret_hash, challenge),
+			"device_token_hash": account_device_token.sha256_text()
+		}
+	elif not account_id.is_empty() and not account_device_token.is_empty():
+		auth_message = {
+			"type": "account_login",
+			"protocol_version": PROTOCOL_VERSION,
+			"account_id": account_id,
+			"proof": _create_account_proof(account_device_token.sha256_text(), challenge)
+		}
+	else:
+		account_device_token = Crypto.new().generate_random_bytes(32).hex_encode()
+		var raw_recovery_code := Crypto.new().generate_random_bytes(16).hex_encode().to_upper()
+		account_recovery_code = _format_recovery_code(raw_recovery_code)
+		auth_message = {
+			"type": "account_create",
+			"protocol_version": PROTOCOL_VERSION,
+			"display_name": display_name,
+			"avatar_index": account_avatar_index,
+			"device_token_hash": account_device_token.sha256_text(),
+			"recovery_code_hash": raw_recovery_code.sha256_text()
+		}
+	if not _send_message(auth_message, 1):
+		_handle_account_rejected({"reason": "account_request_failed"})
+
+
+func _handle_account_state(message: Dictionary) -> void:
+	if int(message.get("protocol_version", -1)) != PROTOCOL_VERSION:
+		_rejected = true
+		_set_status(tr("Нужно обновить игру: версия клиента не совпадает с сервером."))
+		return
+	var account_variant: Variant = message.get("account", {})
+	if not (account_variant is Dictionary):
+		_handle_account_rejected({"reason": "account_state_invalid"})
+		return
+	var account: Dictionary = account_variant
+	account_id = str(account.get("account_id", ""))
+	account_display_name = str(account.get("display_name", display_name))
+	account_avatar_index = maxi(0, int(account.get("avatar_index", 0)))
+	account_xp = maxi(0, int(account.get("xp", 0)))
+	account_completed_matches = maxi(0, int(account.get("completed_matches", 0)))
+	account_active_room_id = maxi(0, int(message.get("active_room_id", 0)))
+	if account_active_room_id > 0 and saved_room_id <= 0:
+		saved_room_id = account_active_room_id
+	if not _pending_rotated_recovery_code.is_empty():
+		account_recovery_code = _pending_rotated_recovery_code
+		_pending_rotated_recovery_code = ""
+	elif not _pending_recovery_code.is_empty():
+		account_recovery_code = _pending_recovery_code
+	_pending_recovery_account_id = ""
+	_pending_recovery_code = ""
+	account_authenticated = not account_id.is_empty() and not account_device_token.is_empty()
+	_rejected = not account_authenticated
+	account_state_changed.emit()
+	if account_authenticated:
+		display_name = account_display_name
+		_set_status(tr("Аккаунт Project Joker подключён."))
+		request_lobby_list()
+	else:
+		_set_status(tr("Сервер прислал повреждённый аккаунт."))
+
+
+func _handle_account_rejected(message: Dictionary) -> void:
+	account_authenticated = false
+	_account_request_sent = true
+	var reason := str(message.get("reason", "account_login_failed"))
+	_rejected = reason == "protocol_version_mismatch"
+	match reason:
+		"invalid_device_token":
+			_set_status(tr("Сохранённый вход устарел. Восстанови аккаунт по секретному коду или создай новый."))
+		"invalid_recovery_credentials":
+			_set_status(tr("ID аккаунта или код восстановления неверны."))
+		"recovery_rate_limited":
+			_set_status(tr("Слишком много попыток восстановления. Переподключись и попробуй позже."))
+		"protocol_version_mismatch":
+			_set_status(tr("Нужно обновить игру: версия клиента не совпадает с сервером."))
+		_:
+			_set_status(tr("Не удалось подключить аккаунт: %s") % reason)
+	account_state_changed.emit()
+
+
+func _normalize_recovery_code(value: String) -> String:
+	return value.replace("-", "").replace(" ", "").strip_edges().to_upper()
+
+
+func _format_recovery_code(value: String) -> String:
+	var normalized := _normalize_recovery_code(value)
+	var parts: Array[String] = []
+	for offset in range(0, normalized.length(), 4):
+		parts.append(normalized.substr(offset, 4))
+	return "-".join(parts)
+
+
+func _create_account_proof(secret_hash: String, challenge: String) -> String:
+	return Crypto.new().hmac_digest(
+		HashingContext.HASH_SHA256,
+		secret_hash.hex_decode(),
+		challenge.to_utf8_buffer()
+	).hex_encode()
 
 
 func _handle_directory_state(message: Dictionary) -> void:
@@ -486,8 +730,9 @@ func _handle_seat_confirmed(message: Dictionary) -> void:
 	_store_first_turn_roll_state(message.get("first_turn_roll", {}))
 	_store_lobby_seats(message.get("lobby_seats", []))
 	_set_status(_get_lobby_status())
+	room_state_changed.emit()
 	if lobby_round_started:
-		_send_message({"type": "resync_request"}, 1)
+		request_room_resync()
 
 
 func _store_lobby_state(message: Dictionary) -> void:
@@ -513,6 +758,7 @@ func _store_lobby_state(message: Dictionary) -> void:
 			client_ready = bool(seat.get("ready", seat.get("confirmed", false)))
 			break
 	_set_status(_get_lobby_status())
+	room_state_changed.emit()
 
 
 func _handle_player_snapshot(message: Dictionary) -> void:
