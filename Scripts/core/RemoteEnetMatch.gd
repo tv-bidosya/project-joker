@@ -791,6 +791,7 @@ func _store_lobby_state(message: Dictionary) -> void:
 	var message_room_id := int(message.get("room_id", current_room_id))
 	if current_room_id > 0 and message_room_id != current_room_id:
 		return
+	var previous_visual_state := _get_room_visual_state_key()
 	var match_was_started := lobby_round_started
 	current_room_id = message_room_id
 	current_room_name = str(message.get("room_name", current_room_name))
@@ -810,7 +811,25 @@ func _store_lobby_state(message: Dictionary) -> void:
 			client_ready = bool(seat.get("ready", seat.get("confirmed", false)))
 			break
 	_set_status(_get_lobby_status())
-	room_state_changed.emit()
+	if previous_visual_state != _get_room_visual_state_key():
+		room_state_changed.emit()
+
+
+func _get_room_visual_state_key() -> String:
+	return JSON.stringify({
+		"room_id": current_room_id,
+		"room_name": current_room_name,
+		"is_private": current_room_is_private,
+		"owner": current_room_owner_player_index,
+		"match_mode": current_room_match_mode,
+		"game_type": current_room_game_type,
+		"fill_bots": current_room_fill_empty_seats_with_bots,
+		"bot_difficulty": current_room_bot_difficulty,
+		"round_started": lobby_round_started,
+		"client_ready": client_ready,
+		"first_turn_roll": first_turn_roll_state,
+		"seats": lobby_seats
+	})
 
 
 func _handle_player_snapshot(message: Dictionary) -> void:

@@ -88,7 +88,7 @@ const CHAT_VISIBLE_MESSAGE_LIMIT := 40
 const BUILT_IN_AVATAR_COUNT := 4
 const CUSTOM_AVATAR_INDEX := BUILT_IN_AVATAR_COUNT
 const HUMAN_AVATAR_COUNT := BUILT_IN_AVATAR_COUNT + 1
-const GAME_VERSION := "0.6.9"
+const GAME_VERSION := "0.6.10"
 # Внутренний просмотр отчётов доступен только при запуске из редактора и может
 # быть дополнительно отключён этим переключателем. Создание отчёта игроком не зависит от него.
 const PERSISTENT_SETTINGS_PATH := "user://project_joker_settings.cfg"
@@ -858,6 +858,11 @@ func _ready() -> void:
 	music_player_panel.z_index = 90
 	_create_tutorial_panel()
 	_apply_mobile_table_layout()
+	# The remote table is a full-screen Control at z=95. Keep the shared roll
+	# dialog above it on desktop too, otherwise the table swallows the PC click
+	# while Android waits forever for that player's roll.
+	first_turn_roll_panel.z_as_relative = false
+	first_turn_roll_panel.z_index = 110
 	_create_music_controls_popup()
 	_create_profile_avatar_file_dialog()
 	_create_bug_report_file_dialog()
@@ -6143,9 +6148,10 @@ func _refresh_network_table_view() -> void:
 		network_table_title_label.text = "Сетевой стол · локальный ENet-тест" if loopback_network_is_technical_presentation else "Сетевая партия"
 		network_table_close_button.text = "Вернуться к тесту" if loopback_network_is_technical_presentation else "Вернуться в комнату"
 		network_table_close_button.tooltip_text = "Вернуться к техническому окну локальной сети" if loopback_network_is_technical_presentation else "Вернуться в комнату"
-	first_turn_roll_panel.visible = false
 	if network_match.is_first_turn_roll_active():
 		_refresh_first_turn_roll_panel(network_match.get_first_turn_roll_state(), network_match.lobby_seats)
+	else:
+		first_turn_roll_panel.visible = false
 	var snapshot: Dictionary = network_match.get_test_table_snapshot()
 	if snapshot.is_empty():
 		network_table_round_label.text = "Ожидание безопасного снимка стола"

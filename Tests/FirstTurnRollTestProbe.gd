@@ -22,6 +22,11 @@ func _test_local_first_player_mapping() -> void:
 	var main_scene: Variant = load("res://Scenes/main.tscn").instantiate()
 	root.add_child(main_scene)
 	await process_frame
+	assert(not main_scene.first_turn_roll_panel.z_as_relative)
+	assert(
+		main_scene.first_turn_roll_panel.z_index > main_scene.network_table_view.z_index,
+		"The roll dialog must stay above the full-screen remote table on desktop"
+	)
 	main_scene._reset_game_session()
 	main_scene._begin_local_first_turn_roll()
 	main_scene.local_first_turn_roll_random.seed = 20260726
