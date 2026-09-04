@@ -7,6 +7,7 @@ const FORMAT_VERSION := 1
 const DEFAULT_STORAGE_PATH := "user://server_accounts.json"
 const MAX_DISPLAY_NAME_LENGTH := 20
 const MAX_DEVICE_TOKENS := 8
+const MAX_XP_GRANT_MATCH_IDS := 1000
 
 var storage_path := DEFAULT_STORAGE_PATH
 var last_error := ""
@@ -76,6 +77,7 @@ func create_account_from_verifiers(display_name: String, avatar_index: int, devi
 		"avatar_index": maxi(0, avatar_index),
 		"xp": 0,
 		"completed_matches": 0,
+		"xp_grant_match_ids": [],
 		"created_unix": int(Time.get_unix_time_from_system()),
 		"recovery_code_hash": clean_recovery_hash,
 		"device_token_hashes": [clean_token_hash]
@@ -201,18 +203,52 @@ func get_public_account(account_id: String) -> Dictionary:
 	return _create_public_account(_accounts[normalized_id])
 
 
+func grant_match_xp(account_id: String, match_id: String, xp_amount: int) -> Dictionary:
+	var normalized_id := _normalize_account_id(account_id)
+	var clean_match_id := match_id.strip_edges().left(96)
+	if not _accounts.has(normalized_id) or clean_match_id.is_empty() or xp_amount < 0:
+		return {"ok": false, "error": "invalid_xp_grant"}
+	var account: Dictionary = _accounts[normalized_id]
+	var grant_ids: Array = (account.get("xp_grant_match_ids", []) as Array).duplicate()
+	if grant_ids.has(clean_match_id):
+		return {"ok": true, "awarded": false, "xp_awarded": 0, "account": _create_public_account(account)}
+	var previous_grant_ids := grant_ids.duplicate()
+	var previous_xp := int(account.get("xp", 0))
+	var previous_completed := int(account.get("completed_matches", 0))
+	grant_ids.append(clean_match_id)
+	while grant_ids.size() > MAX_XP_GRANT_MATCH_IDS:
+		grant_ids.pop_front()
+	account["xp"] = previous_xp + xp_amount
+	account["completed_matches"] = previous_completed + 1
+	account["xp_grant_match_ids"] = grant_ids
+	if _save() != OK:
+		account["xp"] = previous_xp
+		account["completed_matches"] = previous_completed
+		account["xp_grant_match_ids"] = previous_grant_ids
+		return {"ok": false, "error": last_error}
+	return {"ok": true, "awarded": true, "xp_awarded": xp_amount, "account": _create_public_account(account)}
+
+
 func _sanitize_loaded_account(account_id: String, source: Dictionary) -> Dictionary:
 	var token_hashes: Array[String] = []
 	for token_hash_variant in source.get("device_token_hashes", []):
 		var token_hash := str(token_hash_variant).strip_edges().to_lower()
 		if token_hash.length() == 64 and not token_hashes.has(token_hash):
 			token_hashes.append(token_hash)
+	var xp_grant_match_ids: Array[String] = []
+	for match_id_variant in source.get("xp_grant_match_ids", []):
+		var match_id := str(match_id_variant).strip_edges().left(96)
+		if not match_id.is_empty() and not xp_grant_match_ids.has(match_id):
+			xp_grant_match_ids.append(match_id)
+	while xp_grant_match_ids.size() > MAX_XP_GRANT_MATCH_IDS:
+		xp_grant_match_ids.pop_front()
 	return {
 		"account_id": account_id,
 		"display_name": _sanitize_display_name(str(source.get("display_name", "Игрок"))),
 		"avatar_index": maxi(0, int(source.get("avatar_index", 0))),
 		"xp": maxi(0, int(source.get("xp", 0))),
 		"completed_matches": maxi(0, int(source.get("completed_matches", 0))),
+		"xp_grant_match_ids": xp_grant_match_ids,
 		"created_unix": maxi(0, int(source.get("created_unix", 0))),
 		"recovery_code_hash": str(source.get("recovery_code_hash", "")),
 		"device_token_hashes": token_hashes

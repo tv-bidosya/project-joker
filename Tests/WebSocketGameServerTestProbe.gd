@@ -150,11 +150,21 @@ func _run() -> void:
 
 	var private_room: Dictionary = server._rooms[private_room_id]
 	var private_match_host = private_room.get("match_host")
+	var abandoned_player_index := _player_index_for_peer(private_room_id, 2)
+	(private_room.get("temporary_bot_players", {}) as Dictionary)[abandoned_player_index] = true
+	(private_room.get("bot_players", {}) as Dictionary)[abandoned_player_index] = true
 	private_match_host.game.round_number = Server.TOTAL_ROUND_COUNT
 	private_match_host.game.current_round.state = Round.State.FINISHED
 	_send_client(2, {"type": "return_to_lobby"})
 	assert(await _wait_until(func(): return _has_rejection(2, "host_only")), "Only the owner may return a finished match to the lobby")
 	_send_client(1, {"type": "return_to_lobby"})
+	assert(await _wait_until(func(): return _clients_have_message([1, 2, 3, 4], "account_progress")), "Every connected human must receive the server XP result")
+	for client_index in [1, 2, 3, 4]:
+		var progress_message := _take_message(client_index, "account_progress")
+		var award: Dictionary = progress_message.get("award", {})
+		assert(int(award.get("base_xp", 0)) == Server.MATCH_BASE_XP)
+		var expected_xp := roundi(float(Server.MATCH_BASE_XP + Server.MATCH_WIN_XP) * Server.ABANDONED_CASUAL_XP_MULTIPLIER) if _player_index_for_peer(private_room_id, client_index) == abandoned_player_index else Server.MATCH_BASE_XP + Server.MATCH_WIN_XP
+		assert(int(award.get("xp_awarded", 0)) == expected_xp)
 	assert(await _wait_until(func(): return not bool(server.get_room_debug_state(private_room_id).get("round_started", true)) and int(server.get_room_debug_state(private_room_id).get("round_number", -1)) == 0), "Finished room must reset for a rematch")
 	assert(int(server.get_health().get("completed_matches_saved", 0)) >= 1, "Finished match must be stored in the completed-match archive")
 

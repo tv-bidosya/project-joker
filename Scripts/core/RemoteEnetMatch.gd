@@ -46,6 +46,7 @@ var account_avatar_index := 0
 var account_xp := 0
 var account_completed_matches := 0
 var account_active_room_id := 0
+var last_xp_award: Dictionary = {}
 var session_token := ""
 var saved_room_id := 0
 var current_room_id := 0
@@ -81,6 +82,7 @@ var _rejected := false
 
 func start_client(host: String = DEFAULT_HOST, port: int = DEFAULT_PORT, player_name: String = "", reconnect_token: String = "", reconnect_room_id: int = 0, device_token: String = "", recovery_account_id: String = "", recovery_code: String = "", saved_account_id: String = "") -> bool:
 	_disconnect_transport()
+	last_xp_award.clear()
 	active_host = host.strip_edges() if not host.strip_edges().is_empty() else DEFAULT_HOST
 	active_port = port
 	display_name = player_name.replace("\n", " ").replace("\r", " ").strip_edges().left(20)
@@ -176,7 +178,8 @@ func get_account_state() -> Dictionary:
 		"avatar_index": account_avatar_index,
 		"xp": account_xp,
 		"completed_matches": account_completed_matches,
-		"active_room_id": account_active_room_id
+		"active_room_id": account_active_room_id,
+		"last_xp_award": last_xp_award.duplicate(true)
 	}
 
 
@@ -504,6 +507,8 @@ func _handle_message(message: Dictionary) -> void:
 			_handle_account_challenge(message)
 		"account_state":
 			_handle_account_state(message)
+		"account_progress":
+			_handle_account_progress(message)
 		"account_rejected":
 			_handle_account_rejected(message)
 		"directory_state":
@@ -626,6 +631,25 @@ func _handle_account_state(message: Dictionary) -> void:
 		request_lobby_list()
 	else:
 		_set_status(tr("Сервер прислал повреждённый аккаунт."))
+
+
+func _handle_account_progress(message: Dictionary) -> void:
+	if int(message.get("protocol_version", -1)) != PROTOCOL_VERSION:
+		return
+	var account_variant: Variant = message.get("account", {})
+	var award_variant: Variant = message.get("award", {})
+	if not (account_variant is Dictionary) or not (award_variant is Dictionary):
+		return
+	var account: Dictionary = account_variant
+	if str(account.get("account_id", "")) != account_id:
+		return
+	account_display_name = str(account.get("display_name", account_display_name))
+	account_avatar_index = maxi(0, int(account.get("avatar_index", account_avatar_index)))
+	account_xp = maxi(0, int(account.get("xp", account_xp)))
+	account_completed_matches = maxi(0, int(account.get("completed_matches", account_completed_matches)))
+	last_xp_award = (award_variant as Dictionary).duplicate(true)
+	_set_status(tr("Матч завершён: получено %d XP.") % int(last_xp_award.get("xp_awarded", 0)))
+	account_state_changed.emit()
 
 
 func _handle_account_rejected(message: Dictionary) -> void:

@@ -167,6 +167,8 @@ func _run() -> void:
 		match_host.completed_round_history.append({"round_number": completed_round_index + 1})
 	server._broadcast_player_snapshots(room)
 	assert(await _wait_until(func(): return clients[0].is_match_finished()), "Remote client did not recognize the final match snapshot")
+	assert(await _wait_until(func(): return clients[0].account_xp >= Server.MATCH_BASE_XP), "Remote client did not apply the server XP result")
+	assert(not clients[0].last_xp_award.is_empty())
 	assert(clients[0].return_finished_match_to_lobby())
 	assert(await _wait_until(func(): return _all_clients_returned_to_lobby()), "Remote clients did not reset after returning to the lobby")
 	print("REMOTE_ENET_MATCH_TEST_PASS")

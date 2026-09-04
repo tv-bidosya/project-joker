@@ -22,6 +22,10 @@ const MATCH_MODE_CLASSIC := "classic"
 const MATCH_MODE_TEAMS_2V2 := "teams_2v2"
 const BOT_NAMES := ["Rhysand", "Azriel", "Cassian"]
 const EMPTY_MATCH_TTL_MSEC := 6 * 60 * 60 * 1000
+const MATCH_BASE_XP := 100
+const MATCH_WIN_XP := 20
+const BOT_MATCH_XP_MULTIPLIER := 0.5
+const ABANDONED_CASUAL_XP_MULTIPLIER := 0.3
 const MatchHost = preload("res://Scripts/core/LocalMatchHost.gd")
 const MatchCommand = preload("res://Scripts/core/MatchCommand.gd")
 const ServerBotTurn = preload("res://Scripts/server/ServerBotTurn.gd")
@@ -1210,24 +1214,55 @@ func _record_completed_match_if_needed(room: Dictionary) -> void:
 	var match_host: LocalMatchHost = room.get("match_host")
 	if match_host == null:
 		return
-	var players: Array[Dictionary] = []
+	var match_id := str(room.get("match_id", ""))
+	if match_id.is_empty():
+		match_id = "%d-%d-%s" % [int(Time.get_unix_time_from_system()), int(room.get("room_id", 0)), Crypto.new().generate_random_bytes(6).hex_encode()]
+		room["match_id"] = match_id
 	var highest_score := -2147483648
+	for player in match_host.game.players:
+		highest_score = maxi(highest_score, player.total_score)
+	var players: Array[Dictionary] = []
+	var winners: Array[int] = []
+	var account_by_player: Dictionary = room.get("account_id_by_player", {})
+	var temporary_bots: Dictionary = room.get("temporary_bot_players", {})
+	var match_started_with_bots := account_by_player.size() < PLAYER_COUNT
 	for player_index in match_host.game.players.size():
 		var player: Player = match_host.game.players[player_index]
-		highest_score = maxi(highest_score, player.total_score)
+		var is_winner := player.total_score == highest_score
+		if is_winner:
+			winners.append(player_index)
+		var exact_tricks := _get_exact_ordered_tricks(match_host, player_index)
+		var raw_xp := MATCH_BASE_XP + (MATCH_WIN_XP if is_winner else 0) + exact_tricks
+		var abandoned := temporary_bots.has(player_index)
+		var xp_multiplier := ABANDONED_CASUAL_XP_MULTIPLIER if abandoned else (BOT_MATCH_XP_MULTIPLIER if match_started_with_bots else 1.0)
+		var xp_awarded := roundi(float(raw_xp) * xp_multiplier)
+		var account_id := str(account_by_player.get(player_index, ""))
+		var grant_result := {}
+		if not account_id.is_empty() and _account_store != null:
+			grant_result = _account_store.grant_match_xp(account_id, match_id, xp_awarded)
+			if bool(grant_result.get("ok", false)):
+				_send_account_progress(room, player_index, grant_result.get("account", {}), {
+					"match_id": match_id,
+					"base_xp": MATCH_BASE_XP,
+					"win_xp": MATCH_WIN_XP if is_winner else 0,
+					"exact_tricks_xp": exact_tricks,
+					"multiplier": xp_multiplier,
+					"xp_awarded": int(grant_result.get("xp_awarded", 0)),
+					"abandoned": abandoned,
+					"bot_match": match_started_with_bots
+				})
 		players.append({
 			"player_index": player_index,
-			"account_id": str((room.get("account_id_by_player", {}) as Dictionary).get(player_index, "")),
+			"account_id": account_id,
 			"display_name": player.display_name,
 			"score": player.total_score,
-			"exact_orders_completed": player.exact_orders_completed
+			"exact_orders_completed": player.exact_orders_completed,
+			"exact_ordered_tricks": exact_tricks,
+			"abandoned": abandoned,
+			"xp_awarded": xp_awarded if bool(grant_result.get("awarded", false)) else 0
 		})
-	var winners: Array[int] = []
-	for player_data in players:
-		if int(player_data.get("score", 0)) == highest_score:
-			winners.append(int(player_data.get("player_index", -1)))
 	_completed_matches.append({
-		"match_id": str(room.get("match_id", "")),
+		"match_id": match_id,
 		"room_id": int(room.get("room_id", 0)),
 		"room_name": str(room.get("room_name", "")),
 		"match_mode": str(room.get("match_mode", MATCH_MODE_CLASSIC)),
@@ -1238,6 +1273,39 @@ func _record_completed_match_if_needed(room: Dictionary) -> void:
 	while _completed_matches.size() > MatchStoreResource.MAX_COMPLETED_MATCHES:
 		_completed_matches.pop_front()
 	room["completion_recorded"] = true
+
+
+func _get_exact_ordered_tricks(match_host: LocalMatchHost, player_index: int) -> int:
+	var exact_tricks := 0
+	for round_variant in match_host.completed_round_history:
+		if not (round_variant is Dictionary):
+			continue
+		var round_data: Dictionary = round_variant
+		if not bool(round_data.get("uses_bids", false)):
+			continue
+		var player_results: Array = round_data.get("players", [])
+		if player_index < 0 or player_index >= player_results.size() or not (player_results[player_index] is Dictionary):
+			continue
+		var result: Dictionary = player_results[player_index]
+		var bid := int(result.get("bid", -1))
+		var tricks_taken := int(result.get("tricks_taken", 0))
+		if bid >= 0 and bid == tricks_taken:
+			exact_tricks += tricks_taken
+	return exact_tricks
+
+
+func _send_account_progress(room: Dictionary, player_index: int, account_variant: Variant, award: Dictionary) -> void:
+	if not (account_variant is Dictionary):
+		return
+	var peer_by_player: Dictionary = room.get("peer_by_player", {})
+	if not peer_by_player.has(player_index):
+		return
+	_send(int(peer_by_player[player_index]), {
+		"type": "account_progress",
+		"protocol_version": PROTOCOL_VERSION,
+		"account": account_variant,
+		"award": award
+	})
 
 
 func _send_seat_assigned(target_peer_id: int, room: Dictionary, player_index: int) -> void:

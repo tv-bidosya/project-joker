@@ -3146,6 +3146,15 @@ func _on_remote_account_state_changed() -> void:
 		var server_avatar_index := int(state.get("avatar_index", configured_avatar_indices[HUMAN_PLAYER_INDEX]))
 		if server_avatar_index >= 0 and server_avatar_index < BUILT_IN_AVATAR_COUNT:
 			configured_avatar_indices[HUMAN_PLAYER_INDEX] = server_avatar_index
+		var xp_award_variant: Variant = state.get("last_xp_award", {})
+		if xp_award_variant is Dictionary and not (xp_award_variant as Dictionary).is_empty():
+			var xp_award: Dictionary = xp_award_variant
+			action_text = "Получено %d XP: партия %d, победа %d, точные взятки %d." % [
+				int(xp_award.get("xp_awarded", 0)),
+				int(xp_award.get("base_xp", 0)),
+				int(xp_award.get("win_xp", 0)),
+				int(xp_award.get("exact_tricks_xp", 0))
+			]
 	_save_persistent_settings()
 	if account_menu_is_open:
 		call_deferred("_show_account_menu")
@@ -7789,6 +7798,9 @@ func _show_account_menu() -> void:
 			16,
 			Color(0.72, 0.85, 0.76, 1.0)
 		)
+		var current_xp := int(account_state.get("xp", 0))
+		var next_reward_xp := (floori(float(current_xp) / 500.0) + 1) * 500
+		_add_menu_label("До следующей награды: %d XP" % (next_reward_xp - current_xp), 14, Color(0.72, 0.85, 0.76, 1.0))
 		_add_menu_button("Выпустить новый код восстановления", _on_rotate_account_recovery_pressed)
 	else:
 		_add_menu_button("Подключить аккаунт", _on_connect_account_pressed, true)
