@@ -50,6 +50,29 @@ func _run() -> void:
 	var start_button := _find_button(scene.menu_content, tr("Начать матч"))
 	assert(start_button != null)
 	assert(not start_button.disabled)
+
+	# Landscape phones show three compact cards per row, so six rooms remain
+	# visible as a useful 3x2 block rather than four oversized cards.
+	scene._clear_children(scene.menu_content)
+	scene.mobile_table_layout = true
+	var room_grid = scene._create_remote_lobby_cards_grid()
+	for room_index in range(6):
+		scene._add_remote_lobby_card({
+			"room_id": 5000 + room_index,
+			"room_name": "Room %d" % room_index,
+			"state": "waiting",
+			"game_type": "casual",
+			"member_count": 2,
+			"member_limit": 4,
+			"host_name": "Host"
+		}, room_grid)
+	assert(room_grid.columns == 3)
+	assert(room_grid.get_child_count() == 6)
+	for card in room_grid.get_children():
+		assert(card.custom_minimum_size.y <= 128.0, "Mobile room cards must stay compact")
+		var join_button := _find_button(card, tr("Войти"))
+		assert(join_button != null)
+		assert(join_button.custom_minimum_size.x <= 190.0, "Room actions must not stretch across the whole card")
 	print("REMOTE_LOBBY_ROOM_UI_TEST_PASS")
 	scene.queue_free()
 	await process_frame

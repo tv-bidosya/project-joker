@@ -61,6 +61,7 @@ class FakeRemoteBid:
 
 	var submitted_bid := -1
 	var room_owner := false
+	var resync_requested := false
 	var lobby_seats: Array = []
 
 	func is_running() -> bool:
@@ -80,6 +81,10 @@ class FakeRemoteBid:
 
 	func is_first_turn_roll_active() -> bool:
 		return false
+
+	func request_room_resync() -> bool:
+		resync_requested = true
+		return true
 
 	func get_test_table_viewer_index() -> int:
 		return 1
@@ -138,6 +143,7 @@ func _run() -> void:
 	await _test_remote_roll_pointer_input()
 	await _test_remote_first_bid_pointer_input()
 	await _test_remote_room_owner_uses_client_game_api()
+	await _test_remote_mobile_opens_main_table()
 	_test_authoritative_network_roll()
 	_test_network_bots_roll_automatically()
 	print("FIRST_TURN_ROLL_TEST_PASS")
@@ -258,6 +264,30 @@ func _test_remote_room_owner_uses_client_game_api() -> void:
 	var bid_button := main_scene.network_table_action_controls.get_child(1).get_child(0) as Button
 	bid_button.pressed.emit()
 	assert(fake_remote.submitted_bid == 0, "A remote room owner must submit bids through the client API")
+	main_scene.queue_free()
+	await process_frame
+
+
+func _test_remote_mobile_opens_main_table() -> void:
+	var main_scene: Variant = load("res://Scenes/main.tscn").instantiate()
+	root.add_child(main_scene)
+	await process_frame
+	main_scene.mobile_table_layout = true
+	main_scene._apply_mobile_table_layout()
+	var fake_remote := FakeRemoteBid.new()
+	main_scene.add_child(fake_remote)
+	main_scene.remote_enet_match = fake_remote
+	main_scene.remote_enet_table_presentation = true
+	main_scene.menu_overlay.visible = true
+	main_scene._on_open_network_table_pressed()
+	await process_frame
+
+	assert(fake_remote.resync_requested, "Opening the mobile internet table must request a fresh server snapshot")
+	assert(main_scene.remote_enet_main_table_presentation, "A phone internet room must reuse the polished main table")
+	assert(not main_scene.network_table_view.visible, "The legacy technical table must stay hidden on phones")
+	assert(not main_scene.menu_overlay.visible, "The room menu must close after opening the mobile table")
+	assert(main_scene.chat_toggle_button.visible, "The mobile internet table must expose room chat")
+	assert(main_scene.bid_controls.get_child_count() > 0, "The active remote bidder must see the main-table bid controls")
 	main_scene.queue_free()
 	await process_frame
 

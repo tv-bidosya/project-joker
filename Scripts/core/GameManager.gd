@@ -88,7 +88,7 @@ const CHAT_VISIBLE_MESSAGE_LIMIT := 40
 const BUILT_IN_AVATAR_COUNT := 4
 const CUSTOM_AVATAR_INDEX := BUILT_IN_AVATAR_COUNT
 const HUMAN_AVATAR_COUNT := BUILT_IN_AVATAR_COUNT + 1
-const GAME_VERSION := "0.6.14"
+const GAME_VERSION := "0.6.15"
 # Внутренний просмотр отчётов доступен только при запуске из редактора и может
 # быть дополнительно отключён этим переключателем. Создание отчёта игроком не зависит от него.
 const PERSISTENT_SETTINGS_PATH := "user://project_joker_settings.cfg"
@@ -715,6 +715,7 @@ var remote_lobby_bot_difficulty_selector: OptionButton
 var remote_join_password_edit: LineEdit
 var remote_join_pending_room_id := 0
 var remote_enet_table_presentation := false
+var remote_enet_main_table_presentation := false
 var loopback_network_status_label: Label
 var loopback_network_start_round_button: Button
 var loopback_network_start_joker_round_button: Button
@@ -2750,10 +2751,12 @@ func _add_online_action_tile(parent: Container, label_text: String, callback: Ca
 
 func _create_remote_lobby_cards_grid() -> GridContainer:
 	var grid := GridContainer.new()
-	grid.columns = 2 if mobile_table_layout else 3
+	# Landscape phones have enough horizontal room for three compact cards. Two
+	# rows then expose six rooms at once without shrinking the useful text.
+	grid.columns = 3
 	grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	grid.add_theme_constant_override("h_separation", 12)
-	grid.add_theme_constant_override("v_separation", 12)
+	grid.add_theme_constant_override("h_separation", 10 if mobile_table_layout else 12)
+	grid.add_theme_constant_override("v_separation", 8 if mobile_table_layout else 12)
 	menu_content.add_child(grid)
 	return grid
 
@@ -2765,18 +2768,19 @@ func _add_remote_lobby_card(summary: Dictionary, parent: Container) -> void:
 	var is_private := bool(summary.get("is_private", false))
 	var state := str(summary.get("state", "waiting"))
 	var card := PanelContainer.new()
-	card.custom_minimum_size = Vector2(330.0, 166.0)
+	card.custom_minimum_size = Vector2(230.0, 128.0) if mobile_table_layout else Vector2(300.0, 148.0)
 	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	card.add_theme_stylebox_override("panel", _create_flat_style(Color(0.018, 0.105, 0.072, 0.96), Color(0.72, 0.5, 0.16, 1.0), 2, 12, 3))
 	parent.add_child(card)
 	var content := VBoxContainer.new()
-	content.add_theme_constant_override("separation", 6)
+	content.add_theme_constant_override("separation", 3 if mobile_table_layout else 5)
 	card.add_child(content)
 	var title := Label.new()
 	title.text = ("%s  " % ("🔒" if is_private else "🌐")) + str(summary.get("room_name", tr("Комната %d") % room_id))
 	title.add_theme_font_override("font", menu_heading_font)
-	title.add_theme_font_size_override("font_size", 19)
+	title.add_theme_font_size_override("font_size", 20 if mobile_table_layout else 19)
 	title.add_theme_color_override("font_color", Color(0.98, 0.84, 0.52, 1.0))
+	title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	content.add_child(title)
 	var state_text := tr("идёт партия") if state == "playing" else tr("завершена") if state == "finished" else tr("ожидает игроков")
 	var game_type_text := tr("Рейтинг") if str(summary.get("game_type", "casual")) == "ranked" else tr("Обычная")
@@ -2789,22 +2793,28 @@ func _add_remote_lobby_card(summary: Dictionary, parent: Container) -> void:
 		tr("Хост"),
 		str(summary.get("host_name", "—"))
 	]
-	details.add_theme_font_size_override("font_size", 14)
+	details.add_theme_font_size_override("font_size", 16 if mobile_table_layout else 14)
 	details.add_theme_color_override("font_color", Color(0.84, 0.88, 0.78, 1.0))
 	content.add_child(details)
 	var is_saved_room := room_id == remote_enet_saved_lobby_id and (not remote_enet_session_token.is_empty() or not remote_account_id.is_empty())
 	var button_text := tr("Переподключиться") if state == "playing" and is_saved_room else tr("Ввести пароль") if is_private else tr("Войти")
 	var button := _create_menu_button(button_text, _on_remote_lobby_card_pressed.bind(room_id, is_private), is_saved_room)
-	button.custom_minimum_size = Vector2(0.0, 42.0)
-	button.add_theme_font_size_override("font_size", 16)
+	button.custom_minimum_size = Vector2(190.0 if mobile_table_layout else 170.0, 36.0 if mobile_table_layout else 38.0)
+	button.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	button.add_theme_font_size_override("font_size", 17 if mobile_table_layout else 15)
 	button.disabled = state == "finished" or (state == "playing" and not is_saved_room)
-	content.add_child(button)
+	var button_row := HBoxContainer.new()
+	button_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	button_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	button_row.add_child(button)
+	content.add_child(button_row)
 
 
 func _on_connect_remote_enet_pressed() -> void:
 	var return_tab := online_hub_tab if online_hub_is_open else OnlineHubTab.OPEN_TABLES
 	remote_enet_lobby_is_open = false
 	remote_enet_table_presentation = false
+	remote_enet_main_table_presentation = false
 	steam_p2p_table_presentation = false
 	steam_p2p_main_table_presentation = false
 	remote_enet_match.account_avatar_index = configured_avatar_indices[HUMAN_PLAYER_INDEX] if configured_avatar_indices[HUMAN_PLAYER_INDEX] < BUILT_IN_AVATAR_COUNT else 0
@@ -2987,6 +2997,7 @@ func _on_create_remote_lobby_pressed() -> void:
 
 func _show_remote_enet_lobby() -> void:
 	is_pause_menu_open = false
+	remote_enet_main_table_presentation = false
 	online_hub_is_open = false
 	remote_enet_lobby_is_open = true
 	remote_enet_table_presentation = true
@@ -3215,6 +3226,7 @@ func _on_leave_remote_lobby_pressed() -> void:
 func _on_disconnect_remote_enet_pressed() -> void:
 	remote_enet_lobby_is_open = false
 	remote_enet_table_presentation = false
+	remote_enet_main_table_presentation = false
 	if remote_enet_match != null:
 		remote_enet_match.stop()
 	_show_online_hub(OnlineHubTab.OPEN_TABLES, false)
@@ -3274,6 +3286,7 @@ func _on_remote_enet_room_joined() -> void:
 	remote_enet_saved_lobby_id = remote_enet_match.current_room_id
 	remote_enet_lobby_is_open = true
 	remote_enet_table_presentation = true
+	remote_enet_main_table_presentation = false
 	_save_persistent_settings()
 	call_deferred("_show_remote_enet_lobby")
 
@@ -3283,16 +3296,19 @@ func _on_remote_enet_room_left() -> void:
 	remote_enet_saved_lobby_id = 0
 	remote_enet_lobby_is_open = false
 	remote_enet_table_presentation = false
+	remote_enet_main_table_presentation = false
 	_save_persistent_settings()
 	call_deferred("_show_online_hub", OnlineHubTab.OPEN_TABLES, false)
 
 
 func _refresh_remote_enet_status() -> void:
-	if remote_enet_lobby_is_open and is_instance_valid(menu_overlay) and menu_overlay.visible:
+	if remote_enet_lobby_is_open and is_instance_valid(menu_overlay) and menu_overlay.visible and not _is_remote_enet_main_table_active():
 		call_deferred("_show_remote_enet_lobby")
 	elif online_hub_is_open:
 		call_deferred("_show_online_hub", online_hub_tab, false)
-	if remote_enet_table_presentation and is_instance_valid(network_table_view) and network_table_view.visible:
+	if _is_remote_enet_main_table_active():
+		_refresh_network_main_table()
+	elif remote_enet_table_presentation and is_instance_valid(network_table_view) and network_table_view.visible:
 		_refresh_network_table_view()
 
 
@@ -4276,7 +4292,7 @@ func _on_network_public_table_event_received() -> void:
 	# Реакции, подарки и саундпад не меняют ревизию раздачи. Текст статуса у
 	# клиента может остаться тем же, хотя событие хоста уже дошло, поэтому
 	# обновляем стол по отдельному сигналу, не дожидаясь следующего игрового хода.
-	if steam_p2p_main_table_presentation and steam_p2p_match != null and steam_p2p_match.is_running():
+	if _is_steam_p2p_main_table_active():
 		_refresh_network_main_table()
 		return
 	if steam_p2p_table_presentation and is_instance_valid(network_table_view) and network_table_view.visible:
@@ -4293,7 +4309,7 @@ func _on_network_player_snapshot_received() -> void:
 	# Личный снимок может менять доступные кнопки, таймер голосования и карты
 	# без нового текстового статуса. Это особенно важно для Steam P2P: клиент
 	# должен увидеть хостовое обновление сразу, не отправляя встречный ход.
-	if steam_p2p_main_table_presentation and steam_p2p_match != null and steam_p2p_match.is_running():
+	if _is_steam_p2p_main_table_active():
 		_refresh_network_main_table()
 		return
 	if steam_p2p_table_presentation and is_instance_valid(network_table_view) and network_table_view.visible:
@@ -4559,8 +4575,22 @@ func _is_steam_p2p_table_active() -> bool:
 	return steam_p2p_table_presentation and steam_p2p_match != null and steam_p2p_match.is_running()
 
 
+func _is_remote_enet_main_table_active() -> bool:
+	return (
+		remote_enet_main_table_presentation
+		and remote_enet_table_presentation
+		and remote_enet_match != null
+		and remote_enet_match.is_running()
+		and remote_enet_match.is_in_room()
+	)
+
+
 func _is_steam_p2p_main_table_active() -> bool:
-	return steam_p2p_main_table_presentation and _is_steam_p2p_table_active()
+	# Kept as the shared main-table predicate for compatibility with the many
+	# table controls that originally supported Steam first.
+	return (
+		steam_p2p_main_table_presentation and _is_steam_p2p_table_active()
+	) or _is_remote_enet_main_table_active()
 
 
 func _get_network_main_snapshot() -> Dictionary:
@@ -5686,10 +5716,12 @@ func _animate_network_trick_collection(relative_winner_index: int) -> void:
 
 
 func _refresh_network_main_next_round_button() -> void:
+	var network_match = _get_active_network_match()
 	var can_start_next: bool = (
-		steam_p2p_match != null
-		and steam_p2p_match.is_host()
-		and steam_p2p_match.can_start_next_scheduled_round()
+		network_match != null
+		and network_match.is_host()
+		and network_match.has_method(&"can_start_next_scheduled_round")
+		and bool(network_match.call(&"can_start_next_scheduled_round"))
 	)
 	next_round_button.visible = can_start_next
 	next_round_button.disabled = not can_start_next
@@ -5932,6 +5964,16 @@ func _on_open_network_table_pressed() -> void:
 	_reset_loopback_network_joker_selection()
 	menu_overlay.visible = false
 	steam_p2p_main_table_presentation = false
+	remote_enet_main_table_presentation = network_match == remote_enet_match and mobile_table_layout
+	if remote_enet_main_table_presentation:
+		network_visual_round_number = -1
+		var resumed_round: Dictionary = _get_network_main_snapshot().get("round", {})
+		last_announced_round_type = int(resumed_round.get("round_type", -1))
+		last_announced_round_number = int(resumed_round.get("number", -1))
+		network_table_view.visible = false
+		remote_enet_match.request_room_resync()
+		_refresh_network_main_table()
+		return
 	network_table_view.visible = true
 	if network_match == remote_enet_match:
 		remote_enet_match.request_room_resync()
@@ -5942,6 +5984,7 @@ func _on_close_network_table_pressed() -> void:
 	_reset_loopback_network_joker_selection()
 	first_turn_roll_panel.visible = false
 	steam_p2p_main_table_presentation = false
+	remote_enet_main_table_presentation = false
 	if is_instance_valid(network_table_view):
 		network_table_view.visible = false
 	if remote_enet_table_presentation:
@@ -9826,7 +9869,7 @@ func _build_network_pause_menu_content() -> void:
 	_add_menu_title("Сетевая пауза", "Сетевая раздача продолжается у хоста. Здесь можно безопасно вернуться в комнату или открыть личные настройки.")
 	_add_menu_spacer(18.0)
 	_add_menu_button("Продолжить", _resume_current_game, true)
-	_add_menu_button("Вернуться в Steam-комнату", _return_to_steam_lobby_from_main_table)
+	_add_menu_button(_get_network_room_return_label(), _return_to_network_lobby_from_main_table)
 	_add_menu_button("Профиль", _show_profile_menu)
 	_add_menu_button("Правила", _show_rules_menu)
 	_add_menu_button("Настройки", _show_settings_menu)
@@ -9845,18 +9888,27 @@ func _build_mobile_pause_menu_content(is_network_pause: bool) -> void:
 		_add_menu_button("Статистика", _show_statistics_menu)
 	_add_menu_button("Настройки", _show_settings_menu)
 	if is_network_pause:
-		_add_menu_button("Вернуться в Steam-комнату", _return_to_steam_lobby_from_main_table)
+		_add_menu_button(_get_network_room_return_label(), _return_to_network_lobby_from_main_table)
 	else:
 		_add_menu_button("В главное меню", _show_save_and_menu_confirmation)
 		_add_menu_button("Завершить партию", _show_end_session_confirmation)
 	_queue_menu_panel_fit()
 
-func _return_to_steam_lobby_from_main_table() -> void:
+func _get_network_room_return_label() -> String:
+	return tr("Вернуться в интернет-комнату") if _is_remote_enet_main_table_active() else tr("Вернуться в Steam-комнату")
+
+
+func _return_to_network_lobby_from_main_table() -> void:
 	_reset_loopback_network_joker_selection()
 	steam_p2p_main_table_presentation = false
-	steam_p2p_table_presentation = false
+	var return_to_remote: bool = remote_enet_table_presentation and remote_enet_match != null and remote_enet_match.is_in_room()
+	remote_enet_main_table_presentation = false
 	is_pause_menu_open = false
-	_show_steam_lobby_menu()
+	if return_to_remote:
+		_show_remote_enet_lobby()
+	else:
+		steam_p2p_table_presentation = false
+		_show_steam_lobby_menu()
 
 
 func _show_bug_report_menu() -> void:
@@ -12364,7 +12416,7 @@ func _on_hand_sort_trumps_left_pressed() -> void:
 
 func _on_next_round_pressed() -> void:
 	if _is_steam_p2p_main_table_active():
-		_on_start_next_steam_p2p_round_from_table_pressed()
+		_on_start_next_network_round_from_table_pressed()
 		return
 
 	if is_bug_report_review_mode or _is_local_menu_blocking_play() or not _can_start_next_round():
@@ -12403,10 +12455,11 @@ func _on_next_round_pressed() -> void:
 	_start_round()
 
 
-func _on_start_next_steam_p2p_round_from_table_pressed() -> void:
-	if steam_p2p_match == null or not steam_p2p_match.is_host():
+func _on_start_next_network_round_from_table_pressed() -> void:
+	var network_match = _get_active_network_match()
+	if network_match == null or not network_match.is_host() or not network_match.has_method(&"start_next_scheduled_round"):
 		return
-	if not steam_p2p_match.start_next_scheduled_round():
+	if not bool(network_match.call(&"start_next_scheduled_round")):
 		return
 
 	_reset_loopback_network_joker_selection()
