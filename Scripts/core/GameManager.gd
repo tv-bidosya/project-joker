@@ -88,7 +88,7 @@ const CHAT_VISIBLE_MESSAGE_LIMIT := 40
 const BUILT_IN_AVATAR_COUNT := 4
 const CUSTOM_AVATAR_INDEX := BUILT_IN_AVATAR_COUNT
 const HUMAN_AVATAR_COUNT := BUILT_IN_AVATAR_COUNT + 1
-const GAME_VERSION := "0.6.13"
+const GAME_VERSION := "0.6.14"
 # Внутренний просмотр отчётов доступен только при запуске из редактора и может
 # быть дополнительно отключён этим переключателем. Создание отчёта игроком не зависит от него.
 const PERSISTENT_SETTINGS_PATH := "user://project_joker_settings.cfg"
@@ -4475,10 +4475,10 @@ func _on_submit_loopback_test_bid_pressed(bid: int) -> void:
 	var network_match = _get_active_network_match()
 	if network_match == null:
 		return
-	if network_match.is_host():
-		network_match.submit_host_test_bid(bid)
-	else:
-		network_match.submit_test_bid(bid)
+	if network_match.is_host() and network_match.has_method(&"submit_host_test_bid"):
+		network_match.call(&"submit_host_test_bid", bid)
+	elif network_match.has_method(&"submit_test_bid"):
+		network_match.call(&"submit_test_bid", bid)
 	_refresh_loopback_network_status()
 	_refresh_steam_p2p_status()
 
@@ -4487,10 +4487,10 @@ func _on_submit_loopback_test_card_pressed(card_key: String) -> void:
 	var network_match = _get_active_network_match()
 	if network_match == null:
 		return
-	if network_match.is_host():
-		network_match.submit_host_test_card(card_key)
-	else:
-		network_match.submit_test_card(card_key)
+	if network_match.is_host() and network_match.has_method(&"submit_host_test_card"):
+		network_match.call(&"submit_host_test_card", card_key)
+	elif network_match.has_method(&"submit_test_card"):
+		network_match.call(&"submit_test_card", card_key)
 	_refresh_loopback_network_status()
 	_refresh_steam_p2p_status()
 
@@ -4531,10 +4531,10 @@ func _on_submit_loopback_test_joker_pressed(mode: Trick.JokerMode, declared_suit
 	var network_match = _get_active_network_match()
 	if network_match == null:
 		return
-	if network_match.is_host():
-		was_submitted = network_match.submit_host_test_joker_choice(mode, declared_suit, forced_card_rank)
-	else:
-		was_submitted = network_match.submit_test_joker_choice(mode, declared_suit, forced_card_rank)
+	if network_match.is_host() and network_match.has_method(&"submit_host_test_joker_choice"):
+		was_submitted = bool(network_match.call(&"submit_host_test_joker_choice", mode, declared_suit, forced_card_rank))
+	elif network_match.has_method(&"submit_test_joker_choice"):
+		was_submitted = bool(network_match.call(&"submit_test_joker_choice", mode, declared_suit, forced_card_rank))
 	if was_submitted:
 		_reset_loopback_network_joker_selection()
 	_refresh_loopback_network_status()
@@ -5322,10 +5322,20 @@ func _refresh_network_main_action_controls(snapshot: Dictionary, round_data: Dic
 	if state != Round.State.BIDDING:
 		return
 	var available_bids: Array[int] = []
-	if network_match != null and network_match.is_host() and network_match.can_submit_host_test_bid():
-		available_bids = network_match.get_available_host_test_bids()
-	elif network_match != null and network_match.is_client() and network_match.can_submit_test_bid():
-		available_bids = network_match.get_available_test_bids()
+	if (
+		network_match != null
+		and network_match.is_host()
+		and network_match.has_method(&"can_submit_host_test_bid")
+		and bool(network_match.call(&"can_submit_host_test_bid"))
+	):
+		available_bids.assign(network_match.call(&"get_available_host_test_bids"))
+	elif (
+		network_match != null
+		and network_match.is_client()
+		and network_match.has_method(&"can_submit_test_bid")
+		and bool(network_match.call(&"can_submit_test_bid"))
+	):
+		available_bids.assign(network_match.call(&"get_available_test_bids"))
 	_configure_bid_controls_layout(available_bids.size())
 	for bid in available_bids:
 		var bid_button := Button.new()
@@ -6659,10 +6669,18 @@ func _is_network_table_card_available(card_key: String) -> bool:
 	if network_match == null or card_key.is_empty():
 		return false
 	var available_cards: Array[Dictionary] = []
-	if network_match.is_host() and network_match.can_submit_host_test_card():
-		available_cards = network_match.get_available_host_test_cards()
-	elif network_match.is_client() and network_match.can_submit_test_card():
-		available_cards = network_match.get_available_test_cards()
+	if (
+		network_match.is_host()
+		and network_match.has_method(&"can_submit_host_test_card")
+		and bool(network_match.call(&"can_submit_host_test_card"))
+	):
+		available_cards.assign(network_match.call(&"get_available_host_test_cards"))
+	elif (
+		network_match.is_client()
+		and network_match.has_method(&"can_submit_test_card")
+		and bool(network_match.call(&"can_submit_test_card"))
+	):
+		available_cards.assign(network_match.call(&"get_available_test_cards"))
 	for card_data in available_cards:
 		if str(card_data.get("card_key", "")) == card_key:
 			return true
@@ -6679,11 +6697,11 @@ func _is_network_table_card_rule_available(card_key: String, is_joker: bool) -> 
 		if network_match.is_client() and network_match.has_method(&"is_test_joker_rule_available"):
 			return bool(network_match.call(&"is_test_joker_rule_available"))
 		return false
-	var available_cards: Array[Dictionary] = (
-		network_match.get_available_host_test_cards()
-		if network_match.is_host()
-		else network_match.get_available_test_cards()
-	)
+	var available_cards: Array[Dictionary] = []
+	if network_match.is_host() and network_match.has_method(&"get_available_host_test_cards"):
+		available_cards.assign(network_match.call(&"get_available_host_test_cards"))
+	elif network_match.is_client() and network_match.has_method(&"get_available_test_cards"):
+		available_cards.assign(network_match.call(&"get_available_test_cards"))
 	for card_data in available_cards:
 		if str(card_data.get("card_key", "")) == card_key:
 			return true
@@ -6731,10 +6749,20 @@ func _refresh_network_table_action_controls(snapshot: Dictionary) -> void:
 	_place_network_table_action_panel(false)
 	var available_bids: Array[int] = []
 	var network_match = _get_active_network_match()
-	if network_match != null and network_match.is_host() and network_match.can_submit_host_test_bid():
-		available_bids = network_match.get_available_host_test_bids()
-	elif network_match != null and network_match.is_client() and network_match.can_submit_test_bid():
-		available_bids = network_match.get_available_test_bids()
+	if (
+		network_match != null
+		and network_match.is_host()
+		and network_match.has_method(&"can_submit_host_test_bid")
+		and bool(network_match.call(&"can_submit_host_test_bid"))
+	):
+		available_bids.assign(network_match.call(&"get_available_host_test_bids"))
+	elif (
+		network_match != null
+		and network_match.is_client()
+		and network_match.has_method(&"can_submit_test_bid")
+		and bool(network_match.call(&"can_submit_test_bid"))
+	):
+		available_bids.assign(network_match.call(&"get_available_test_bids"))
 
 	var title := Label.new()
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -7371,14 +7399,22 @@ func _can_submit_loopback_test_joker() -> bool:
 	var network_match = _get_active_network_match()
 	if network_match == null:
 		return false
-	return network_match.can_submit_host_test_joker() if network_match.is_host() else network_match.can_submit_test_joker()
+	if network_match.is_host() and network_match.has_method(&"can_submit_host_test_joker"):
+		return bool(network_match.call(&"can_submit_host_test_joker"))
+	if network_match.is_client() and network_match.has_method(&"can_submit_test_joker"):
+		return bool(network_match.call(&"can_submit_test_joker"))
+	return false
 
 
 func _is_loopback_test_joker_leading() -> bool:
 	var network_match = _get_active_network_match()
 	if network_match == null:
 		return false
-	return network_match.is_host_test_joker_leading() if network_match.is_host() else network_match.is_client_test_joker_leading()
+	if network_match.is_host() and network_match.has_method(&"is_host_test_joker_leading"):
+		return bool(network_match.call(&"is_host_test_joker_leading"))
+	if network_match.is_client() and network_match.has_method(&"is_client_test_joker_leading"):
+		return bool(network_match.call(&"is_client_test_joker_leading"))
+	return false
 
 
 func _reset_loopback_network_joker_selection() -> void:

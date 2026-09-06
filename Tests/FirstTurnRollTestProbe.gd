@@ -60,6 +60,7 @@ class FakeRemoteBid:
 	extends Node
 
 	var submitted_bid := -1
+	var room_owner := false
 	var lobby_seats: Array = []
 
 	func is_running() -> bool:
@@ -69,7 +70,7 @@ class FakeRemoteBid:
 		return true
 
 	func is_host() -> bool:
-		return false
+		return room_owner
 
 	func is_client() -> bool:
 		return true
@@ -101,9 +102,21 @@ class FakeRemoteBid:
 	func can_submit_test_joker() -> bool:
 		return false
 
+	func can_submit_test_card() -> bool:
+		return false
+
+	func get_available_test_cards() -> Array[Dictionary]:
+		return []
+
 	func get_test_table_snapshot() -> Dictionary:
 		return {
 			"recipient_player_index": 1,
+			"private_hand": [{
+				"suit": Card.Suit.SPADES,
+				"rank": Card.Rank.ACE,
+				"is_joker": false,
+				"card_key": "owner-card"
+			}],
 			"round_number": 1,
 			"revision": 0,
 			"round": {
@@ -124,6 +137,7 @@ func _run() -> void:
 	await _test_local_first_player_mapping()
 	await _test_remote_roll_pointer_input()
 	await _test_remote_first_bid_pointer_input()
+	await _test_remote_room_owner_uses_client_game_api()
 	_test_authoritative_network_roll()
 	_test_network_bots_roll_automatically()
 	print("FIRST_TURN_ROLL_TEST_PASS")
@@ -220,6 +234,30 @@ func _test_remote_first_bid_pointer_input() -> void:
 	touch.position = bid_button.get_global_rect().get_center()
 	main_scene._input(touch)
 	assert(fake_remote.submitted_bid == 0, "The full-screen remote table must not swallow Android bid input")
+	main_scene.queue_free()
+	await process_frame
+
+
+func _test_remote_room_owner_uses_client_game_api() -> void:
+	var main_scene: Variant = load("res://Scenes/main.tscn").instantiate()
+	root.add_child(main_scene)
+	await process_frame
+	var fake_remote := FakeRemoteBid.new()
+	fake_remote.room_owner = true
+	main_scene.add_child(fake_remote)
+	main_scene.remote_enet_match = fake_remote
+	main_scene.remote_enet_table_presentation = true
+	main_scene.network_table_view.visible = true
+	var snapshot: Dictionary = fake_remote.get_test_table_snapshot()
+	main_scene._refresh_network_table_hand(snapshot.get("private_hand", []))
+	main_scene._refresh_network_table_action_controls(snapshot)
+	await process_frame
+
+	assert(main_scene.network_table_hand_container.get_child_count() == 1, "A remote room owner must render their private hand through the client API")
+	assert(main_scene.network_table_action_panel.visible, "A remote room owner must see the bid panel")
+	var bid_button := main_scene.network_table_action_controls.get_child(1).get_child(0) as Button
+	bid_button.pressed.emit()
+	assert(fake_remote.submitted_bid == 0, "A remote room owner must submit bids through the client API")
 	main_scene.queue_free()
 	await process_frame
 
