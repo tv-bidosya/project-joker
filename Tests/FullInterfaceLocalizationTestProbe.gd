@@ -119,6 +119,20 @@ func _run() -> void:
 		"Ukrainian localized bid history must preserve its numeric value."
 	)
 
+	main_scene._show_remote_create_lobby_menu()
+	await process_frame
+	var game_type_selector: OptionButton = main_scene.menu_content.find_child("RemoteRoomGameTypeSelector", true, false)
+	var difficulty_selector: OptionButton = main_scene.menu_content.find_child("RemoteRoomBotDifficultySelector", true, false)
+	_check(game_type_selector != null, "Remote game-type selector is missing.")
+	_check(difficulty_selector != null, "Remote bot-difficulty selector is missing.")
+	if game_type_selector != null:
+		_check(game_type_selector.get_item_text(0) == "Звичайна · заміна ботом через 5 хвилин", "Ukrainian casual game type: %s" % game_type_selector.get_item_text(0))
+		_check(game_type_selector.get_item_text(1) == "Рейтингова · до 3 днів на повернення", "Ukrainian ranked game type: %s" % game_type_selector.get_item_text(1))
+	if difficulty_selector != null:
+		_check(difficulty_selector.get_item_text(0) == "Легка", "Ukrainian easy difficulty: %s" % difficulty_selector.get_item_text(0))
+		_check(difficulty_selector.get_item_text(1) == "Звичайна", "Ukrainian normal difficulty: %s" % difficulty_selector.get_item_text(1))
+		_check(difficulty_selector.get_item_text(2) == "Складна", "Ukrainian hard difficulty: %s" % difficulty_selector.get_item_text(2))
+
 	main_scene.is_score_sheet_visible = true
 	main_scene._refresh_score_sheet()
 	var ukrainian_score_sheet := _get_visible_texts(main_scene.score_sheet_panel)

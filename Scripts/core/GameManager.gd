@@ -88,7 +88,7 @@ const CHAT_VISIBLE_MESSAGE_LIMIT := 40
 const BUILT_IN_AVATAR_COUNT := 4
 const CUSTOM_AVATAR_INDEX := BUILT_IN_AVATAR_COUNT
 const HUMAN_AVATAR_COUNT := BUILT_IN_AVATAR_COUNT + 1
-const GAME_VERSION := "0.6.10"
+const GAME_VERSION := "0.6.11"
 # Внутренний просмотр отчётов доступен только при запуске из редактора и может
 # быть дополнительно отключён этим переключателем. Создание отчёта игроком не зависит от него.
 const PERSISTENT_SETTINGS_PATH := "user://project_joker_settings.cfg"
@@ -1266,14 +1266,28 @@ func _position_mobile_gift_picker() -> void:
 
 
 func _input(event: InputEvent) -> void:
-	if not mobile_table_layout:
-		return
 	var press_position := Vector2(-1, -1)
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
 		press_position = event.position
 	elif event is InputEventScreenTouch and event.pressed:
 		press_position = event.position
 	if press_position.x < 0:
+		return
+	# The remote table is a separate full-screen Control. Handle the roll action
+	# before GUI dispatch so neither that layer nor a platform-specific touch-to-
+	# mouse conversion can swallow the only action that advances the match.
+	if (
+		is_instance_valid(first_turn_roll_panel)
+		and first_turn_roll_panel.visible
+		and is_instance_valid(first_turn_roll_button)
+		and first_turn_roll_button.visible
+		and not first_turn_roll_button.disabled
+		and first_turn_roll_button.get_global_rect().has_point(press_position)
+	):
+		_on_first_turn_roll_action_pressed()
+		get_viewport().set_input_as_handled()
+		return
+	if not mobile_table_layout:
 		return
 	# Observe the press before GUI controls consume it. Closing a social popup
 	# never marks the event handled, so the same tap can still select/play a card.

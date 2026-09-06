@@ -6,12 +6,63 @@ const LocalMatchHost = preload("res://Scripts/core/LocalMatchHost.gd")
 const SteamP2PMatch = preload("res://Scripts/core/SteamP2PMatch.gd")
 
 
+class FakeRemoteRoll:
+	extends Node
+
+	var submitted := false
+	var lobby_seats: Array = [
+		{"player_index": 0, "display_name": "Desktop"},
+		{"player_index": 1, "display_name": "Android"},
+		{"player_index": 2, "display_name": "Rhysand"},
+		{"player_index": 3, "display_name": "Azriel"}
+	]
+
+	func is_running() -> bool:
+		return true
+
+	func is_in_room() -> bool:
+		return true
+
+	func is_first_turn_roll_active() -> bool:
+		return true
+
+	func get_first_turn_roll_state() -> Dictionary:
+		return {
+			"phase": 1,
+			"roll_round": 1,
+			"contenders": [0, 1, 2, 3],
+			"values": [-1, -1, -1, -1],
+			"submitted": [submitted, false, true, true],
+			"winner_player_index": -1
+		}
+
+	func get_test_table_viewer_index() -> int:
+		return 0
+
+	func can_start_first_real_round() -> bool:
+		return false
+
+	func start_first_real_round() -> bool:
+		return false
+
+	func can_submit_first_turn_roll() -> bool:
+		return not submitted
+
+	func submit_first_turn_roll() -> bool:
+		submitted = true
+		return true
+
+	func get_test_table_snapshot() -> Dictionary:
+		return {}
+
+
 func _init() -> void:
 	call_deferred("_run")
 
 
 func _run() -> void:
-	_test_local_first_player_mapping()
+	await _test_local_first_player_mapping()
+	await _test_remote_roll_pointer_input()
 	_test_authoritative_network_roll()
 	_test_network_bots_roll_automatically()
 	print("FIRST_TURN_ROLL_TEST_PASS")
@@ -51,6 +102,30 @@ func _test_local_first_player_mapping() -> void:
 	assert(main_scene.game.current_round.current_player_index == winner_index, "Dice winner must place the first bid")
 	assert(main_scene.game.current_round.lead_player_index == winner_index, "Dice winner must lead the first trick")
 	main_scene.queue_free()
+	await process_frame
+
+
+func _test_remote_roll_pointer_input() -> void:
+	var main_scene: Variant = load("res://Scenes/main.tscn").instantiate()
+	root.add_child(main_scene)
+	await process_frame
+	var fake_remote := FakeRemoteRoll.new()
+	main_scene.add_child(fake_remote)
+	main_scene.remote_enet_match = fake_remote
+	main_scene.remote_enet_table_presentation = true
+	main_scene.network_table_view.visible = true
+	main_scene._refresh_network_table_view()
+	await process_frame
+
+	assert(not main_scene.first_turn_roll_button.disabled)
+	var pointer_press := InputEventMouseButton.new()
+	pointer_press.button_index = MOUSE_BUTTON_LEFT
+	pointer_press.pressed = true
+	pointer_press.position = main_scene.first_turn_roll_button.get_global_rect().get_center()
+	main_scene._input(pointer_press)
+	assert(fake_remote.submitted, "A pointer press must reach the remote roll action through the full-screen table")
+	main_scene.queue_free()
+	await process_frame
 
 
 func _test_authoritative_network_roll() -> void:
