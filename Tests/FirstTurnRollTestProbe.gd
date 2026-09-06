@@ -56,6 +56,66 @@ class FakeRemoteRoll:
 		return {}
 
 
+class FakeRemoteBid:
+	extends Node
+
+	var submitted_bid := -1
+	var lobby_seats: Array = []
+
+	func is_running() -> bool:
+		return true
+
+	func is_in_room() -> bool:
+		return true
+
+	func is_host() -> bool:
+		return false
+
+	func is_client() -> bool:
+		return true
+
+	func is_match_finished() -> bool:
+		return false
+
+	func is_first_turn_roll_active() -> bool:
+		return false
+
+	func get_test_table_viewer_index() -> int:
+		return 1
+
+	func can_submit_test_bid() -> bool:
+		return submitted_bid < 0
+
+	func get_available_test_bids() -> Array[int]:
+		var bids: Array[int] = []
+		if can_submit_test_bid():
+			bids.assign([0, 1])
+		return bids
+
+	func submit_test_bid(bid: int) -> bool:
+		if not get_available_test_bids().has(bid):
+			return false
+		submitted_bid = bid
+		return true
+
+	func can_submit_test_joker() -> bool:
+		return false
+
+	func get_test_table_snapshot() -> Dictionary:
+		return {
+			"recipient_player_index": 1,
+			"round_number": 1,
+			"revision": 0,
+			"round": {
+				"state": Round.State.BIDDING,
+				"current_player_index": 1,
+				"cards_per_player": 1,
+				"bids": [-1, -1, -1, -1],
+				"bids_made": 0
+			}
+		}
+
+
 func _init() -> void:
 	call_deferred("_run")
 
@@ -63,6 +123,7 @@ func _init() -> void:
 func _run() -> void:
 	await _test_local_first_player_mapping()
 	await _test_remote_roll_pointer_input()
+	await _test_remote_first_bid_pointer_input()
 	_test_authoritative_network_roll()
 	_test_network_bots_roll_automatically()
 	print("FIRST_TURN_ROLL_TEST_PASS")
@@ -124,6 +185,35 @@ func _test_remote_roll_pointer_input() -> void:
 	pointer_press.position = main_scene.first_turn_roll_button.get_global_rect().get_center()
 	main_scene._input(pointer_press)
 	assert(fake_remote.submitted, "A pointer press must reach the remote roll action through the full-screen table")
+	main_scene.queue_free()
+	await process_frame
+
+
+func _test_remote_first_bid_pointer_input() -> void:
+	var main_scene: Variant = load("res://Scenes/main.tscn").instantiate()
+	root.add_child(main_scene)
+	await process_frame
+	var fake_remote := FakeRemoteBid.new()
+	main_scene.add_child(fake_remote)
+	main_scene.remote_enet_match = fake_remote
+	main_scene.remote_enet_table_presentation = true
+	main_scene.network_table_view.visible = true
+	main_scene._refresh_network_table_action_controls(fake_remote.get_test_table_snapshot())
+	await process_frame
+
+	assert(main_scene.network_table_action_panel.visible, "The active remote bidder must see the action panel")
+	assert(main_scene.network_table_action_panel.z_index > main_scene.network_table_hand_container.z_index)
+	var first_button := main_scene.network_table_action_controls.get_child(1).get_child(0) as Button
+	var bid_button: Button = main_scene._find_enabled_button_at_position(
+		main_scene.network_table_action_controls,
+		first_button.get_global_rect().get_center()
+	)
+	assert(bid_button != null, "The first bid button must have a tappable on-screen rectangle")
+	var touch := InputEventScreenTouch.new()
+	touch.pressed = true
+	touch.position = bid_button.get_global_rect().get_center()
+	main_scene._input(touch)
+	assert(fake_remote.submitted_bid == 0, "The full-screen remote table must not swallow Android bid input")
 	main_scene.queue_free()
 	await process_frame
 

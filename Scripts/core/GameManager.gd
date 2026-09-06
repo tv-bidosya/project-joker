@@ -88,7 +88,7 @@ const CHAT_VISIBLE_MESSAGE_LIMIT := 40
 const BUILT_IN_AVATAR_COUNT := 4
 const CUSTOM_AVATAR_INDEX := BUILT_IN_AVATAR_COUNT
 const HUMAN_AVATAR_COUNT := BUILT_IN_AVATAR_COUNT + 1
-const GAME_VERSION := "0.6.11"
+const GAME_VERSION := "0.6.12"
 # Внутренний просмотр отчётов доступен только при запуске из редактора и может
 # быть дополнительно отключён этим переключателем. Создание отчёта игроком не зависит от него.
 const PERSISTENT_SETTINGS_PATH := "user://project_joker_settings.cfg"
@@ -1287,6 +1287,13 @@ func _input(event: InputEvent) -> void:
 		_on_first_turn_roll_action_pressed()
 		get_viewport().set_input_as_handled()
 		return
+	# The legacy remote table is also a full-screen STOP control. On Android its
+	# dynamically created bid buttons can be visually present while the touch is
+	# consumed by the table before Button receives it. Resolve the visible button
+	# under the pointer here, just like the first-turn roll action above.
+	if _try_activate_network_table_action_at_position(press_position):
+		get_viewport().set_input_as_handled()
+		return
 	if not mobile_table_layout:
 		return
 	# Observe the press before GUI controls consume it. Closing a social popup
@@ -1304,6 +1311,33 @@ func _input(event: InputEvent) -> void:
 		_close_sticker_picker()
 	if mobile_avatar_action_slot >= 0:
 		_close_mobile_avatar_actions()
+
+
+func _try_activate_network_table_action_at_position(press_position: Vector2) -> bool:
+	if (
+		not is_instance_valid(network_table_view)
+		or not network_table_view.visible
+		or not is_instance_valid(network_table_action_controls)
+		or not network_table_action_controls.is_visible_in_tree()
+	):
+		return false
+	var button := _find_enabled_button_at_position(network_table_action_controls, press_position)
+	if button == null:
+		return false
+	button.pressed.emit()
+	return true
+
+
+func _find_enabled_button_at_position(node: Node, press_position: Vector2) -> Button:
+	for child in node.get_children():
+		if child is Button:
+			var button := child as Button
+			if button.is_visible_in_tree() and not button.disabled and button.get_global_rect().has_point(press_position):
+				return button
+		var nested_button := _find_enabled_button_at_position(child, press_position)
+		if nested_button != null:
+			return nested_button
+	return null
 
 
 func _mobile_settings() -> RefCounted:
@@ -6022,6 +6056,7 @@ func _create_network_table_view() -> void:
 	network_table_action_panel = PanelContainer.new()
 	network_table_action_panel.add_theme_stylebox_override("panel", _create_flat_style(Color(0.008, 0.035, 0.018, 0.92), Color(0.56, 0.39, 0.1, 0.82), 1, 8, 3))
 	network_table_action_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	network_table_action_panel.z_index = 20
 	network_table_view.add_child(network_table_action_panel)
 
 	network_table_action_controls = VBoxContainer.new()
@@ -6727,7 +6762,7 @@ func _place_network_table_action_panel(is_joker_selection: bool) -> void:
 	if is_joker_selection:
 		_set_control_layout(network_table_action_panel, 0.0, 0.5, 0.0, 0.5, 24.0, -155.0, 398.0, 210.0)
 	else:
-		_set_control_layout(network_table_action_panel, 0.5, 1.0, 0.5, 1.0, -360.0, -262.0, 360.0, -202.0)
+		_set_control_layout(network_table_action_panel, 0.5, 1.0, 0.5, 1.0, -360.0, -342.0, 360.0, -212.0)
 
 
 func _create_network_table_joker_choice_controls() -> void:
@@ -6786,9 +6821,10 @@ func _create_network_table_joker_choice_controls() -> void:
 func _create_network_table_action_button(label_text: String, callback: Callable, is_primary: bool = false) -> Button:
 	var button := Button.new()
 	button.text = label_text
-	button.custom_minimum_size = Vector2(0.0, 32.0)
+	button.custom_minimum_size = Vector2(96.0, 50.0 if mobile_table_layout else 42.0)
 	button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_apply_table_action_button_style(button)
+	button.add_theme_font_size_override("font_size", 22 if mobile_table_layout else 18)
 	if is_primary:
 		button.add_theme_stylebox_override("normal", _create_flat_style(Color(0.16, 0.22, 0.1, 1.0), Color(0.95, 0.75, 0.28, 1.0), 2, 6, 3))
 	button.pressed.connect(callback)
