@@ -204,6 +204,12 @@ func _test_remote_first_bid_pointer_input() -> void:
 	assert(main_scene.network_table_action_panel.visible, "The active remote bidder must see the action panel")
 	assert(main_scene.network_table_action_panel.z_index > main_scene.network_table_hand_container.z_index)
 	var first_button := main_scene.network_table_action_controls.get_child(1).get_child(0) as Button
+	var viewport_rect: Rect2 = main_scene.get_viewport_rect()
+	var action_panel_rect: Rect2 = main_scene.network_table_action_panel.get_global_rect()
+	var first_button_rect: Rect2 = first_button.get_global_rect()
+	assert(viewport_rect.encloses(action_panel_rect), "The bid panel must be fully visible on screen")
+	assert(action_panel_rect.encloses(first_button_rect), "The bid button must render inside its visible panel")
+	assert(action_panel_rect.get_center().y < viewport_rect.size.y * 0.7, "The bid panel must stay above the local player card")
 	var bid_button: Button = main_scene._find_enabled_button_at_position(
 		main_scene.network_table_action_controls,
 		first_button.get_global_rect().get_center()

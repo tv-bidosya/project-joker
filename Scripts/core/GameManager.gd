@@ -88,7 +88,7 @@ const CHAT_VISIBLE_MESSAGE_LIMIT := 40
 const BUILT_IN_AVATAR_COUNT := 4
 const CUSTOM_AVATAR_INDEX := BUILT_IN_AVATAR_COUNT
 const HUMAN_AVATAR_COUNT := BUILT_IN_AVATAR_COUNT + 1
-const GAME_VERSION := "0.6.12"
+const GAME_VERSION := "0.6.13"
 # Внутренний просмотр отчётов доступен только при запуске из редактора и может
 # быть дополнительно отключён этим переключателем. Создание отчёта игроком не зависит от него.
 const PERSISTENT_SETTINGS_PATH := "user://project_joker_settings.cfg"
@@ -6762,7 +6762,11 @@ func _place_network_table_action_panel(is_joker_selection: bool) -> void:
 	if is_joker_selection:
 		_set_control_layout(network_table_action_panel, 0.0, 0.5, 0.0, 0.5, 24.0, -155.0, 398.0, 210.0)
 	else:
-		_set_control_layout(network_table_action_panel, 0.5, 1.0, 0.5, 1.0, -360.0, -342.0, 360.0, -212.0)
+		# Keep the primary action fully on the felt and clear of the local player''s
+		# panel. Overlapping those two controls made the bid row render behind the
+		# player card on real desktop/mobile viewports even though synthetic input
+		# could still find its buttons.
+		_set_control_layout(network_table_action_panel, 0.5, 0.5, 0.5, 0.5, -360.0, 82.0, 360.0, 212.0)
 
 
 func _create_network_table_joker_choice_controls() -> void:
